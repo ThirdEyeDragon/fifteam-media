@@ -2,7 +2,7 @@
 import { $, bus, toast } from "./ui.js";
 import { player } from "./player.js";
 
-export const APP_VERSION = "1.3";
+export const APP_VERSION = "1.4";
 import * as store from "./store.js";
 import { initPlayer } from "./player.js";
 import { initLibrary, library, importFiles } from "./library.js";

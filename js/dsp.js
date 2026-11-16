@@ -184,8 +184,53 @@ export function mapBassLine(an, { lo, hi, mode = "musical", snap = true }) {
     }
     out[i] = Math.min(hi, Math.max(lo, f));
   }
-  // hold notes steady; in a narrow range, hold them longer still (a deep sub with fewer, cleaner moves)
-  return stabilize(out, hi / lo < 2 ? 8 : 5);
+  // hold notes steady; in a narrow range, hold them longer still (a deep sub with fewer, cleaner moves); then make sure
+  // every moment the song's own bass sounds has a new note under it
+  return fillBass(stabilize(out, hi / lo < 2 ? 8 : 5), an.env);
+}
+
+/**
+ * The old bass is always taken out, so the new one has to be there every time the old one was: wherever the low end
+ * sounds (env over thr) but no note was heard clearly (a drum hit on the bass, a slide, a growl), a note is given to it.
+ *   Sounding straight on from a note: that note carries on. Running from one note into the next: the first carries on
+ *   until the hit that starts the second. On its own: the nearer note (within `reach` frames), else the song's most
+ *   used bass note.
+ */
+export function fillBass(f, env, thr = 0.08, reach = 300) {
+  const n = f.length, out = Float32Array.from(f);
+  const count = new Map();
+  for (let i = 0; i < n; i++) if (f[i] > 0) count.set(f[i], (count.get(f[i]) || 0) + 1);
+  if (!count.size) return out;
+  let home = 0, best = -1;
+  for (const [k, c] of count) if (c > best) { best = c; home = k; }
+  for (let i = 0; i < n;) {
+    if (f[i] > 0) { i++; continue; }
+    const s = i; while (i < n && !(f[i] > 0)) i++;
+    const e = i, pv = s > 0 ? f[s - 1] : 0, nx = e < n ? f[e] : 0;
+    for (let j = s; j < e;) {
+      if (!(env[j] > thr)) { j++; continue; }
+      const a = j; while (j < e && env[j] > thr) j++;
+      const b = j, touchPrev = a === s && pv > 0, touchNext = b === e && nx > 0;
+      if (touchPrev && touchNext) {
+        // split at the strongest rise in loudness (the next hit), or keep the first note right up to the second
+        let cut = b, rise = 0.12;
+        for (let k = a + 1; k < b; k++) { const r = env[k] - Math.min(env[k - 1], env[Math.max(a, k - 3)]); if (r > rise) { rise = r; cut = k; } }
+        out.fill(pv, a, cut); out.fill(nx, cut, b);
+      } else if (touchPrev) out.fill(pv, a, b);
+      else if (touchNext) out.fill(nx, a, b);
+      else {
+        const dp = pv > 0 ? a - s + 1 : Infinity, dn = nx > 0 ? e - b + 1 : Infinity;
+        const near = Math.min(dp, dn) <= reach ? (dp <= dn ? pv : nx) : home;
+        out.fill(near, a, b);
+      }
+    }
+  }
+  return out;
+}
+
+/** Where the song's own bass is cut: above its bass notes (and above the new bass range), never into the mids. */
+export function removalHz(songBassHi, newHi) {
+  return Math.min(220, Math.max(120, songBassHi * 1.6, newHi * 1.15));
 }
 
 /**

@@ -137,6 +137,15 @@ console.log("crossover:", await ev(`(async () => {
   r.push('| mids 0: 1 kHz ' + await level(1000, { ...flat, mids: 0 }) + ', 50 Hz ' + await level(50, { ...flat, mids: 0 }));
   r.push('| highs 0: 12 kHz ' + await level(12000, { ...flat, highs: 0 }) + ', 1 kHz ' + await level(1000, { ...flat, highs: 0 }));
   r.push('| bass 10: 50 Hz ' + await level(50, { ...flat, bass: 10 }));
+  const lvlM = async (f, mute) => {
+    const ctx = new OfflineAudioContext(1, N, sr), osc = ctx.createOscillator(); osc.frequency.value = f;
+    const b = makeBands(ctx); b.set(flat, true, mute); osc.connect(b.input); b.output.connect(ctx.destination); osc.start();
+    const x = (await ctx.startRendering()).getChannelData(0); let s = 0; for (let i = N / 2; i < N; i++) s += x[i] * x[i];
+    return s > 0 ? (20 * Math.log10(Math.sqrt(s / (N / 2)) / Math.SQRT1_2)).toFixed(1) : '-inf';
+  };
+  r.push('| MUTED bass: 30 Hz ' + await lvlM(30, { bass: true }) + ', 50 Hz ' + await lvlM(50, { bass: true }) + ', 100 Hz ' + await lvlM(100, { bass: true }) + ', 1 kHz ' + await lvlM(1000, { bass: true }));
+  r.push('| MUTED mids: 1 kHz ' + await lvlM(1000, { mids: true }) + ', 50 Hz ' + await lvlM(50, { mids: true }) + ', 12 kHz ' + await lvlM(12000, { mids: true }));
+  r.push('| MUTED highs: 12 kHz ' + await lvlM(12000, { highs: true }) + ', 1 kHz ' + await lvlM(1000, { highs: true }));
   return r.join(', ');
 })()`));
 await ev(`(() => { const k = document.querySelector('#kn-highs .knob'); k.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true })); return 1; })()`);
@@ -145,6 +154,21 @@ console.log("knob labels:", await ev(`[...document.querySelectorAll('.knob-wrap'
 console.log("now playing for the system:", await ev(`(() => { const m = navigator.mediaSession && navigator.mediaSession.metadata; return m ? m.title + ' / ' + m.artist + ' / ' + m.album + ' / artwork ' + [...m.artwork].map(a => a.sizes).join(' ') : 'none'; })()`));
 await ev(`(() => { const v = document.getElementById('view-player'); v.scrollTop = v.scrollHeight; return 1; })()`); await sleep(300);
 await shot("03b_player_knobs");
+// press and hold MIDS for 3 s with a finger: muted; hold again: back
+const holdKnob = async (sel, ms, midShot) => {
+  const [x, y] = await ev(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; })()`);
+  await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+  if (midShot) { await sleep(1700); await shot(midShot); await sleep(ms - 1700); } else await sleep(ms);
+  await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await sleep(250);
+};
+await holdKnob("#kn-mids .knob", 3300, "03d_holding_mids");
+console.log("held MIDS 3 s:", await ev(`document.querySelector('#kn-mids .knob').getAttribute('aria-valuetext')`), "| muted in the sound:", await ev(`import('./js/eq.js').then(m => m.eq.isMuted('mids'))`), "| path:", await ev(`import('./js/eq.js').then(m => m.eq.route)`));
+await shot("03e_mids_muted");
+await holdKnob("#kn-bass .knob", 1200);
+console.log("held BASS only 1.2 s (no change):", await ev(`document.querySelector('#kn-bass .knob').getAttribute('aria-valuetext')`));
+await holdKnob("#kn-mids .knob", 3300);
+console.log("held MIDS again:", await ev(`document.querySelector('#kn-mids .knob').getAttribute('aria-valuetext')`), "| muted:", await ev(`import('./js/eq.js').then(m => m.eq.isMuted('mids'))`));
 await ev(`(() => { const key = (id, k, n) => { const e = document.querySelector('#' + id + ' .knob'); for (let i = 0; i < n; i++) e.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true })); };
   key('kn-bass', 'ArrowDown', 7); key('kn-mids', 'ArrowUp', 1); key('kn-highs', 'ArrowUp', 10); return 1; })()`);
 await sleep(300);
@@ -184,10 +208,7 @@ await until(`document.getElementById('rb-busy').hidden`, 90000, "the slowed rend
 console.log("stats slowed 75% + reverb:", await ev(`[...document.querySelectorAll('#rb-stats .stat')].map(s => s.querySelector('span').textContent + ': ' + s.querySelector('b').textContent).join(' | ')`));
 console.log("name now:", await ev(`document.getElementById('rb-name').value`), "| length:", await ev(`document.getElementById('rb-dur').textContent`));
 console.log("slow hint:", await ev(`document.getElementById('rb-speed-hint').textContent`));
-await click('#rb-only'); await sleep(600);
-await until(`document.getElementById('rb-busy').hidden`, 90000, "the only-my-range render");
-console.log("stats, only my range:", await ev(`[...document.querySelectorAll('#rb-stats .stat')].map(s => s.querySelector('span').textContent + ': ' + s.querySelector('b').textContent).join(' | ')`),
-  "| replace switch disabled:", await ev(`document.getElementById('rb-replace').disabled`), "| level hint:", await ev(`document.getElementById('rb-db-hint').textContent`));
+console.log("old-bass switches left on the screen:", await ev(`['rb-only', 'rb-replace'].filter(id => document.getElementById(id)).join(', ') || 'none'`));
 await click("#rb-play"); await sleep(2500);
 await show('#rb-result'); await sleep(300);
 await shot("05b_rebass_slowed");
@@ -290,15 +311,20 @@ await click("#lib-list .item"); await sleep(400);
 await ev(`location.hash = '#player'`);
 await until(`import('./js/demo.js').then(m => !!m.demo.hits)`, 20000, "the bass hits");
 console.log("demo hits:", await ev(`import('./js/demo.js').then(m => { const h = m.demo.hits, t = []; for (let i = 0; i < h.length; i += 2) t.push(h[i]); const d = t.slice(1).map((v, i) => v - t[i]); return (h.length / 2) + ' hits, first ' + t.slice(0, 8).map(v => v.toFixed(2)).join(' ') + ' s, median gap ' + d.sort((a, b) => a - b)[d.length >> 1].toFixed(3) + ' s'; })`));
-await ev(`window.__rings = 0; new MutationObserver((ms) => { for (const m of ms) for (const n of m.addedNodes) if (n.classList && n.classList.contains('bass-ring')) window.__rings++; }).observe(document.getElementById('art-stage'), { childList: true }); 1`);
+const st0 = await ev(`import('./js/demo.js').then(m => m.demo.state)`);
 await sleep(4000);
-console.log("rings in 4 s:", await ev("window.__rings"), "| playing:", await ev(`import('./js/player.js').then(m => m.player.playing)`), "| time:", await ev(`import('./js/player.js').then(m => m.player.audio.currentTime.toFixed(1))`));
-await until(`document.querySelectorAll('.bass-ring').length > 0`, 5000, "a ring");
-await sleep(90);
-await shot("12_demo_hit");
-await sleep(600);
-await shot("12b_demo_between");
+const st1 = await ev(`import('./js/demo.js').then(m => m.demo.state)`);
+console.log("lava lamp:", JSON.stringify(st1), "| pulses in 4 s:", st1.fired - st0.fired, "| playing:", await ev(`import('./js/player.js').then(m => m.player.playing)`),
+  "| canvas:", await ev(`(() => { const c = document.getElementById('lava'); return c ? c.width + 'x' + c.height + ' ' + getComputedStyle(c).opacity : 'none'; })()`));
+await until(`import('./js/demo.js').then(m => m.demo.state.pulse > 0.6)`, 5000, "a bass pulse");
+await shot("12_demo_lava_hit");
+await sleep(2200);
+await shot("12b_demo_lava_later");
+await click('#np-play'); await sleep(2500);
+await shot("12c_demo_lava_paused");
+console.log("paused, still drifting:", JSON.stringify(await ev(`import('./js/demo.js').then(m => m.demo.state)`)));
 
+console.log("tones polarity label:", await ev(`document.getElementById('tg-flip').closest('label').textContent.trim()`));
 console.log("errors:", errors.length ? errors.join("\n  ") : "none");
 ws.close(); edge.kill();
 process.exit(0);

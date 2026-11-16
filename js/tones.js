@@ -22,7 +22,7 @@ const fmtF = (f) => (f >= 1000 ? (f / 1000).toFixed(f >= 10000 ? 1 : 2) + "k" : 
 
 function paint() {
   $("tg-num").textContent = fmtF(T.f);
-  $("tg-note").textContent = T.noise ? (T.noise === "pink" ? "Pink noise: equal energy per octave" : "White noise: equal energy per hertz") : noteName(T.f);
+  $("tg-note").textContent = T.noise ? (T.noise === "pink" ? "Pink noise" : "White noise") : noteName(T.f);
   const r = $("tg-freq"); r.value = fToPos(T.f); fill(r);
   document.querySelectorAll("#tg-presets .chip").forEach((c) => c.classList.toggle("on", Math.abs(+c.dataset.f - T.f) < 0.05));
   const d = $("tg-db"); fill(d);
@@ -118,7 +118,7 @@ function scope() {
       an.getFloatTimeDomainData(data);
       // start at a rising zero crossing so the wave stands still
       let s = 0; for (let i = 1; i < 1024; i++) if (data[i - 1] < 0 && data[i] >= 0) { s = i; break; }
-      const grd = g.createLinearGradient(0, 0, w, 0); grd.addColorStop(0, "#3d7bff"); grd.addColorStop(0.55, "#7b5cff"); grd.addColorStop(1, "#b25cff");
+      const grd = g.createLinearGradient(0, 0, w, 0); grd.addColorStop(0, "#2f78ff"); grd.addColorStop(0.55, "#7a4bff"); grd.addColorStop(1, "#bb4dff");
       g.strokeStyle = grd; g.lineWidth = 2; g.beginPath();
       const span = 1024;
       for (let i = 0; i < span; i++) { const x = (i / span) * w, y = h / 2 - data[s + i] * (h / 2 - 6); i ? g.lineTo(x, y) : g.moveTo(x, y); }

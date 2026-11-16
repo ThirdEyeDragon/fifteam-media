@@ -3,7 +3,7 @@
 // the graphs, and the numbers. The bass line is found once, on the song itself. A slowed (and reverbed) version gets
 // that same bass line, the same notes at the same chosen frequencies, laid at the slowed times: nothing new is invented.
 // The last slowed version is kept, so changing anything else only re-renders.
-import { analyzeBass, mapBassLine, synthBass, rebassMix, slowDown, freeverb, mixMono } from "./dsp.js";
+import { analyzeBass, mapBassLine, synthBass, rebassMix, slowDown, freeverb, mixMono, removalHz } from "./dsp.js";
 
 let base = null, sr = 0, an0 = null, prep = null, refSent = "";
 const post = (stage, p) => postMessage({ type: "progress", stage, p });
@@ -19,7 +19,7 @@ function prepare(speed, reverb) {
   const an = speed < 0.999 ? { ...an0, t0: an0.t0 / speed, hop: an0.hop / speed } : an0;
   let music = chs;
   if (reverb) { post("verb", 0); music = freeverb(chs, sr, {}, (p) => post("verb", p)); }
-  prep = { key, music, an, changed: speed < 0.999 || reverb };
+  prep = { key, music, an, speed, changed: speed < 0.999 || reverb };
   return prep;
 }
 
@@ -39,16 +39,17 @@ onmessage = (e) => {
       post("build", 0);
       const n = pr.music[0].length;
       const { bass, peak } = synthBass(an, mapped, sr, n, (q) => post("build", q));
-      // the song's own bass: kept, cleared just under the new bass, or (only my range) cleared below 120 Hz altogether
-      const replaceHz = p.only ? Math.max(120, p.hi * 1.15) : p.replace ? Math.max(30, p.hi * 1.25) : 0;
+      // the song's own bass always comes out (all of it, above its highest notes), and the new bass takes its place
+      const replaceHz = removalHz(an0.hi * pr.speed, p.hi);
       const { out, stats } = rebassMix(pr.music, bass, peak, sr, {
         bassDb: p.db, replaceHz,
         progress: (q) => post("master", q),
       });
       // the numbers: notes played, how many stayed exactly in tune, the ranges
-      let notes = 0, prev = 0, tuned = 0, voiced = 0, mn = 1e9, mx = 0;
+      let notes = 0, prev = 0, tuned = 0, voiced = 0, mn = 1e9, mx = 0, sounding = 0, covered = 0;
       for (let i = 0; i < mapped.length; i++) {
         const f = mapped[i];
+        if (an.env[i] > 0.08) { sounding++; if (f > 0) covered++; }
         if (!(f > 0) || an.env[i] < 0.05) { prev = 0; continue; }
         voiced++;
         if (!prev || Math.abs(f / prev - 1) > 0.03) notes++;
@@ -67,7 +68,7 @@ onmessage = (e) => {
       if (ref) ref.forEach((c) => transfer.push(c.buffer));
       postMessage({
         type: "result", out, map, t0: an.t0, hop: an.hop, ref, refKey: pr.changed ? pr.key : "",
-        stats: { ...stats, notes, tunedPct: voiced ? (100 * tuned) / voiced : 100, newLo: mn < 1e9 ? mn : p.lo, newHi: mx || p.hi, songLo: an.lo, songHi: an.hi, bassDb: p.db, speed: p.speed || 1, reverb: !!p.reverb },
+        stats: { ...stats, notes, tunedPct: voiced ? (100 * tuned) / voiced : 100, newLo: mn < 1e9 ? mn : p.lo, newHi: mx || p.hi, songLo: an.lo, songHi: an.hi, bassDb: p.db, speed: p.speed || 1, reverb: !!p.reverb, removedHz: replaceHz, coverPct: sounding ? (100 * covered) / sounding : 100 },
       }, transfer);
     }
   } catch (err) {

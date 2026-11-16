@@ -110,7 +110,7 @@ export function openSettings() {
 
     const demoSec = el(`<div class="set-sec">
       <div class="set-head"><svg><use href="#i-spark"/></svg>Demo mode<span class="pill ${demo.on ? "on" : ""}" id="set-demo-pill">${demo.on ? "On" : "Off"}</span></div>
-      <label class="switch"><span class="txt">Show off the player<small>Opens the player. Everything looks as usual, but the cover kicks, glows and sends out a ring of light on every bass hit.</small></span><input type="checkbox" id="set-demo" ${demo.on ? "checked" : ""}></label>
+      <label class="switch"><span class="txt">Lava lamp</span><input type="checkbox" id="set-demo" ${demo.on ? "checked" : ""}></label>
     </div>`);
     p.append(demoSec);
     demoSec.querySelector("#set-demo").onchange = (e) => {
@@ -130,10 +130,9 @@ function paintLockSec(sec) {
   const on = hasPassword();
   sec.innerHTML = `<div class="set-head"><svg><use href="#i-lock"/></svg>Lock app<span class="pill ${on ? "on" : ""}">${on ? "Password set" : "Off"}</span></div>`;
   const add = (h) => { const n = el(h); sec.append(n); return n; };
-  if (!canLock()) { add('<span class="status">The lock needs the app opened from its https address.</span>'); return; }
+  if (!canLock()) { add('<span class="status">Not available here.</span>'); return; }
   const err = () => sec.querySelector(".set-err");
   if (!on) {
-    add('<span class="status">Locked, the app ignores every touch until your password is entered. Your music keeps playing.</span>');
     const a = add('<input class="input" type="password" placeholder="New password (4+ characters)" autocomplete="new-password" aria-label="New password">');
     const b = add('<input class="input" type="password" placeholder="Type it again" autocomplete="new-password" aria-label="Type the password again">');
     add('<p class="set-err"></p>');
@@ -146,12 +145,12 @@ function paintLockSec(sec) {
       toast("Password set. Tap Lock now whenever you want.", 2600);
       paintLockSec(sec);
     };
-    add('<span class="status">If you forget it, the only way back in is clearing this app\'s data in your browser settings, which also removes your library.</span>');
+    add('<span class="status">Keep your password somewhere safe. It can\'t be recovered.</span>');
     return;
   }
   const lock = add('<button class="btn primary block"><svg><use href="#i-lock"/></svg>Lock now</button>');
   lock.onclick = lockNow;
-  const auto = add(`<label class="switch"><span class="txt">Lock when I leave the app<small>Locks by itself when you switch apps or turn the screen off</small></span><input type="checkbox" ${ls.get(K_AUTO) === "1" ? "checked" : ""}></label>`);
+  const auto = add(`<label class="switch"><span class="txt">Lock when I leave the app</span><input type="checkbox" ${ls.get(K_AUTO) === "1" ? "checked" : ""}></label>`);
   auto.querySelector("input").onchange = (e) => (e.target.checked ? ls.set(K_AUTO, "1") : ls.del(K_AUTO));
   const row = add('<div class="row"><button class="btn small grow" data-a="change">Change password</button><button class="btn small grow" data-a="off">Remove lock</button></div>');
   row.onclick = (e) => {

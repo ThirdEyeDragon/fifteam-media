@@ -139,7 +139,7 @@
     <!-- ======================================================== rebass -->
     <section class="view" id="view-rebass" aria-label="Rebass">
       <div class="view-inner">
-        <div><h2>Rebass</h2><p class="sub">Finds the bass line of a song and lays a new, deeper bass under it, note for note. Nothing clips.</p></div>
+        <div><h2>Rebass</h2><p class="sub">New bass, note for note. Zero clipping.</p></div>
 
         <div class="card">
           <div class="src" id="rb-src">
@@ -167,7 +167,6 @@
           <div class="field">
             <span class="label">How notes fit the range</span>
             <div class="seg" id="rb-mode"><button class="on" data-k="musical">Keep in key</button><button data-k="stretch">Stretch</button></div>
-            <span class="status" id="rb-mode-hint">Each note moves down whole octaves into the range, so the bass stays in tune with the song.</span>
           </div>
         </div>
 
@@ -175,14 +174,11 @@
           <div class="row between"><span class="label">Bass level</span><span class="val" id="rb-db-val">−3.0<small>dB</small></span></div>
           <input type="range" id="rb-db" min="-7.5" max="0" step="0.5" value="-3" aria-label="Bass level in decibels">
           <div class="scale"><span>−7.5 dB</span><span>−5</span><span>−2.5</span><span>0 dB</span></div>
-          <span class="status" id="rb-db-hint">The new bass peaks at exactly this level. The song gets one fixed level under it, so nothing is squashed.</span>
-          <label class="switch"><span class="txt">Only my range plays bass<small>Removes all of the song's own bass, so the only low notes are the ones in your range</small></span><input type="checkbox" id="rb-only"></label>
-          <label class="switch" id="rb-replace-row"><span class="txt">Replace the song's own sub-bass<small>Clears the old low end just under the new bass so it is clean</small></span><input type="checkbox" id="rb-replace" checked></label>
-          <label class="switch"><span class="txt">Tune to exact notes<small>Snaps the bass to the song's own tuning</small></span><input type="checkbox" id="rb-snap" checked></label>
+          <label class="switch"><span class="txt">Snap to notes</span><input type="checkbox" id="rb-snap" checked></label>
         </div>
 
         <div class="card">
-          <label class="switch"><span class="txt">Slow it down<small>Slowed and screwed: the whole song plays slower and lower, like a tape running slow. The bass is found again on the slowed song, so it still lands on every note.</small></span><input type="checkbox" id="rb-slow"></label>
+          <label class="switch"><span class="txt">Slowed</span><input type="checkbox" id="rb-slow"></label>
           <div class="stack" id="rb-slow-box" hidden>
             <div class="row between"><span class="label">Speed</span><span class="val" id="rb-speed-val">80<small>%</small></span></div>
             <input type="range" id="rb-speed" min="60" max="95" step="1" value="80" aria-label="Speed in percent">
@@ -193,7 +189,7 @@
             </div>
             <span class="status" id="rb-speed-hint"></span>
           </div>
-          <label class="switch"><span class="txt">Add reverb<small>The "slowed + reverb" sound. The low end stays dry, so the bass stays tight.</small></span><input type="checkbox" id="rb-reverb"></label>
+          <label class="switch"><span class="txt">Reverb</span><input type="checkbox" id="rb-reverb"></label>
         </div>
 
         <button class="btn primary block" id="rb-go" disabled><svg><use href="#i-bass"/></svg>Rebass it</button>
@@ -207,7 +203,7 @@
             <div class="seg" id="rb-ab" style="min-width:210px"><button data-k="orig">Original</button><button class="on" data-k="rebass">Rebassed</button></div>
           </div>
           <canvas class="graph" id="rb-spec"></canvas>
-          <div class="legend"><span><i style="background:linear-gradient(90deg,#3d7bff,#b25cff)"></i>Bass added</span><span><i style="background:#9fb3ff"></i>Whole song</span><span><i style="background:rgba(255,255,255,.18)"></i>Your range</span></div>
+          <div class="legend"><span><i style="background:linear-gradient(90deg,#2f78ff,#bb4dff)"></i>Bass added</span><span><i style="background:#9fb3ff"></i>Whole song</span><span><i style="background:rgba(255,255,255,.18)"></i>Your range</span></div>
           <div class="readout">
             <div><span class="label">Now</span><b id="rb-now-f">–</b></div>
             <div><span class="label">Note</span><b id="rb-now-n">–</b></div>
@@ -215,7 +211,7 @@
           </div>
           <canvas class="graph roll" id="rb-map" aria-label="The bass line around the play position"></canvas>
           <canvas class="overview" id="rb-ov" aria-label="The whole song: tap to jump"></canvas>
-          <div class="legend"><span><i style="background:linear-gradient(90deg,#3d7bff,#b25cff)"></i>New bass</span><span><i style="background:rgba(159,179,255,.55)"></i>Song's bass</span><span>Drag to scrub</span></div>
+          <div class="legend"><span><i style="background:linear-gradient(90deg,#2f78ff,#bb4dff)"></i>New bass</span><span><i style="background:rgba(159,179,255,.55)"></i>Old bass</span></div>
           <div class="pl-row">
             <button class="play-big" id="rb-play" style="width:56px;height:56px" aria-label="Play preview"><svg style="width:24px;height:24px"><use href="#i-play"/></svg></button>
             <div class="times"><span id="rb-cur">0:00</span> / <span id="rb-dur">0:00</span></div>
@@ -246,7 +242,7 @@
     <!-- ======================================================== tones -->
     <section class="view" id="view-tones" aria-label="Tone generator">
       <div class="view-inner">
-        <div><h2>Tones</h2><p class="sub">Test tones, sweeps and noise for tuning speakers, subs and rooms.</p></div>
+        <div><h2>Tones</h2><p class="sub">Tones, sweeps and noise.</p></div>
         <div class="card">
           <div class="freq"><span class="num" id="tg-num">40.0</span><span class="unit">Hz</span><div class="note" id="tg-note">E1 −14¢</div></div>
           <input type="range" id="tg-freq" min="0" max="1000" step="1" value="372" aria-label="Frequency">
@@ -270,10 +266,10 @@
           <div class="seg" id="tg-noise"><button data-k="white">White noise</button><button data-k="pink">Pink noise</button></div>
           <div class="row between"><span class="label">Level</span><span class="val" id="tg-db-val">−12<small>dBFS</small></span></div>
           <input type="range" id="tg-db" min="-40" max="0" step="1" value="-12" aria-label="Level">
-          <div class="warn" id="tg-warn" hidden><svg><use href="#i-warn"/></svg>Loud. Start low on speakers and subs.</div>
+          <div class="warn" id="tg-warn" hidden><svg><use href="#i-warn"/></svg>Loud</div>
           <span class="label">Speakers</span>
           <div class="seg" id="tg-ch"><button class="on" data-k="both">Both</button><button data-k="left">Left</button><button data-k="right">Right</button></div>
-          <label class="switch"><span class="txt">Flip the right speaker's polarity<small>Out of phase: bass thins out if both play at once. A quick wiring check.</small></span><input type="checkbox" id="tg-flip"></label>
+          <label class="switch"><span class="txt">Reverse polarity</span><input type="checkbox" id="tg-flip"></label>
         </div>
         <div class="card">
           <span class="label">Sweep</span>
@@ -283,7 +279,7 @@
             <label>Seconds<input class="input" id="tg-sw-t" inputmode="decimal" value="20"></label>
           </div>
           <div class="seg" id="tg-sw-k"><button class="on" data-k="log">Log</button><button data-k="lin">Linear</button></div>
-          <label class="switch"><span class="txt">Loop the sweep</span><input type="checkbox" id="tg-sw-loop"></label>
+          <label class="switch"><span class="txt">Loop</span><input type="checkbox" id="tg-sw-loop"></label>
           <button class="btn block" id="tg-sweep"><svg><use href="#i-tone"/></svg>Play sweep</button>
         </div>
         <div class="card">

@@ -1,5 +1,5 @@
 // node test/dsp.test.mjs - the rebass engine on a made-up song with a known bass line, mastered hot.
-import { analyzeBass, mapBassLine, synthBass, rebassMix, encodeWav, truePeak, linToDb, noteName, slidingMin } from "../js/dsp.js";
+import { analyzeBass, mapBassLine, synthBass, rebassMix, encodeWav, truePeak, linToDb, noteName, slidingMin, removalHz, butter4 } from "../js/dsp.js";
 
 const sr = 44100, secs = 24, n = sr * secs;
 let seed = 7;
@@ -81,7 +81,16 @@ for (const [lo, hi, mode, db] of [[25, 45, "musical", 0], [20, 35, "stretch", -3
   let mn = 1e9, mx = 0;
   for (const f of mapped) if (f > 0) { mn = Math.min(mn, f); mx = Math.max(mx, f); }
   const { bass, peak } = synthBass(an, mapped, sr, n);
-  const { out, stats } = rebassMix([L, R], bass, peak, sr, { bassDb: db, replaceHz: hi * 1.25 });
+  const { out, stats } = rebassMix([L, R], bass, peak, sr, { bassDb: db, replaceHz: removalHz(an.hi, hi) });
+  // every moment the song's bass sounds has a new note; every true bass note is covered
+  let sounding = 0, covered = 0, tTot = 0, tCov = 0;
+  for (let i = 0; i < mapped.length; i++) {
+    if (an.env[i] > 0.08) { sounding++; if (mapped[i] > 0) covered++; }
+    const fr = Math.round((an.t0 + i * an.hop) * 100);
+    if (truth[fr]) { tTot++; if (mapped[i] > 0) tCov++; }
+  }
+  console.log(`  replaced: ${(100 * covered / sounding).toFixed(1)}% of the moments the old bass sounds, ${(100 * tCov / tTot).toFixed(1)}% of the true bass notes`);
+  if (covered < sounding || tCov < tTot) { console.log("FAIL"); process.exit(1); }
   const wav = new Int16Array(encodeWav(out, sr, 16).slice(44));
   let full = 0; for (const v of wav) if (v >= 32767 || v <= -32768) full++;
   console.log(`${lo}-${hi} Hz ${mode} ${db} dB: bass ${mn.toFixed(1)}-${mx.toFixed(1)} Hz, bass plays at ${stats.bassActualDb.toFixed(2)} dBFS, song at ${stats.songDb.toFixed(1)} dB fixed` +
@@ -132,9 +141,18 @@ for (const [lo, hi, mode, db] of [[25, 45, "musical", 0], [20, 35, "stretch", -3
   const wetChs = freeverb([sL, sR], sr);
   const mapped = mapBassLine(an, { lo: 22, hi: 45, mode: "musical", snap: true });
   const { bass, peak } = synthBass(scaled, mapped, sr, wetChs[0].length);
-  const { out, stats } = rebassMix(wetChs, bass, peak, sr, { bassDb: -5, replaceHz: 120 });
+  const { out, stats } = rebassMix(wetChs, bass, peak, sr, { bassDb: -5, replaceHz: removalHz(an.hi * speed, 45) });
   console.log(`slowed 75% + reverb: ${(sL.length / sr).toFixed(1)} s (was ${secs}), song bass ${san.lo.toFixed(1)}-${san.hi.toFixed(1)} Hz, ` +
     `bass plays at ${stats.bassActualDb.toFixed(2)} dBFS, song ${stats.songDb.toFixed(1)} dB fixed${stats.ridePct > 0 ? ` + riding ${stats.ridePct.toFixed(1)}%` : ", no compression"}, true peak ${stats.truePeakDb.toFixed(2)} dBTP, clipped ${stats.clipped}, ${(performance.now() - t).toFixed(0)} ms`);
   if (stats.clipped || stats.truePeakDb > -0.1 + 1e-3 || Math.abs(stats.bassActualDb + 5) > 0.02) { console.log("FAIL"); process.exit(1); }
+}
+// the old bass after removal: how much of its low end is left (the new bass muted to see it)
+{
+  const rm = removalHz(an.hi, 45);
+  const { out } = rebassMix([L, R], new Float32Array(n), 0, sr, { bassDb: -3, replaceHz: rm });
+  const low = (x) => { const y = butter4(Float32Array.from(x), "lp", 80, sr); let e = 0; for (const v of y) e += v * v; return Math.sqrt(e / y.length); };
+  const left = 20 * Math.log10(low(out[0]) / low(L));
+  console.log(`old bass removed below ${rm.toFixed(0)} Hz: its notes (under 80 Hz) are down ${(-left).toFixed(1)} dB`);
+  if (left > -30) { console.log("FAIL"); process.exit(1); }
 }
 console.log("PASS");

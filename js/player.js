@@ -152,11 +152,11 @@ export function initPlayer() {
     $("mini").classList.toggle("hide", !P.cur || v === "player");
   });
 
-  // the tone knobs: BASS, MIDS, HIGHS, 0 (that band off) to 10 (loudest), 5 the song as it is
+  // the tone knobs: BASS, MIDS, HIGHS, 0 (that band off) to 10 (loudest), 5 the song as it is; hold one 3 s to mute it
   eq.attach(audio);
   const sub = describe;
   for (const [id, band, label] of [["kn-bass", "bass", "Bass"], ["kn-mids", "mids", "Mids"], ["kn-highs", "highs", "Highs"]])
-    makeKnob($(id), { label, value: eq.values[band], sub, onInput: (v) => eq.set(band, v) });
+    makeKnob($(id), { label, value: eq.values[band], muted: eq.isMuted(band), sub, onInput: (v) => eq.set(band, v), onMute: (m) => { eq.setMute(band, m); eq.engageIfNeeded(); toast(`${label} ${m ? "muted" : "on"}`, 1400); } });
   audio.addEventListener("play", () => eq.engageIfNeeded());
   bus.on("art", (id) => { if (P.cur && P.cur.id === id) { artCache.id = null; render(); } });
 
