@@ -95,21 +95,98 @@ export function bandStop(chs, sr, lo, hi, progress) {
     fft(re, im, true);
     const band = new Float32Array(m);
     for (let k = 0; k < m; k++) band[k] = re[pad + k] / P;
-    // back up to the song's rate (Lanczos, a = 3) and out of the song
-    for (let i = 0; i < n; i++) {
-      const pos = i / D, k0 = Math.floor(pos), u = pos - k0;
-      let acc = 0, wsum = 0;
-      for (let j = -2; j <= 3; j++) {
-        const k = k0 + j; if (k < 0 || k >= m) continue;
-        const t = u - j, wt = t === 0 ? 1 : (3 * Math.sin(Math.PI * t) * Math.sin((Math.PI * t) / 3)) / (Math.PI * Math.PI * t * t);
-        acc += band[k] * wt; wsum += wt;
-      }
-      x[i] -= wsum ? acc / wsum : 0;
-    }
+    subtractUp(x, band, D);
     if (!ci) first = band;
     progress && progress((ci + 1) / chs.length);
   });
   return { band: first, fs };
+}
+
+/** A low band worked out at 1/D of the rate, brought back up (Lanczos, a = 3) and subtracted from x, in place. */
+function subtractUp(x, band, D) { upAdd(x, band, D, -1); }
+/** x += sign * (band, at 1/D of the rate, brought up with Lanczos a = 3). */
+export function upAdd(x, band, D, sign = 1) {
+  const n = x.length, m = band.length;
+  // the Lanczos weights repeat every D samples: worked out once per phase
+  const W = [];
+  for (let ph = 0; ph < D; ph++) {
+    const u = ph / D, w = new Float64Array(6);
+    let sum = 0;
+    for (let j = -2; j <= 3; j++) { const t = u - j, wt = t === 0 ? 1 : (3 * Math.sin(Math.PI * t) * Math.sin((Math.PI * t) / 3)) / (Math.PI * Math.PI * t * t); w[j + 2] = wt; sum += wt; }
+    for (let j = 0; j < 6; j++) w[j] /= sum;
+    W.push(w);
+  }
+  for (let i = 0; i < n; i++) {
+    const k0 = Math.floor(i / D), w = W[i - k0 * D];
+    let acc = 0;
+    if (k0 >= 2 && k0 + 3 < m) for (let j = 0; j < 6; j++) acc += band[k0 - 2 + j] * w[j];
+    else { let ws = 0; for (let j = 0; j < 6; j++) { const k = k0 - 2 + j; if (k >= 0 && k < m) { acc += band[k] * w[j]; ws += w[j]; } } acc = ws ? acc / ws : 0; }
+    x[i] += sign * acc;
+  }
+}
+
+/**
+ * The old bass's last traces, after the separated bass has been subtracted (R = the song - the separated bass). The
+ * separation leaves a little of the old bass behind; this finds it in the low end only (below fTop, fading out by
+ * fTop + fFade; nothing above is touched) and takes it out:
+ *   - wherever what is left is ruled by the separated bass's own spectrum (the bit of it the separation missed):
+ *     gains g = |R|^2 / (|R|^2 + beta |B|^2) on a 256 ms grid, so a cell that is mostly other sounds keeps them;
+ *   - right on the old notes' own harmonics below fH (120 Hz: where bass lives and voices hardly go) while they play
+ *     (f0In(t0, t1) -> the Hz sounding then): at most `depth` there, whatever the separation thought.
+ * R and B are arrays of channels; R is changed in place. Measured on real songs with their true stems: the old bass goes
+ * from -12 dB (the separation alone) to about -21 dB where it ruled (20-150 Hz); vocals there lose ~1 dB, drums ~2 dB;
+ * above 150 Hz under 0.5 dB.
+ */
+export function cleanLowEnd(R, B, sr, f0In, opts = {}) {
+  const { beta = 2, fTop = 300, fFade = 80, fH = 120, depth = 0.1, hw = 1.5, pad = 0.04, progress } = opts;
+  const D = Math.max(1, Math.round(sr / 1000)), fs = sr / D;
+  const N = 256, hop = 64, H = N / 2 + 1;
+  const w = new Float64Array(N);
+  for (let i = 0; i < N; i++) w[i] = Math.sqrt(0.5 - 0.5 * Math.cos((2 * Math.PI * i) / N));
+  const lpf = Math.min(fTop + fFade + 30, 0.45 * fs);
+  const low = (x) => { const y = Float32Array.from(x); butter4(y, "lp", lpf, sr); const m = Math.floor((y.length - 1) / D) + 1, o = new Float64Array(m); for (let k = 0; k < m; k++) o[k] = y[k * D]; return o; };
+  // the harmonics to clear in each frame (the same for every channel)
+  const bw = (hw * fs) / N;
+  R.forEach((Rc, ci) => {
+    const r = low(Rc), b = B ? low(B[Math.min(ci, B.length - 1)]) : null, m = r.length;
+    const frames = Math.ceil((m + N) / hop);
+    const RE = new Float32Array(frames * H), IM = new Float32Array(frames * H), PR = new Float32Array(frames * H), PB = new Float32Array(frames * H);
+    const re = new Float64Array(N), im = new Float64Array(N);
+    const take = (x, s) => { for (let i = 0; i < N; i++) { const p = s + i; re[i] = p >= 0 && p < m ? x[p] * w[i] : 0; im[i] = 0; } fft(re, im); };
+    for (let f = 0; f < frames; f++) {
+      const s = f * hop - N;
+      if (b) { take(b, s); for (let k = 0; k < H; k++) PB[f * H + k] = re[k] * re[k] + im[k] * im[k]; }
+      take(r, s);
+      for (let k = 0; k < H; k++) { RE[f * H + k] = re[k]; IM[f * H + k] = im[k]; PR[f * H + k] = re[k] * re[k] + im[k] * im[k]; }
+    }
+    const sm = (P, f, k) => { let s = 0, c = 0; for (let df = -1; df <= 1; df++) { const ff = f + df; if (ff < 0 || ff >= frames) continue; for (let dk = -1; dk <= 1; dk++) { const kk = k + dk; if (kk >= 0 && kk < H) { s += P[ff * H + kk]; c++; } } } return s / c; };
+    const out = new Float64Array(m);
+    for (let f = 0; f < frames; f++) {
+      const s = f * hop - N, tc = (s + N / 2) / fs;
+      const f0s = f0In ? f0In(tc - N / 2 / fs - pad, tc + N / 2 / fs + pad) : [];
+      let any = false;
+      for (let k = 0; k < H; k++) {
+        const fr = (k * fs) / N;
+        let g = 1;
+        if (fr < fTop + fFade) {
+          const pr = sm(PR, f, k), pb = sm(PB, f, k);
+          g = pr / (pr + beta * pb + 1e-30);
+          if (fr < fH) for (const f0 of f0s) { const h = Math.round(fr / f0); if (h >= 1 && h * f0 < fH && Math.abs(fr - h * f0) <= bw) { g = Math.min(g, depth); break; } }
+          if (fr > fTop) g += (1 - g) * (0.5 - 0.5 * Math.cos((Math.PI * (fr - fTop)) / fFade));
+        }
+        // what comes out: (1 - g) of what is left
+        const cut = 1 - g;
+        re[k] = RE[f * H + k] * cut; im[k] = IM[f * H + k] * cut;
+        if (k && k < N / 2) { re[N - k] = re[k]; im[N - k] = -im[k]; }
+        if (cut > 1e-6) any = true;
+      }
+      if (!any) continue;
+      fft(re, im, true);
+      for (let i = 0; i < N; i++) { const p = s + i; if (p >= 0 && p < m) out[p] += ((re[i] / N) * w[i]) / 2; }
+    }
+    subtractUp(Rc, out, D);
+    progress && progress((ci + 1) / R.length);
+  });
 }
 
 // ---------------------------------------------------------------------------------------------------- the new bass
@@ -288,7 +365,7 @@ export function rebassMix(chs, bass, bassPeak, sr, opts) {
   // the song's own content inside the chosen range comes out; nothing outside it is touched
   if (band) bandStop(music, sr, band[0], band[1]);
   progress && progress(0.2);
-  const A = bassPeak > 0 ? Math.min(dbToLin(bassDb), C0) / bassPeak : 0;
+  let A = bassPeak > 0 ? Math.min(dbToLin(bassDb), C0) / bassPeak : 0;
   const floor = dbToLin(floorDb);
   const lim = new Float32Array(n);
   const out = music.map(() => new Float32Array(n));
@@ -339,6 +416,8 @@ export function rebassMix(chs, bass, bassPeak, sr, opts) {
     if (tp <= C0 * 1.0001) break;
     C *= (C0 / tp) * 0.999;
   }
+  // a last sliver over (the bass right at the ceiling, with the song's own peaks between samples): all of it down by that
+  if (tp > C0) { const g = C0 / tp; for (const o of out) for (let i = 0; i < n; i++) o[i] *= g; A *= g; tp = C0; }
   progress && progress(0.95);
   let peak = 0, over = 0;
   for (const o of out) for (let i = 0; i < n; i++) { const a = Math.abs(o[i]); if (a > peak) peak = a; if (a >= 1) over++; }

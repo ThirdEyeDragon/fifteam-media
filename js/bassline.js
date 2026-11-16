@@ -18,6 +18,17 @@ function wmedian(vals, ws) {
   return vals[idx[idx.length - 1]];
 }
 const median = (a) => { if (!a.length) return 0; const b = Float64Array.from(a).sort(); return b[b.length >> 1]; };
+/** The largest value within h samples either side, for every sample (a running deque, linear time). */
+function slidingMax(x, h) {
+  const n = x.length, out = new Float32Array(n), q = new Int32Array(n);
+  let qh = 0, qt = 0;
+  for (let i = 0; i < n + h; i++) {
+    if (i < n) { while (qt > qh && x[q[qt - 1]] <= x[i]) qt--; q[qt++] = i; }
+    const c = i - h;
+    if (c >= 0) { while (q[qh] < c - h) qh++; out[c] = x[q[qh]]; }
+  }
+  return out;
+}
 
 /**
  * The song's bass line.
@@ -33,11 +44,14 @@ const median = (a) => { if (!a.length) return 0; const b = Float64Array.from(a).
  * Returns { fs, hop, t0, f0 (Hz per frame, 0 off notes), env (0..1 per frame), amp (0..1 at fs), notes, tune, lo, hi,
  *   dropped: { drums, other } }.
  */
-export function analyzeBassLine(mono, sr, progress, dbg) {
+export function analyzeBassLine(mono, sr, progress, dbg, opts = {}) {
   const say = (p) => progress && progress(p);
+  // stem: the input is the bass alone (separated from the song). Then everything in it is bass: nothing is thrown out
+  // for being short, quiet, punchy or high, only what is too weak to be anything but the separation's leftovers
+  const stem = !!opts.stem, fTop = stem ? 260 : 175;
   // 1 ---------------------------------------------------------------------------------------------------------------
   const lp = Float32Array.from(mono);
-  butter4(lp, "lp", 170, sr);
+  butter4(lp, "lp", stem ? 300 : 170, sr);
   const D = Math.max(1, Math.round(sr / 2000)), fs = sr / D;
   const n = Math.floor((lp.length - 1) / D) + 1;
   const x = new Float32Array(n);
@@ -46,7 +60,7 @@ export function analyzeBassLine(mono, sr, progress, dbg) {
   // 2 ---------------------------------------------------------------------------------------------------------------
   const hop = Math.max(1, Math.round(0.01 * fs)), hopS = hop / fs;
   const W = Math.round(0.07 * fs);
-  const tauMin = Math.floor(fs / 175), tauMax = Math.ceil(fs / 24);
+  const tauMin = Math.floor(fs / fTop), tauMax = Math.ceil(fs / 24);
   const F = Math.max(0, Math.floor((n - W - tauMax - 1) / hop));
   const t0 = W / 2 / fs;
   const raw = new Float32Array(F), ap = new Float32Array(F).fill(1), rms = new Float32Array(F);
@@ -285,7 +299,12 @@ export function analyzeBassLine(mono, sr, progress, dbg) {
       for (let pass = 0; pass < 2; pass++) {
         const f = st2hz(g.pitch), here = at(a, b, f);
         if (f / 2 >= 24 && (b - a) / fs >= 1.6 / (f / 2) && at(a, b, f / 2) >= 0.6 * here) { g.pitch -= 12; continue; }
-        if (f * 2 <= 170 && here < 0.25 * at(a, b, f * 2)) { g.pitch += 12; continue; }
+        if (f * 2 <= (stem ? 300 : 170)) {
+          // an octave up only if nothing really sounds at f's own (odd) harmonics: a bass note's fundamental can be
+          // much weaker than its second harmonic, but a note truly at 2f has nothing at all at f or 3f
+          const two = at(a, b, f * 2);
+          if (stem ? here < 0.08 * two && at(a, b, f * 3) < 0.08 * two : here < 0.25 * two) { g.pitch += 12; continue; }
+        }
         break;
       }
     } }
@@ -308,14 +327,14 @@ export function analyzeBassLine(mono, sr, progress, dbg) {
   let drums = 0, other = 0;
   let notes = segs.filter((g) => {
     if (g.dur < 0.05) return false;                               // a flicker or a slide's middle: not a note of its own
-    if (g.pitch > hz2st(165)) { other++; if (dbg) dbg.push({ t: frameT(g.a), why: "high", pitch: g.pitch, dur: g.dur }); return false; }
+    if (g.pitch > hz2st(stem ? 255 : 165)) { other++; if (dbg) dbg.push({ t: frameT(g.a), why: "high", pitch: g.pitch, dur: g.dur }); return false; }
     if (g.ap > 0.28) { other++; if (dbg) dbg.push({ t: frameT(g.a), why: "noisy", pitch: g.pitch, dur: g.dur, ap: g.ap }); return false; }
-    if (g.decay > 55 && g.dur < 0.6 && g.endLevel < 0.1) { drums++; if (dbg) dbg.push({ t: frameT(g.a), why: "drum", decay: g.decay, dur: g.dur, pitch: g.pitch }); return false; }  // a kick's tail, a muted chug: gone too fast for a bass note
+    if (!stem && g.decay > 55 && g.dur < 0.6 && g.endLevel < 0.1) { drums++; if (dbg) dbg.push({ t: frameT(g.a), why: "drum", decay: g.decay, dur: g.dur, pitch: g.pitch }); return false; }  // a kick's tail, a muted chug: gone too fast for a bass note
     return true;
   });
   // the song's bass register and strength: what most of the bass sits on. Anything well above it, or much weaker than
   // it, is another instrument or a voice reaching down, not the bass
-  for (let pass = 0; pass < 2; pass++) {
+  for (let pass = 0; pass < (stem ? 0 : 2); pass++) {
     const M = wmedian(notes.map((g) => g.pitch), notes.map((g) => g.dur * g.peak));
     const P = wmedian(notes.map((g) => g.peak), notes.map((g) => g.dur));
     notes = notes.filter((g) => {
@@ -350,7 +369,7 @@ export function analyzeBassLine(mono, sr, progress, dbg) {
   // with nothing actually sounding there. Each note's strength at its own fundamental, against the song's bass notes
   { const strength = notes.map((g) => g.strength);
     const S = wmedian(strength, notes.map((g) => g.dur));
-    notes = notes.filter((g, i) => { const ok = strength[i] >= 0.25 * S; if (!ok) other++; return ok; }); }
+    notes = notes.filter((g, i) => { const ok = strength[i] >= (stem ? 0.06 : 0.25) * S; if (!ok) other++; return ok; }); }
   // 6 ---------------------------------------------------------------------------------------------------------------
   // each note's start and how it meets the note before
   for (let j = 0; j < notes.length; j++) {
@@ -412,7 +431,11 @@ export function analyzeBassLine(mono, sr, progress, dbg) {
   // the original bass's own loudness, never jumping up faster than 40 dB a second (so a kick landing on a held note
   // doesn't bump it), read without the smoothing's lag at either end; gone cleanly at its end. Linked notes carry on.
   const amp = new Float32Array(n);
-  const riseK = Math.pow(10, 40 / 20 / fs), look = Math.round(0.08 * fs), back = Math.round(0.06 * fs);
+  // full: each note at full level while the original is within 6 dB of the bass line.s loudest round it (a rebass: clean,
+  // loud notes that fill the waveform), following the original only below that (its gaps, re-hits and decays)
+  const full = opts.full !== false, T = opts.knee || 0.5;
+  const level = full ? new Float32Array(n) : null, chains = [];
+  const riseK = stem ? Infinity : Math.pow(10, 40 / 20 / fs), look = Math.round(0.08 * fs), back = Math.round(0.06 * fs);
   for (let j = 0; j < notes.length; j++) {
     const g = notes[j];
     if (g.legato) continue;
@@ -425,9 +448,14 @@ export function analyzeBassLine(mono, sr, progress, dbg) {
     // the body as read: from the attack's peak, the most it reaches over the next 80 ms (the smoothing's slow start),
     // and over the last 60 ms before the end, the most it had (its slow finish)
     const body = new Float32Array(kb - ka + 1);
-    for (let k = ka; k <= kb; k++) body[k - ka] = a12[k];
-    { let run = 0; for (let k = Math.min(kb, kPkS + look); k >= kPkS; k--) { run = Math.max(run, a12[k]); body[k - ka] = run; } }
-    { const k0 = Math.max(kPkS + look + 1, kb - back); let run = 0; for (let k = k0; k <= kb; k++) { run = Math.max(run, a12[k]); body[k - ka] = run; } }
+    if (stem) {
+      // the bass alone: its own loudness, sharp to about one cycle (nothing else is there to keep out)
+      for (let k = ka; k <= kb; k++) body[k - ka] = e1[kOf(k / fs)];
+    } else {
+      for (let k = ka; k <= kb; k++) body[k - ka] = a12[k];
+      { let run = 0; for (let k = Math.min(kb, kPkS + look); k >= kPkS; k--) { run = Math.max(run, a12[k]); body[k - ka] = run; } }
+      { const k0 = Math.max(kPkS + look + 1, kb - back); let run = 0; for (let k = k0; k <= kb; k++) { run = Math.max(run, a12[k]); body[k - ka] = run; } }
+    }
     const ref = body[kPkS - ka];
     const ePk = e1[kPk] || 1e-9;
     for (let k = ka; k < kPkS; k++) amp[k] = Math.min(ref, (ref * e1[kOf(k / fs)]) / ePk);
@@ -437,12 +465,27 @@ export function analyzeBassLine(mono, sr, progress, dbg) {
       let free = false; for (let i = 0; i < starts.length; i += 2) if (k >= starts[i] && k <= starts[i + 1]) { free = true; break; }
       const v = free ? body[k - ka] : Math.min(body[k - ka], prev * riseK); amp[k] = v; prev = v;
     }
+    chains.push([ka, kb]);
     const fi = Math.max(1, Math.round(0.002 * fs)), fo = Math.max(1, Math.round(0.012 * fs));
     for (let k = 0; k < fi && ka + k <= kb; k++) amp[ka + k] *= k / fi;
     for (let k = 0; k < fo && kb - k >= ka; k++) amp[kb - k] *= k / fo;
   }
+  if (full) {
+    // against the bass line's own loudness round that moment (its loudest within 200 ms either side): full while the
+    // bass is within 6 dB of that, following it below (gaps, pulses, re-hits, a note dying away)
+    const h = Math.round(0.2 * fs), R = slidingMax(amp, h);
+    for (const [ka, kb] of chains) {
+      for (let k = ka; k <= kb; k++) level[k] = Math.min(1, amp[k] / Math.max(1e-12, T * R[k]));
+      // clean edges: a quick rise (3 ms) and a smooth release (10 ms), raised cosine
+      const fi = Math.max(1, Math.round(0.003 * fs)), fo = Math.max(1, Math.round(0.010 * fs));
+      for (let k = 0; k < fi && ka + k <= kb; k++) level[ka + k] *= 0.5 - 0.5 * Math.cos((Math.PI * k) / fi);
+      for (let k = 0; k < fo && kb - k >= ka; k++) level[kb - k] *= 0.5 - 0.5 * Math.cos((Math.PI * k) / fo);
+    }
+  }
   let top = 0; for (let k = 0; k < n; k++) if (amp[k] > top) top = amp[k];
   if (top > 0) for (let k = 0; k < n; k++) amp[k] /= top;
+  // what the new bass plays: the full-level shape, or (full: false) the original's own loudness
+  const play = full ? level : amp;
   // per frame, for the graphs: the original bass's pitch and loudness where it plays
   const f0 = new Float32Array(F), env = new Float32Array(F);
   { let j = 0;
@@ -462,7 +505,7 @@ export function analyzeBassLine(mono, sr, progress, dbg) {
   say(1);
   if (dbg) dbg.e = { e1, e1r, tOf, jb: (t) => jumpBefore(kOf(t)) };
   return {
-    fs, hop: hopS, t0, f0, env, amp, tune,
+    fs, hop: hopS, t0, f0, env, amp: play, orig: amp, tune,
     notes: notes.map((g) => ({ on: g.on, off: g.off, q: g.q, pitch: g.pitch, peak: g.peak / R, legato: g.legato, glideA: g.glideA, glideB: g.glideB })),
     lo: notes.length ? pct(0.03) : 0, hi: notes.length ? pct(0.97) : 0,
     dropped: { drums, other },

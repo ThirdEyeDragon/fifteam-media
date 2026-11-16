@@ -47,9 +47,9 @@ function voice(L, R, t0, dur, midi, amp) {
   }
 }
 
-/** trap: returns { L, R, notes: [{ on, off, q, legato }], env (the 808's loudness every 10 ms), kicksAlone: [times] } */
+/** trap: returns { L, R, notes: [{ on, off, q, legato }], env (the 808's loudness every 10 ms), kicksAlone: [times], bass (the 808 alone) } */
 export function trap(secs = 32) {
-  const n = SR * secs, L = new Float32Array(n), R = new Float32Array(n), rnd = rng(11);
+  const n = SR * secs, L = new Float32Array(n), R = new Float32Array(n), bass = new Float32Array(n), rnd = rng(11);
   const beat = 60 / 140, bar = 4 * beat;
   const env = new Float32Array(Math.ceil(secs * 100));
   const notes = [], kicksAlone = [];
@@ -72,7 +72,7 @@ export function trap(secs = 32) {
         const atk = slide ? 1 : 1 - Math.exp(-t / 0.002), rel = s / SR > off ? Math.exp(-(s / SR - off) / 0.008) : 1;
         const a = atk * Math.exp(-t / 1.8) * rel;
         const v = (Math.tanh(1.6 * a * Math.sin(ph)) / Math.tanh(1.6)) * 0.62;
-        L[s] += v; R[s] += v;
+        L[s] += v; R[s] += v; bass[s] += v;
         const fr = Math.floor((s / SR) * 100); if (fr < env.length) env[fr] = Math.max(env[fr], a);
       }
       notes.push({ on, off: off + 0.01, q, legato: !!slide });
@@ -93,12 +93,12 @@ export function trap(secs = 32) {
   for (let s = 0; s < n; s++) { const t = s / SR, v = 0.035 * (Math.sin(2 * Math.PI * 130.81 * t) + Math.sin(2 * Math.PI * 164.81 * t) + Math.sin(2 * Math.PI * 196 * t)); L[s] += v; R[s] += v * 0.9; }
   master(L, R);
   // what the 808's fundamental does once saturated (its loudness as heard)
-  return { L, R, notes, env, kicksAlone, sat: (a) => Math.tanh(1.6 * a) / Math.tanh(1.6) };
+  return { L, R, notes, env, kicksAlone, bass, sat: (a) => Math.tanh(1.6 * a) / Math.tanh(1.6) };
 }
 
-/** rock: returns { L, R, notes, env, guitarAlone: [from, to] } */
+/** rock: returns { L, R, notes, env, guitarAlone: [from, to], bass (the bass guitar alone) } */
 export function rock(secs = 30) {
-  const n = SR * secs, L = new Float32Array(n), R = new Float32Array(n), rnd = rng(5);
+  const n = SR * secs, L = new Float32Array(n), R = new Float32Array(n), bass = new Float32Array(n), rnd = rng(5);
   const beat = 0.5, eighth = beat / 2, bar = 4 * beat;
   const env = new Float32Array(Math.ceil(secs * 100));
   const notes = [];
@@ -121,7 +121,7 @@ export function rock(secs = 30) {
         let v = 0; for (let h = 1; h <= 8; h++) v += (Math.sin(2 * Math.PI * f * h * t) / Math.pow(h, 1.2)) * Math.exp(-t * (1.5 + 0.8 * h));
         const a = (1 - Math.exp(-t / 0.003)) * rel;
         v *= 0.5 * a;
-        L[s] += v; R[s] += v;
+        L[s] += v; R[s] += v; bass[s] += v;
         const fr = Math.floor((s / SR) * 100); if (fr < env.length) env[fr] = Math.max(env[fr], a * Math.exp(-t * 2.3));
       }
       notes.push({ on, off: off + 0.006, q, legato: false });
@@ -131,5 +131,5 @@ export function rock(secs = 30) {
   const phr = [[0.1, 43], [0.6, 45], [1.1, 47], [1.6, 50]];
   for (let b = 0; b < bars; b += 2) for (const [o, q] of phr) voice(L, R, b * bar + o, 0.45, q, 0.28);
   master(L, R);
-  return { L, R, notes, env, guitarAlone: [rest * bar, (rest + 1) * bar] };
+  return { L, R, notes, env, guitarAlone: [rest * bar, (rest + 1) * bar], bass };
 }

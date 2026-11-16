@@ -122,14 +122,20 @@ function settingsChanged() {
 
 // ---------------------------------------------------------------------------------------------------- the work
 const STAGES = {
-  decode: ["Reading the song", 0, 0.1], slow: ["Slowing it down", 0.1, 0.3], find: ["Finding the bass line", 0.3, 0.55],
-  verb: ["Adding reverb", 0.55, 0.65], build: ["Building the new bass", 0.65, 0.8], master: ["Mastering with zero clipping", 0.8, 1],
+  decode: ["Reading the song", 0, 0.03], model: ["Getting the bass separator (once, 51 MB)", 0.03, 0.25],
+  start: ["Starting the bass separator", 0.25, 0.3], separate: ["Separating the bass", 0.3, 0.8],
+  find: ["Finding the bass notes", 0.8, 0.85], clean: ["Taking the old bass out", 0.85, 0.88],
+  slow: ["Slowing it down", 0.88, 0.92], verb: ["Adding reverb", 0.92, 0.94],
+  build: ["Building the new bass", 0.94, 0.97], master: ["Mastering with zero clipping", 0.97, 1],
 };
-function progress(stage, p) {
+function progress(stage, p, left) {
   const [label, a, b] = STAGES[stage];
   const v = a + (b - a) * Math.max(0, Math.min(1, p));
-  $("rb-stage").textContent = label; $("rb-pct").textContent = `${Math.round(v * 100)}%`;
+  const eta = left > 3 ? ` · ${left > 90 ? `about ${Math.round(left / 60)} min` : `${Math.round(left / 5) * 5} s`} left` : "";
+  $("rb-stage").textContent = label + eta; $("rb-pct").textContent = `${Math.round(v * 100)}%`;
   $("rb-bar").style.width = `${v * 100}%`;
+  // a phone that can only use its processor may take a while: the old quick way is there instead
+  $("rb-quick").hidden = !(stage === "separate" && left > 150);
 }
 
 async function go() {
@@ -146,12 +152,15 @@ async function go() {
       if (!S.src.duration) { S.src.duration = buf.duration; paintSlow(); }
       progress("decode", 1);
       const chs = [buf.getChannelData(0).slice(), (buf.numberOfChannels > 1 ? buf.getChannelData(1) : buf.getChannelData(0)).slice()];
+      // the song's fingerprint: its separated bass is kept on the phone under it
+      let key = "";
+      try { key = S.src.hash || (S.src.hash = await fingerprint(S.src.blob)); } catch {}
       S.worker = new Worker(new URL("./rebass-worker.js", import.meta.url), { type: "module" });
       S.worker.onmessage = onWorker;
       S.worker.onerror = (e) => fail(e.message || "The rebass stopped unexpectedly.");
       await new Promise((res, rej) => {
         S._loaded = res; S._failed = rej;
-        S.worker.postMessage({ type: "load", chs, sr: buf.sampleRate }, chs.map((c) => c.buffer));
+        S.worker.postMessage({ type: "load", chs, sr: buf.sampleRate, key }, chs.map((c) => c.buffer));
       });
       S.loaded = true;
     } catch (e) {
@@ -181,8 +190,13 @@ function fail(msg) {
 
 function onWorker(e) {
   const m = e.data;
-  if (m.type === "progress") progress(m.stage, m.p);
-  else if (m.type === "analysis") { if (S._loaded) { S._loaded(); S._loaded = null; } }
+  if (m.type === "progress") progress(m.stage, m.p, m.left);
+  else if (m.type === "analysis") {
+    $("rb-quick").hidden = true;
+    S.mode = m.mode;
+    if (m.mode === "quick" && m.why && !/cancelled/.test(m.why)) toast(/download|fetch|network/i.test(m.why) ? "Couldn't get the bass separator (are you online?). Used the quick way this time." : "The bass separator can't run on this phone. Used the quick way.");
+    if (S._loaded) { S._loaded(); S._loaded = null; }
+  }
   else if (m.type === "error") fail(m.message);
   else if (m.type === "result") {
     const ctx = getCtx(), sr = S.origBuf.sampleRate;
@@ -223,10 +237,9 @@ function paintStats() {
     [s.ridePct > 0.05 ? "" : "good", `${dB(s.songDb)} dB`, s.ridePct > 0.05 ? `Song level · ducks ${s.ridePct.toFixed(s.ridePct < 1 ? 1 : 0)}%` : "Song level · no compression"],
     ["", `${dB(s.truePeakDb, 2)} dBTP`, "True peak"],
     ["", `${s.notes.toLocaleString()}`, "Bass notes"],
-    ["", `${(s.drums + s.other).toLocaleString()}`, "Not bass (ignored)"],
+    [s.mode === "separated" ? "good" : "", s.mode === "separated" ? "Separated" : "Quick", "Old bass removed"],
     ["", `${f1(s.songLo)}–${f1(s.songHi)} Hz`, "Old bass"],
     ["", `${f1(s.newLo)}–${f1(s.newHi)} Hz`, "New bass"],
-    ["good", `${s.lo}–${s.hi} Hz`, "Only this range changed"],
   ];
   if (s.speed < 1 || s.reverb) items.push(["", s.speed < 1 ? `${Math.round(s.speed * 100)}%${s.reverb ? " + verb" : ""}` : "Reverb", s.speed < 1 ? "Speed" : "Effect"]);
   if (s.clipped) items[0] = ["", String(s.clipped), "Clipped"];
@@ -599,6 +612,7 @@ export function initRebass() {
   $("rb-speed-presets").addEventListener("click", (e) => { const c = e.target.closest(".chip"); if (!c) return; $("rb-speed").value = c.dataset.s; paintSlow(); settingsChanged(); });
   $("rb-reverb").onchange = settingsChanged;
   $("rb-name").addEventListener("input", () => { S.nameEdited = true; });
+  $("rb-quick").onclick = () => { $("rb-quick").hidden = true; if (S.worker) S.worker.postMessage({ type: "quick" }); };
   onSeg($("rb-ab"), setAB);
   onSeg($("rb-format"), () => paintSize());
   $("rb-play").onclick = () => { getCtx(); if (S.pl) stopPreview(true); else playPreview(S.pausedAt || 0); };

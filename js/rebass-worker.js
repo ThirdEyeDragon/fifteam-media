@@ -1,68 +1,141 @@
-// The rebass, off the main thread. "load" takes the song and finds its bass line; "render" builds the new bass for the
-// settings, takes the song's own content out of the chosen range only (nothing else is touched), lays the new bass in
-// with no clipping, and sends back the result, a 10 ms map of the old and new bass for the graphs, and the numbers.
-// The bass line is found once, on the song itself. A slowed (and reverbed) version gets that same bass line, the same
-// notes, laid at the slowed times: nothing new is invented. The last slowed version is kept, so changing anything else
-// only re-renders.
-import { rebassMix, slowDown, freeverb, mixMono } from "./dsp.js";
+// The rebass, off the main thread.
+// "load": the song's bass is separated from everything else (Demucs, on the graphics chip when there is one; kept on the
+// phone for next time), its notes are found on that clean bass alone, and the song without its bass is made: the
+// separated bass subtracted, then its last traces cleared from the low end (see cleanLowEnd). Vocals, drums and the
+// rest stay as they were.
+// "render": the new bass for the settings (the same notes at the same moments, moved into the range, clean and full),
+// laid into the bass-free song with no clipping, sent back with a 10 ms map for the graphs and the numbers.
+// If the separator can't run on this phone, the old way is used: the notes found in the whole song, the old bass taken
+// out at its own notes' pitches.
+import { rebassMix, slowDown, freeverb, mixMono, cleanLowEnd } from "./dsp.js";
 import { analyzeBassLine, planMapping, renderBass, makeFreqAt, st2hz } from "./bassline.js";
+import { getStem, putStem, pack, unpack } from "./stems.js";
 
-let base = null, sr = 0, an0 = null, prep = null, refSent = "";
-const post = (stage, p) => postMessage({ type: "progress", stage, p });
+let base = null, sr = 0, key = "", job = 0, sepWorker = null, sepStop = null;
+let an0 = null, song0 = null, mode = "", backend = "", prep = null, refPrep = null, refSent = "";
+const post = (stage, p, extra) => postMessage({ type: "progress", stage, p, ...extra });
 
-function prepare(speed, reverb) {
-  const key = `${speed.toFixed(3)}|${reverb ? 1 : 0}`;
-  if (prep && prep.key === key) return prep;
-  prep = null;
-  if (!an0) an0 = analyzeBassLine(mixMono(base), sr, (p) => post("find", p));
-  let chs = base;
-  if (speed < 0.999) { post("slow", 0); chs = slowDown(base, speed, (p) => post("slow", p)); }
-  let music = chs;
-  if (reverb) { post("verb", 0); music = freeverb(chs, sr, {}, (p) => post("verb", p)); }
-  prep = { key, music, speed, changed: speed < 0.999 || reverb };
-  return prep;
+// the old notes sounding between two moments (Hz), for clearing their traces
+const f0In = (an) => (a, b) => {
+  const out = new Set(), i0 = Math.max(0, Math.floor((a - an.t0) / an.hop)), i1 = Math.min(an.f0.length - 1, Math.ceil((b - an.t0) / an.hop));
+  for (let i = i0; i <= i1; i++) if (an.f0[i] > 0) out.add(an.f0[i]);
+  return [...out];
+};
+
+async function separated(myJob) {
+  const n = base[0].length;
+  if (key) {
+    const kept = await getStem(key, sr, n);
+    if (kept) { post("separate", 1); return unpack(kept, n); }
+  }
+  const t0 = Date.now();
+  // in a worker of its own, closed as soon as the bass is out (it hands back all the separator's memory)
+  const b = await new Promise((res, rej) => {
+    const w = new Worker(new URL("./sep-worker.js", import.meta.url), { type: "module" });
+    sepWorker = w;
+    sepStop = () => { w.terminate(); rej(new Error("cancelled")); };
+    w.onmessage = (e) => {
+      const m = e.data;
+      if (m.type === "progress") post(m.stage, m.p, m.stage === "separate" && m.p > 0.05 ? { left: Math.max(0, (m.el / m.p) * (1 - m.p)) } : {});
+      else if (m.type === "done") { backend = m.backend; w.terminate(); res(m.out); }
+      else if (m.type === "error") { w.terminate(); rej(new Error(m.message)); }
+    };
+    w.onerror = (e) => { w.terminate(); rej(new Error(e.message || "separator")); };
+    w.postMessage({ chs: base.map((c) => c.slice()), sr });
+  }).finally(() => { sepWorker = null; sepStop = null; });
+  if (myJob !== job) throw new Error("cancelled");
+  const packed = pack(b, sr);
+  if (key) await putStem(key, sr, n, packed);
+  postMessage({ type: "separated", seconds: (Date.now() - t0) / 1000, backend });
+  return unpack(packed, n);
 }
 
-onmessage = (e) => {
+async function load(m) {
+  const myJob = ++job;
+  base = m.chs; sr = m.sr; key = m.key || ""; an0 = song0 = prep = refPrep = null; refSent = ""; backend = "";
+  let stem = null, why = "";
+  if (!m.quick) {
+    try { stem = await separated(myJob); }
+    catch (e) { if (myJob !== job) return; why = String((e && e.message) || e); stem = null; }
+  }
+  if (myJob !== job) return;
+  if (stem) {
+    mode = "separated";
+    an0 = analyzeBassLine(mixMono(stem), sr, (p) => post("find", p), null, { stem: true });
+    post("clean", 0);
+    song0 = base.map((c, i) => { const s = stem[Math.min(i, stem.length - 1)], o = new Float32Array(c.length); for (let k = 0; k < c.length; k++) o[k] = c[k] - s[k]; return o; });
+    cleanLowEnd(song0, stem, sr, f0In(an0), { progress: (p) => post("clean", p) });
+  } else {
+    mode = "quick";
+    an0 = analyzeBassLine(mixMono(base), sr, (p) => post("find", p));
+    post("clean", 0);
+    song0 = base.map((c) => Float32Array.from(c));
+    cleanLowEnd(song0, null, sr, f0In(an0), { progress: (p) => post("clean", p) });
+  }
+  postMessage({ type: "analysis", notes: an0.notes.length, lo: an0.lo, hi: an0.hi, mode, backend, why });
+}
+
+// the bass-free song slowed / reverbed for these settings (kept, so changing anything else only re-renders)
+function prepare(speed, reverb) {
+  const k = `${speed.toFixed(3)}|${reverb ? 1 : 0}`;
+  if (prep && prep.key === k) return prep;
+  prep = null;
+  let chs = song0;
+  if (speed < 0.999) { post("slow", 0); chs = slowDown(song0, speed, (p) => post("slow", p)); }
+  let music = chs;
+  if (reverb) { post("verb", 0); music = freeverb(chs, sr, {}, (p) => post("verb", p)); }
+  prep = { key: k, music, speed, changed: speed < 0.999 || reverb };
+  return prep;
+}
+// the ORIGINAL song slowed / reverbed the same way, for listening side by side
+function reference(speed, reverb) {
+  const k = `${speed.toFixed(3)}|${reverb ? 1 : 0}`;
+  if (refPrep && refPrep.key === k) return refPrep.music;
+  let chs = base;
+  if (speed < 0.999) { post("slow", 0); chs = slowDown(base, speed, (p) => post("slow", p)); }
+  const music = reverb ? freeverb(chs, sr, {}, (p) => post("verb", p)) : chs;
+  refPrep = { key: k, music };
+  return music;
+}
+
+function render(p) {
+  if (!song0) throw new Error("No song loaded");
+  const pr = prepare(p.speed || 1, !!p.reverb), sp = pr.speed;
+  // where each of the song's own bass notes goes, then the new bass, note for note
+  const plan = planMapping(an0, p.lo, p.hi, sp);
+  post("build", 0);
+  const n = pr.music[0].length;
+  const { bass, peak } = renderBass(an0, plan, sr, n, sp, (q) => post("build", q));
+  const { out, stats } = rebassMix(pr.music, bass, peak, sr, { bassDb: p.db, band: [p.lo, p.hi], progress: (q) => post("master", q) });
+  // the map for the graphs, on the (slowed) song's own timeline: the old bass and the new
+  const frames = an0.f0.length, map = new Float32Array(frames * 3), fAt = makeFreqAt(an0, plan);
+  for (let i = 0; i < frames; i++) {
+    const u = an0.t0 + i * an0.hop;
+    map[i * 3] = an0.f0[i] * sp;
+    map[i * 3 + 1] = an0.env[i] > 0.005 ? fAt(u) : 0;
+    map[i * 3 + 2] = an0.env[i];
+  }
+  const targets = [...plan.target.values()].map(st2hz);
+  let ref = null;
+  if (pr.changed && refSent !== pr.key) { ref = reference(sp, !!p.reverb).map((c) => c.slice()); refSent = pr.key; }
+  const transfer = [out[0].buffer, out[1].buffer, map.buffer];
+  if (ref) ref.forEach((c) => transfer.push(c.buffer));
+  postMessage({
+    type: "result", out, map, t0: an0.t0 / sp, hop: an0.hop / sp, ref, refKey: pr.changed ? pr.key : "",
+    stats: {
+      ...stats, notes: an0.notes.length, drums: an0.dropped.drums, other: an0.dropped.other, mapping: plan.describe, kind: plan.kind,
+      songLo: an0.lo * sp, songHi: an0.hi * sp, newLo: targets.length ? Math.min(...targets) : p.lo, newHi: targets.length ? Math.max(...targets) : p.hi,
+      lo: p.lo, hi: p.hi, bassDb: p.db, speed: sp, reverb: !!p.reverb, mode, backend,
+    },
+  }, transfer);
+}
+
+onmessage = async (e) => {
   const m = e.data;
   try {
-    if (m.type === "load") {
-      base = m.chs; sr = m.sr; an0 = null; prep = null; refSent = "";
-      prepare(1, false);
-      postMessage({ type: "analysis", notes: an0.notes.length, lo: an0.lo, hi: an0.hi });
-    } else if (m.type === "render") {
-      if (!base) throw new Error("No song loaded");
-      const p = m.params;
-      const pr = prepare(p.speed || 1, !!p.reverb), sp = pr.speed;
-      // where each of the song's own bass notes goes, then the new bass, note for note
-      const plan = planMapping(an0, p.lo, p.hi, sp);
-      post("build", 0);
-      const n = pr.music[0].length;
-      const { bass, peak } = renderBass(an0, plan, sr, n, sp, (q) => post("build", q));
-      const { out, stats } = rebassMix(pr.music, bass, peak, sr, { bassDb: p.db, band: [p.lo, p.hi], progress: (q) => post("master", q) });
-      // the map for the graphs, on the (slowed) song's own timeline: the old bass (as it sounds now) and the new
-      const frames = an0.f0.length, map = new Float32Array(frames * 3), fAt = makeFreqAt(an0, plan);
-      for (let i = 0; i < frames; i++) {
-        const u = an0.t0 + i * an0.hop;
-        map[i * 3] = an0.f0[i] * sp;
-        map[i * 3 + 1] = an0.env[i] > 0.005 ? fAt(u) : 0;
-        map[i * 3 + 2] = an0.env[i];
-      }
-      const targets = [...plan.target.values()].map(st2hz);
-      // the slowed (or reverbed) song without the new bass, for listening side by side (sent once per version)
-      let ref = null;
-      if (pr.changed && refSent !== pr.key) { ref = pr.music.map((c) => c.slice()); refSent = pr.key; }
-      const transfer = [out[0].buffer, out[1].buffer, map.buffer];
-      if (ref) ref.forEach((c) => transfer.push(c.buffer));
-      postMessage({
-        type: "result", out, map, t0: an0.t0 / sp, hop: an0.hop / sp, ref, refKey: pr.changed ? pr.key : "",
-        stats: {
-          ...stats, notes: an0.notes.length, drums: an0.dropped.drums, other: an0.dropped.other, mapping: plan.describe, kind: plan.kind,
-          songLo: an0.lo * sp, songHi: an0.hi * sp, newLo: targets.length ? Math.min(...targets) : p.lo, newHi: targets.length ? Math.max(...targets) : p.hi,
-          lo: p.lo, hi: p.hi, bassDb: p.db, speed: sp, reverb: !!p.reverb,
-        },
-      }, transfer);
-    }
+    if (m.type === "load") await load(m);
+    else if (m.type === "quick" && base) { if (sepStop) sepStop(); await load({ chs: base, sr, key, quick: true }); }   // stops a separation under way
+    else if (m.type === "render") render(m.params);
   } catch (err) {
     postMessage({ type: "error", message: String((err && err.message) || err) });
   }

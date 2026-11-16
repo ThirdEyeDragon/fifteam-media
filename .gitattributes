@@ -1,0 +1,9 @@
+# never touch the line endings of binary files
+*.q8 binary
+*.gz binary
+*.onnx binary
+*.wasm binary
+*.png binary
+*.jpg binary
+*.wav binary
+*.mp3 binary

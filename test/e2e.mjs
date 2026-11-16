@@ -10,7 +10,7 @@ const dl = resolve(outDir, "downloads"); mkdirSync(dl, { recursive: true });
 const EDGE = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
 const port = 9333;
 const prof = resolve(outDir, "profile");
-const edge = spawn(EDGE, ["--headless=new", `--remote-debugging-port=${port}`, `--user-data-dir=${prof}`, "--no-first-run", "--autoplay-policy=no-user-gesture-required",
+const edge = spawn(EDGE, ["--headless=new", `--remote-debugging-port=${port}`, `--user-data-dir=${prof}`, "--no-first-run", "--enable-unsafe-webgpu", "--autoplay-policy=no-user-gesture-required",
   "--window-size=390,844", "--disable-features=Translate", "about:blank"], { stdio: "ignore" });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -188,7 +188,16 @@ await click("#rb-pick-lib"); await sleep(500);
 await click("#sheet-panel .item"); await sleep(600);
 await shot("04_rebass_setup");
 await click("#rb-go");
-await until(`!document.getElementById('rb-result').hidden`, 90000, "the rebass");
+// the first time: the bass separator is downloaded (51 MB) and started, then the bass is separated
+const sepT0 = Date.now(), seen = new Set();
+while (Date.now() - sepT0 < 300000) {
+  const st = await ev(`document.getElementById('rb-result').hidden ? document.getElementById('rb-stage').textContent : ''`);
+  if (!st) break;
+  const label = st.replace(/ · .*$/, ""); if (!seen.has(label)) { seen.add(label); console.log(`  ${((Date.now() - sepT0) / 1000).toFixed(1)} s: ${st}`); }
+  await sleep(250);
+}
+await until(`!document.getElementById('rb-result').hidden`, 5000, "the rebass");
+console.log(`first rebass (separator downloaded and run): ${((Date.now() - sepT0) / 1000).toFixed(1)} s | isolated (several cores): ${await ev("self.crossOriginIsolated")}`);
 console.log("stats:", await ev(`[...document.querySelectorAll('#rb-stats .stat')].map(s => s.querySelector('span').textContent + ': ' + s.querySelector('b').textContent).join(' | ')`));
 await click("#rb-play"); await sleep(2500);
 await show('#rb-result'); await sleep(300);
@@ -208,6 +217,7 @@ await until(`document.getElementById('rb-busy').hidden`, 90000, "the slowed rend
 console.log("stats slowed 75% + reverb:", await ev(`[...document.querySelectorAll('#rb-stats .stat')].map(s => s.querySelector('span').textContent + ': ' + s.querySelector('b').textContent).join(' | ')`));
 console.log("name now:", await ev(`document.getElementById('rb-name').value`), "| length:", await ev(`document.getElementById('rb-dur').textContent`));
 console.log("slow hint:", await ev(`document.getElementById('rb-speed-hint').textContent`));
+console.log("old bass removed:", await ev(`[...document.querySelectorAll('#rb-stats .stat')].find(s => s.querySelector('span').textContent === 'Old bass removed')?.querySelector('b').textContent`));
 console.log("options gone (old-bass switches, keep in key / stretch, snap):", await ev(`['rb-only', 'rb-replace', 'rb-mode', 'rb-snap'].filter(id => document.getElementById(id)).join(', ') || 'all gone'`));
 await click("#rb-play"); await sleep(2500);
 await show('#rb-result'); await sleep(300);
@@ -339,7 +349,8 @@ await click('#lib-seg button[data-k="rebass"]'); await sleep(800);
 await shot("09_library_rebassed");
 
 // settings: set a password and lock the app
-await click('#btn-settings'); await sleep(500);
+await click('#btn-settings'); await sleep(800);
+console.log("settings, bass separator:", await ev(`document.getElementById('set-sep-pill').textContent`), "| remove button:", await ev(`!document.getElementById('set-sep-del').hidden`));
 await shot("10_settings");
 await ev(`(() => { const i = document.querySelectorAll('#set-lock input[type=password]'); i[0].value = 'blue42'; i[1].value = 'blue42'; [...document.querySelectorAll('#set-lock button')].find(b => b.textContent.includes('Set password')).click(); return 1; })()`);
 await until(`[...document.querySelectorAll('#set-lock button')].some(b => b.textContent.includes('Lock now'))`, 10000, "the password to be set");

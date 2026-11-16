@@ -119,6 +119,28 @@ export function openSettings() {
       if (demo.on) { closeSheet(); location.hash = "#player"; toast("Demo mode on. Play a song.", 2200); }
     };
 
+    // the bass separator: downloaded on the first rebass and kept (with the last few songs' separated basses)
+    const sepSec = el(`<div class="set-sec">
+      <div class="set-head"><svg><use href="#i-bass"/></svg>Bass separator<span class="pill" id="set-sep-pill">…</span></div>
+      <span class="status">51 MB, kept so rebassing works offline.</span>
+      <button class="btn small" id="set-sep-del" hidden>Remove from this phone</button>
+    </div>`);
+    p.append(sepSec);
+    const paintSep = async () => {
+      let on = false;
+      try { on = (await (await caches.open("fifteam-sep-1")).keys()).length >= 3; } catch {}
+      const pill = $("set-sep-pill"); if (!pill) return;
+      pill.textContent = on ? "On this phone" : "Not downloaded"; pill.classList.toggle("on", on);
+      $("set-sep-del").hidden = !on;
+    };
+    paintSep();
+    sepSec.querySelector("#set-sep-del").onclick = async () => {
+      try { await caches.delete("fifteam-sep-1"); } catch {}
+      try { indexedDB.deleteDatabase("fifteam-stems"); } catch {}
+      paintSep();
+      toast("Removed. It downloads again the next time you rebass.", 2600);
+    };
+
     const share = el('<button class="menu-item"><svg><use href="#i-share"/></svg>Share FifTeam Media with a friend</button>');
     share.onclick = shareApp;
     p.append(share);
