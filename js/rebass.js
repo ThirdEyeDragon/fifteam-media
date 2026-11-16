@@ -5,13 +5,14 @@ import { $, toast, openSheet, closeSheet, fmtTime, fill, getCtx, artUrl, placeho
 import * as store from "./store.js";
 import { library } from "./library.js";
 import { player } from "./player.js";
-import { FORMATS, makeFile, saveFile, shareFile, canShareFiles, sizeText, isIOS } from "./export.js";
+import { FORMATS, makeFile, saveFile, sizeText, isIOS } from "./export.js";
+import { openShareSheet, fingerprint } from "./share.js";
 import { noteName, linToDb } from "./dsp.js";
 import { pickImage } from "./image.js";
 
 const S = {
   src: null, worker: null, loaded: false, origBuf: null, refBuf: null, refKey: "", outBuf: null, res: null, version: 0,
-  busy: false, again: false, params: { lo: 25, hi: 45, mode: "musical", db: -3, snap: true, speed: 1, reverb: false },
+  busy: false, again: false, params: { lo: 25, hi: 45, db: -3, speed: 1, reverb: false },
   pl: null, ab: "rebass", an: null, spec: null, raf: 0, nameEdited: false, file: null, fileKey: "",
   cover: null, coverUrl: null, segs: [], ovImg: null, disp: null, pk: null, glow: [], lastT: 0, lastRead: 0, drag: null,
 };
@@ -77,8 +78,8 @@ function pickFile() {
 function readParams() {
   const slow = $("rb-slow").checked;
   S.params = {
-    lo: +$("rb-lo").value, hi: +$("rb-hi").value, mode: segValue($("rb-mode")), db: +$("rb-db").value,
-    snap: $("rb-snap").checked, speed: slow ? +$("rb-speed").value / 100 : 1, reverb: $("rb-reverb").checked,
+    lo: +$("rb-lo").value, hi: +$("rb-hi").value, db: +$("rb-db").value,
+    speed: slow ? +$("rb-speed").value / 100 : 1, reverb: $("rb-reverb").checked,
   };
 }
 function paintRange() {
@@ -216,15 +217,16 @@ function paintStats() {
   const f1 = (v) => (v >= 100 ? v.toFixed(0) : v.toFixed(1));
   const dB = (v, d = 1) => (v > -0.005 ? (0).toFixed(d) : v.toFixed(d).replace("-", "−"));
   const items = [
+    ["wide", s.mapping, "How the bass line moved"],
     ["good", "0", "Clipped"],
     ["", `${dB(s.bassActualDb, 2)} dB`, "Bass peak"],
     [s.ridePct > 0.05 ? "" : "good", `${dB(s.songDb)} dB`, s.ridePct > 0.05 ? `Song level · ducks ${s.ridePct.toFixed(s.ridePct < 1 ? 1 : 0)}%` : "Song level · no compression"],
     ["", `${dB(s.truePeakDb, 2)} dBTP`, "True peak"],
-    ["good", `${Math.round(s.coverPct)}%`, `Old bass replaced (cut below ${Math.round(s.removedHz)} Hz)`],
-    ["", `${s.notes.toLocaleString()}`, "Notes"],
-    ["", p.mode === "musical" ? `${Math.round(s.tunedPct)}%` : "Stretch", p.mode === "musical" ? "In key" : "Mapping"],
+    ["", `${s.notes.toLocaleString()}`, "Bass notes"],
+    ["", `${(s.drums + s.other).toLocaleString()}`, "Not bass (ignored)"],
     ["", `${f1(s.songLo)}–${f1(s.songHi)} Hz`, "Old bass"],
     ["", `${f1(s.newLo)}–${f1(s.newHi)} Hz`, "New bass"],
+    ["good", `${s.lo}–${s.hi} Hz`, "Only this range changed"],
   ];
   if (s.speed < 1 || s.reverb) items.push(["", s.speed < 1 ? `${Math.round(s.speed * 100)}%${s.reverb ? " + verb" : ""}` : "Reverb", s.speed < 1 ? "Speed" : "Effect"]);
   if (s.clipped) items[0] = ["", String(s.clipped), "Clipped"];
@@ -545,15 +547,19 @@ async function save() {
     else if (r === "downloaded") toast(`Saved to your Downloads as ${file.name}`, 5000);
   } catch (e) { toast("Couldn't save the file. " + (e.message || "")); }
 }
-async function share() {
+const noteOf = (p) => `${p.speed < 1 ? Math.round(p.speed * 100) + "% · " : ""}${p.lo}–${p.hi} Hz · ${p.db === 0 ? "0" : "−" + Math.abs(p.db)} dB`;
+function share() {
   if (!S.outBuf) return;
-  try {
-    const { file, fresh } = await buildFile();
-    if (!canShareFiles(file)) { toast("This browser can't share files. Saving it instead."); await saveFile(file); return; }
-    if (fresh) { toast("Your file is ready. Tap Share again to send it."); return; }
-    const r = await shareFile(file, $("rb-name").value.trim() || defaultName());
-    if (r === "failed") toast("Sharing didn't go through. Try Save to phone.");
-  } catch (e) { toast("Couldn't share the file. " + (e.message || "")); }
+  const name = () => $("rb-name").value.trim() || defaultName();
+  openShareSheet({
+    what: "song", name, build: buildFile, cover: async () => coverBlob(),
+    meta: () => ({ kind: "rebass", title: name(), artist: S.src.artist || "", album: "Rebassed", duration: S.outBuf.duration, note: noteOf(S.params), made: { ...S.params, from: S.src.title } }),
+    recipe: async () => {
+      if (!S.src.hash) S.src.hash = await fingerprint(S.src.blob);
+      const p = S.params;
+      return { title: S.src.title, artist: S.src.artist || "", duration: S.src.duration || (S.origBuf ? S.origBuf.duration : 0), hash: S.src.hash, settings: { lo: p.lo, hi: p.hi, db: p.db, speed: p.speed, reverb: p.reverb, name: S.nameEdited ? name() : "" } };
+    },
+  });
 }
 async function keep() {
   if (!S.outBuf) return;
@@ -566,7 +572,7 @@ async function keep() {
   const p = S.params;
   const meta = {
     id: store.newId(), kind: "rebass", title: name, artist: S.src.artist || "", album: "Rebassed",
-    note: `${p.speed < 1 ? Math.round(p.speed * 100) + "% · " : ""}${p.lo}–${p.hi} Hz · ${p.db === 0 ? "0" : "−" + Math.abs(p.db)} dB`,
+    note: noteOf(p),
     duration: S.outBuf.duration, size: file.size, type: file.type, fileName: file.name, added: Date.now(), hasArt: !!cover,
   };
   try { await library.add(meta, file, cover); toast("Added to your library, under Rebassed"); }
@@ -587,9 +593,7 @@ export function initRebass() {
     const c = e.target.closest(".chip"); if (!c) return;
     const [a, b] = c.dataset.r.split(","); $("rb-lo").value = a; $("rb-hi").value = b; paintRange(); settingsChanged();
   });
-  onSeg($("rb-mode"), () => { paintRange(); settingsChanged(); });
   $("rb-db").addEventListener("input", () => { paintDb(); settingsChanged(); });
-  $("rb-snap").onchange = settingsChanged;
   $("rb-slow").onchange = () => { paintSlow(); settingsChanged(); };
   $("rb-speed").addEventListener("input", () => { paintSlow(); settingsChanged(); });
   $("rb-speed-presets").addEventListener("click", (e) => { const c = e.target.closest(".chip"); if (!c) return; $("rb-speed").value = c.dataset.s; paintSlow(); settingsChanged(); });
@@ -636,4 +640,16 @@ export function initRebass() {
   paintRange(); paintDb(); paintSlow(); readParams(); paintCover();
 }
 
-export const rebass = { fromFile };
+/** A rebass code a friend sent: this song, set up exactly their way, and rebassed. */
+async function applyRecipe(track, s) {
+  location.hash = "#rebass";
+  await fromTrack(track);
+  $("rb-lo").value = s.lo; $("rb-hi").value = s.hi; $("rb-db").value = s.db;
+  $("rb-slow").checked = s.speed < 0.999; if (s.speed < 0.999) $("rb-speed").value = Math.round(s.speed * 100);
+  $("rb-reverb").checked = !!s.reverb;
+  paintRange(); paintDb(); paintSlow(); readParams();
+  if (s.name) { $("rb-name").value = s.name; S.nameEdited = true; } else $("rb-name").value = defaultName();
+  go();
+}
+
+export const rebass = { fromFile, applyRecipe };

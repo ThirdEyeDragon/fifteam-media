@@ -2,7 +2,8 @@
 // level in dBFS, left/right/both and a polarity flip, log or linear sweeps, a live scope, and saving the tone as a file.
 import { $, toast, fill, getCtx, bus, onSeg, segValue, setSeg } from "./ui.js";
 import { noteName, dbToLin, pinkNoise } from "./dsp.js";
-import { makeFile, saveFile, shareFile, canShareFiles, isIOS } from "./export.js";
+import { makeFile, saveFile, isIOS } from "./export.js";
+import { openShareSheet } from "./share.js";
 import { library } from "./library.js";
 import { player } from "./player.js";
 import * as store from "./store.js";
@@ -194,13 +195,12 @@ export function initTones() {
       if (r === "downloaded") toast(`Saved to your Downloads as ${file.name}`, 5000); else if (r === "saved") toast("Saved");
     } catch (e) { toast("Couldn't save the tone. " + (e.message || "")); }
   };
-  $("tg-share").onclick = async () => {
-    try {
-      const { file, fresh } = await buildFile();
-      if (!canShareFiles(file)) { toast("This browser can't share files. Saving it instead."); await saveFile(file); return; }
-      if (fresh) { toast("Your tone is ready. Tap Share again to send it."); return; }
-      await shareFile(file, $("tg-name").value.trim() || defaultName());
-    } catch (e) { toast("Couldn't share the tone. " + (e.message || "")); }
+  $("tg-share").onclick = () => {
+    const name = () => $("tg-name").value.trim() || defaultName();
+    openShareSheet({
+      what: "tone", name, build: buildFile, cover: async () => T.cover,
+      meta: () => ({ kind: "tone", title: name(), artist: "Tone generator", album: "Tones", duration: +document.querySelector("#tg-len .chip.on").dataset.s }),
+    });
   };
   $("tg-keep").onclick = async () => {
     const { file } = await buildFile();

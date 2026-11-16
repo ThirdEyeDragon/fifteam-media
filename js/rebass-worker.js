@@ -1,9 +1,11 @@
 // The rebass, off the main thread. "load" takes the song and finds its bass line; "render" builds the new bass for the
-// settings, lays it under the song with no clipping, and sends back the result, a 10 ms map of the old and new bass for
-// the graphs, and the numbers. The bass line is found once, on the song itself. A slowed (and reverbed) version gets
-// that same bass line, the same notes at the same chosen frequencies, laid at the slowed times: nothing new is invented.
-// The last slowed version is kept, so changing anything else only re-renders.
-import { analyzeBass, mapBassLine, synthBass, rebassMix, slowDown, freeverb, mixMono, removalHz } from "./dsp.js";
+// settings, takes the song's own content out of the chosen range only (nothing else is touched), lays the new bass in
+// with no clipping, and sends back the result, a 10 ms map of the old and new bass for the graphs, and the numbers.
+// The bass line is found once, on the song itself. A slowed (and reverbed) version gets that same bass line, the same
+// notes, laid at the slowed times: nothing new is invented. The last slowed version is kept, so changing anything else
+// only re-renders.
+import { rebassMix, slowDown, freeverb, mixMono } from "./dsp.js";
+import { analyzeBassLine, planMapping, renderBass, makeFreqAt, st2hz } from "./bassline.js";
 
 let base = null, sr = 0, an0 = null, prep = null, refSent = "";
 const post = (stage, p) => postMessage({ type: "progress", stage, p });
@@ -12,14 +14,12 @@ function prepare(speed, reverb) {
   const key = `${speed.toFixed(3)}|${reverb ? 1 : 0}`;
   if (prep && prep.key === key) return prep;
   prep = null;
-  if (!an0) an0 = analyzeBass(mixMono(base), sr, (p) => post("find", p));
+  if (!an0) an0 = analyzeBassLine(mixMono(base), sr, (p) => post("find", p));
   let chs = base;
   if (speed < 0.999) { post("slow", 0); chs = slowDown(base, speed, (p) => post("slow", p)); }
-  // the song's own bass line, its times stretched to the slowed song
-  const an = speed < 0.999 ? { ...an0, t0: an0.t0 / speed, hop: an0.hop / speed } : an0;
   let music = chs;
   if (reverb) { post("verb", 0); music = freeverb(chs, sr, {}, (p) => post("verb", p)); }
-  prep = { key, music, an, speed, changed: speed < 0.999 || reverb };
+  prep = { key, music, speed, changed: speed < 0.999 || reverb };
   return prep;
 }
 
@@ -28,47 +28,39 @@ onmessage = (e) => {
   try {
     if (m.type === "load") {
       base = m.chs; sr = m.sr; an0 = null; prep = null; refSent = "";
-      const p = prepare(1, false);
-      let voiced = 0; for (const f of p.an.f0) if (f > 0) voiced++;
-      postMessage({ type: "analysis", lo: p.an.lo, hi: p.an.hi, voiced: voiced / Math.max(1, p.an.f0.length) });
+      prepare(1, false);
+      postMessage({ type: "analysis", notes: an0.notes.length, lo: an0.lo, hi: an0.hi });
     } else if (m.type === "render") {
       if (!base) throw new Error("No song loaded");
       const p = m.params;
-      const pr = prepare(p.speed || 1, !!p.reverb), an = pr.an;
-      const mapped = mapBassLine(an, { lo: p.lo, hi: p.hi, mode: p.mode, snap: p.snap });
+      const pr = prepare(p.speed || 1, !!p.reverb), sp = pr.speed;
+      // where each of the song's own bass notes goes, then the new bass, note for note
+      const plan = planMapping(an0, p.lo, p.hi, sp);
       post("build", 0);
       const n = pr.music[0].length;
-      const { bass, peak } = synthBass(an, mapped, sr, n, (q) => post("build", q));
-      // the song's own bass always comes out (all of it, above its highest notes), and the new bass takes its place
-      const replaceHz = removalHz(an0.hi * pr.speed, p.hi);
-      const { out, stats } = rebassMix(pr.music, bass, peak, sr, {
-        bassDb: p.db, replaceHz,
-        progress: (q) => post("master", q),
-      });
-      // the numbers: notes played, how many stayed exactly in tune, the ranges
-      let notes = 0, prev = 0, tuned = 0, voiced = 0, mn = 1e9, mx = 0, sounding = 0, covered = 0;
-      for (let i = 0; i < mapped.length; i++) {
-        const f = mapped[i];
-        if (an.env[i] > 0.08) { sounding++; if (f > 0) covered++; }
-        if (!(f > 0) || an.env[i] < 0.05) { prev = 0; continue; }
-        voiced++;
-        if (!prev || Math.abs(f / prev - 1) > 0.03) notes++;
-        prev = f; mn = Math.min(mn, f); mx = Math.max(mx, f);
-        if (an.f0[i] > 0) {
-          const c = (1200 * Math.log2(f / an.f0[i])) % 1200, cc = Math.min(Math.abs(c), 1200 - Math.abs(c));
-          if (cc < 20 || (p.snap && cc < 60)) tuned++;
-        }
+      const { bass, peak } = renderBass(an0, plan, sr, n, sp, (q) => post("build", q));
+      const { out, stats } = rebassMix(pr.music, bass, peak, sr, { bassDb: p.db, band: [p.lo, p.hi], progress: (q) => post("master", q) });
+      // the map for the graphs, on the (slowed) song's own timeline: the old bass (as it sounds now) and the new
+      const frames = an0.f0.length, map = new Float32Array(frames * 3), fAt = makeFreqAt(an0, plan);
+      for (let i = 0; i < frames; i++) {
+        const u = an0.t0 + i * an0.hop;
+        map[i * 3] = an0.f0[i] * sp;
+        map[i * 3 + 1] = an0.env[i] > 0.005 ? fAt(u) : 0;
+        map[i * 3 + 2] = an0.env[i];
       }
-      const frames = mapped.length, map = new Float32Array(frames * 3);
-      for (let i = 0; i < frames; i++) { map[i * 3] = an.f0[i]; map[i * 3 + 1] = mapped[i]; map[i * 3 + 2] = an.env[i]; }
-      // the slowed song without the new bass, for listening side by side (sent once per version)
+      const targets = [...plan.target.values()].map(st2hz);
+      // the slowed (or reverbed) song without the new bass, for listening side by side (sent once per version)
       let ref = null;
       if (pr.changed && refSent !== pr.key) { ref = pr.music.map((c) => c.slice()); refSent = pr.key; }
       const transfer = [out[0].buffer, out[1].buffer, map.buffer];
       if (ref) ref.forEach((c) => transfer.push(c.buffer));
       postMessage({
-        type: "result", out, map, t0: an.t0, hop: an.hop, ref, refKey: pr.changed ? pr.key : "",
-        stats: { ...stats, notes, tunedPct: voiced ? (100 * tuned) / voiced : 100, newLo: mn < 1e9 ? mn : p.lo, newHi: mx || p.hi, songLo: an.lo, songHi: an.hi, bassDb: p.db, speed: p.speed || 1, reverb: !!p.reverb, removedHz: replaceHz, coverPct: sounding ? (100 * covered) / sounding : 100 },
+        type: "result", out, map, t0: an0.t0 / sp, hop: an0.hop / sp, ref, refKey: pr.changed ? pr.key : "",
+        stats: {
+          ...stats, notes: an0.notes.length, drums: an0.dropped.drums, other: an0.dropped.other, mapping: plan.describe, kind: plan.kind,
+          songLo: an0.lo * sp, songHi: an0.hi * sp, newLo: targets.length ? Math.min(...targets) : p.lo, newHi: targets.length ? Math.max(...targets) : p.hi,
+          lo: p.lo, hi: p.hi, bassDb: p.db, speed: sp, reverb: !!p.reverb,
+        },
       }, transfer);
     }
   } catch (err) {

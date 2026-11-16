@@ -208,7 +208,7 @@ await until(`document.getElementById('rb-busy').hidden`, 90000, "the slowed rend
 console.log("stats slowed 75% + reverb:", await ev(`[...document.querySelectorAll('#rb-stats .stat')].map(s => s.querySelector('span').textContent + ': ' + s.querySelector('b').textContent).join(' | ')`));
 console.log("name now:", await ev(`document.getElementById('rb-name').value`), "| length:", await ev(`document.getElementById('rb-dur').textContent`));
 console.log("slow hint:", await ev(`document.getElementById('rb-speed-hint').textContent`));
-console.log("old-bass switches left on the screen:", await ev(`['rb-only', 'rb-replace'].filter(id => document.getElementById(id)).join(', ') || 'none'`));
+console.log("options gone (old-bass switches, keep in key / stretch, snap):", await ev(`['rb-only', 'rb-replace', 'rb-mode', 'rb-snap'].filter(id => document.getElementById(id)).join(', ') || 'all gone'`));
 await click("#rb-play"); await sleep(2500);
 await show('#rb-result'); await sleep(300);
 await shot("05b_rebass_slowed");
@@ -247,6 +247,73 @@ await click("#rb-keep");
 await sleep(2500);
 await show('#rb-stats'); await sleep(200);
 await shot("06b_rebass_stats");
+
+// share: a locked file, sent and opened again as a friend would
+const statsLine = () => ev(`[...document.querySelectorAll('#rb-stats .stat')].map(s => s.querySelector('span').textContent + ': ' + s.querySelector('b').textContent).join(' | ')`);
+const statsBefore = await statsLine();
+await ev(`navigator.share = undefined; navigator.canShare = undefined; 1`);
+await click("#rb-share"); await sleep(500);
+await shot("13_share_sheet");
+await ev(`[...document.querySelectorAll('#sheet-panel .menu-item')].find(b => b.textContent.includes('locked')).click(), 1`);
+await until(`!!document.querySelector('#sheet-panel .code-box b')`, 60000, "the unlock code");
+const code = await ev(`document.querySelector('#sheet-panel .code-box b').textContent`);
+console.log("unlock code:", code, "| looks right:", /^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$/.test(code));
+await shot("13b_locked_code");
+const beforeFiles = new Set(readdirSync(dl));
+await ev(`document.querySelector('#sheet-panel [data-send]').click(), 1`);
+let lockedName = null;
+for (let i = 0; i < 60 && !lockedName; i++) { await sleep(500); lockedName = readdirSync(dl).find((f) => !beforeFiles.has(f) && f.includes("(locked)") && f.endsWith(".wav")); }
+console.log("locked file:", lockedName ? `${lockedName} (${(readFileSync(join(dl, lockedName)).length / 1e6).toFixed(1)} MB)` : "nothing");
+await ev(`document.getElementById('sheet').classList.remove('open'), 1`);
+if (lockedName) {
+  // anywhere else it is a second of silence
+  const lb = readFileSync(join(dl, lockedName)), pcm = wavData(lb);
+  let pk = 0; for (const v of pcm) pk = Math.max(pk, Math.abs(v));
+  console.log(`locked file played elsewhere: ${(pcm.length / 8000).toFixed(1)} s, peak ${pk} (silence: ${pk === 0})`);
+  // a friend adds it: it asks for the code; a wrong one is refused; the right one opens it into the library
+  await ev(`location.hash = '#library'`); await sleep(400);
+  const before = await ev(`document.querySelectorAll('#lib-list .item').length`);
+  const { nodeId: fin } = await cdp("DOM.querySelector", { nodeId: (await cdp("DOM.getDocument", { depth: -1 })).root.nodeId, selector: "#file-in" });
+  await cdp("DOM.setFileInputFiles", { nodeId: fin, files: [join(dl, lockedName)] });
+  await until(`!!document.querySelector('#sheet.open .code-in')`, 15000, "the code prompt");
+  await shot("14_unlock_prompt");
+  await ev(`(() => { const i = document.querySelector('#sheet-panel .code-in'); i.value = 'AAAA-BBBB-CCCC'; [...document.querySelectorAll('#sheet-panel button')].find(b => b.textContent.includes('Open it')).click(); return 1; })()`);
+  await sleep(3000);
+  console.log("wrong code:", await ev(`document.querySelector('#sheet-panel .set-err').textContent`));
+  await ev(`(() => { const i = document.querySelector('#sheet-panel .code-in'); i.value = ${JSON.stringify(code.toLowerCase().replace(/-/g, " "))}; [...document.querySelectorAll('#sheet-panel button')].find(b => b.textContent.includes('Open it')).click(); return 1; })()`);
+  await until(`!document.getElementById('sheet').classList.contains('open')`, 30000, "the unlock");
+  await sleep(1500);
+  await click('#lib-seg button[data-k="rebass"]'); await sleep(600);
+  console.log("unlocked into the library:", await ev(`[...document.querySelectorAll('#lib-list .item')].map(li => li.querySelector('.t').textContent + ' / ' + li.querySelector('.a').textContent).join(' | ')`));
+  console.log("the same audio as sent:", await ev(`(async () => { const s = await import('./js/store.js'); const all = await s.listTracks(); const u = all.filter(t => t.from === 'locked'); if (!u.length) return 'none'; const b = await s.getBlob(u[u.length - 1].id); return b.size + ' bytes, type ' + b.type; })()`), "| sent:", saved ? readFileSync(join(dl, saved)).length + " bytes" : "?");
+  await shot("14b_unlocked");
+}
+
+// share: a rebass code, opened again from the library: the same song, set up the same way, rebassed again
+await ev(`location.hash = '#rebass'`); await sleep(500);
+await click("#rb-share"); await sleep(500);
+await ev(`[...document.querySelectorAll('#sheet-panel .menu-item')].find(b => b.textContent.includes('rebass code')).click(), 1`);
+await until(`!!document.querySelector('#sheet-panel .code-box.long code')`, 30000, "the rebass code");
+const recipe = await ev(`document.querySelector('#sheet-panel .code-box.long code').textContent`);
+console.log("rebass code:", recipe.length, "characters:", recipe.slice(0, 40) + "…");
+await shot("15_rebass_code");
+await ev(`document.getElementById('sheet').classList.remove('open'), 1`);
+// change the settings, so opening the code has to put them back
+await ev(`(() => { const lo = document.getElementById('rb-lo'); lo.value = 35; lo.dispatchEvent(new Event('input')); return 1; })()`); await sleep(400);
+await until(`document.getElementById('rb-busy').hidden`, 90000, "a re-render");
+await ev(`location.hash = '#library'`); await sleep(400);
+await click("#lib-code"); await sleep(400);
+await ev(`(() => { const t = document.querySelector('#sheet-panel .code-in'); t.value = 'Here you go: ' + ${JSON.stringify(recipe)} + ' enjoy'; [...document.querySelectorAll('#sheet-panel button')].find(b => b.textContent.includes('Open the code')).click(); return 1; })()`);
+await until(`location.hash === '#rebass'`, 20000, "the rebass screen");
+await sleep(1500);
+await until(`!document.getElementById('rb-result').hidden && document.getElementById('rb-busy').hidden`, 120000, "the rebass from the code");
+const statsAfter = await statsLine();
+console.log("from the code:", await ev(`document.getElementById('rb-range-val').textContent + ' · ' + document.getElementById('rb-db-val').textContent + ' · slowed ' + document.getElementById('rb-slow').checked + ' ' + document.getElementById('rb-speed').value + '% · reverb ' + document.getElementById('rb-reverb').checked`));
+console.log("same rebass as before:", statsAfter === statsBefore, statsAfter === statsBefore ? "" : `\n    before: ${statsBefore}\n    after:  ${statsAfter}`);
+await shot("15b_from_code");
+// a link with the code in it opens it too
+await cdp("Page.navigate", { url: url.replace(/#.*$/, "").replace(/\/?$/, "/") + "#code=" + recipe }); await sleep(3500);
+console.log("a link with the code:", await ev(`location.hash`));
 
 // tones
 await ev(`location.hash = '#tones'`); await sleep(400);

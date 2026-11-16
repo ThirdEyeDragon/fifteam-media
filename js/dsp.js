@@ -37,99 +37,79 @@ export function butter4(x, type, fc, sr) {
   return x;
 }
 
-// ---------------------------------------------------------------------------------------------------- finding the bass
+/** In-place radix-2 complex FFT (inverse: unscaled; divide by n yourself). n a power of two. */
+export function fft(re, im, inverse = false) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = ((inverse ? 2 : -2) * Math.PI) / len, wr = Math.cos(ang), wi = Math.sin(ang), half = len >> 1;
+    for (let i = 0; i < n; i += len) {
+      let cr = 1, ci = 0;
+      for (let k = 0; k < half; k++) {
+        const a = i + k, b = a + half;
+        const xr = re[b] * cr - im[b] * ci, xi = re[b] * ci + im[b] * cr;
+        re[b] = re[a] - xr; im[b] = im[a] - xi; re[a] += xr; im[a] += xi;
+        const t = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = t;
+      }
+    }
+  }
+}
+
 /**
- * Finds the song's bass line: a pitch (YIN, on the low end alone) and a loudness every 10 ms.
- * Returns { hop (s), t0 (s, time of the first frame), f0 (Hz, 0 where no clear note), conf, env (0..1), lo, hi (the song's
- * own bass range, Hz) }.
+ * Takes out of the song exactly the band lo..hi Hz and nothing else. Everything below lo and above hi is left as it was
+ * (to within about -80 dB); inside, the song is cleared, with soft edges (a raised cosine up to 1 Hz wide, just inside the
+ * band). Done precisely and cheaply: the low end is brought down to about 1000 samples a second, the band
+ * cut there with one long FFT (zero phase, so nothing moves in time), brought back up (6-tap Lanczos) and subtracted.
+ * In place. Returns the band that was taken out of the first channel, for the numbers.
  */
-export function analyzeBass(mono, sr, progress) {
-  const lp = Float32Array.from(mono);
-  butter4(lp, "lp", 280, sr);
-  progress && progress(0.25);
-  // the low end needs only a couple of thousand samples a second
-  const D = Math.max(1, Math.floor(sr / 2400)), fsd = sr / D;
-  const n = Math.floor(lp.length / D);
-  const x = new Float32Array(n);
-  for (let i = 0; i < n; i++) x[i] = lp[i * D];
-  const hop = Math.max(1, Math.round(0.01 * fsd));
-  const W = Math.round(0.075 * fsd);
-  const tauMin = Math.max(2, Math.floor(fsd / 330)), tauMax = Math.ceil(fsd / 24);
-  const frames = Math.max(0, Math.floor((n - W - tauMax - 1) / hop));
-  const f0 = new Float32Array(frames), conf = new Float32Array(frames), rms = new Float32Array(frames);
-  const d = new Float32Array(tauMax + 2), dn = new Float32Array(tauMax + 2);
-  for (let fi = 0; fi < frames; fi++) {
-    const s = fi * hop;
-    let e = 0;
-    for (let j = 0; j < W; j++) e += x[s + j] * x[s + j];
-    rms[fi] = Math.sqrt(e / W);
-    if (rms[fi] < 1e-4) continue;
-    // YIN: difference function, cumulative-mean normalised, first dip under the threshold
-    let run = 0;
-    dn[0] = 1;
-    for (let tau = 1; tau <= tauMax; tau++) {
-      let acc = 0;
-      for (let j = 0; j < W; j++) { const v = x[s + j] - x[s + j + tau]; acc += v * v; }
-      d[tau] = acc; run += acc;
-      dn[tau] = run > 0 ? (acc * tau) / run : 1;
+export function bandStop(chs, sr, lo, hi, progress) {
+  const D = Math.max(1, Math.round(sr / 1000)), fs = sr / D;
+  const w = Math.max(0.4, Math.min(1, (hi - lo) / 8));
+  let first = null;
+  chs.forEach((x, ci) => {
+    const n = x.length, m = Math.floor((n - 1) / D) + 1;
+    const lp = Float32Array.from(x);
+    butter4(lp, "lp", Math.min(250, fs * 0.3), sr);
+    // zero padding of 2 s each side keeps the filter's ringing from wrapping round
+    const pad = Math.round(2 * fs);
+    let P = 1; while (P < m + 2 * pad) P <<= 1;
+    const re = new Float64Array(P), im = new Float64Array(P);
+    for (let k = 0; k < m; k++) re[pad + k] = lp[k * D];
+    fft(re, im);
+    for (let k = 0; k <= P >> 1; k++) {
+      const f = (k * fs) / P;
+      let g = 0;
+      if (f > lo && f < hi) {
+        g = 1;
+        if (f < lo + w) g = 0.5 - 0.5 * Math.cos((Math.PI * (f - lo)) / w);
+        if (f > hi - w) g = Math.min(g, 0.5 - 0.5 * Math.cos((Math.PI * (hi - f)) / w));
+      }
+      re[k] *= g; im[k] *= g;
+      if (k && k < P >> 1) { re[P - k] *= g; im[P - k] *= g; }
     }
-    let best = -1;
-    for (let tau = tauMin; tau < tauMax; tau++) {
-      if (dn[tau] < 0.2) { while (tau + 1 < tauMax && dn[tau + 1] < dn[tau]) tau++; best = tau; break; }
+    fft(re, im, true);
+    const band = new Float32Array(m);
+    for (let k = 0; k < m; k++) band[k] = re[pad + k] / P;
+    // back up to the song's rate (Lanczos, a = 3) and out of the song
+    for (let i = 0; i < n; i++) {
+      const pos = i / D, k0 = Math.floor(pos), u = pos - k0;
+      let acc = 0, wsum = 0;
+      for (let j = -2; j <= 3; j++) {
+        const k = k0 + j; if (k < 0 || k >= m) continue;
+        const t = u - j, wt = t === 0 ? 1 : (3 * Math.sin(Math.PI * t) * Math.sin((Math.PI * t) / 3)) / (Math.PI * Math.PI * t * t);
+        acc += band[k] * wt; wsum += wt;
+      }
+      x[i] -= wsum ? acc / wsum : 0;
     }
-    if (best < 0) {
-      // no dip under the threshold: take the global minimum if it is still fairly clear
-      let m = 1e9; for (let tau = tauMin; tau < tauMax; tau++) if (dn[tau] < m) { m = dn[tau]; best = tau; }
-      if (m > 0.35) best = -1;
-    }
-    if (best > 0) {
-      const a = dn[best - 1], b = dn[best], c = dn[best + 1];
-      const den = a - 2 * b + c;
-      const off = Math.abs(den) > 1e-9 ? 0.5 * (a - c) / den : 0;
-      f0[fi] = fsd / (best + Math.max(-0.5, Math.min(0.5, off)));
-      conf[fi] = 1 - b;
-    }
-    if (progress && (fi & 1023) === 0) progress(0.25 + 0.7 * (fi / frames));
-  }
-  // loudness: normalised to the song's own loud bass, a little compressed for punch
-  const sorted = Array.from(rms).sort((a, b) => a - b);
-  const ref = sorted[Math.floor(sorted.length * 0.985)] || 1;
-  const env = new Float32Array(frames);
-  for (let i = 0; i < frames; i++) {
-    const v = Math.min(1.25, rms[i] / ref);
-    env[i] = Math.tanh(1.5 * v) / Math.tanh(1.5);
-  }
-  // steady the pitch: a median over 5 frames, short dropouts bridged while the bass still sounds
-  const med = new Float32Array(frames);
-  const win = [];
-  for (let i = 0; i < frames; i++) {
-    win.length = 0;
-    for (let k = -2; k <= 2; k++) { const v = f0[i + k]; if (v > 0) win.push(v); }
-    if (f0[i] > 0 && win.length >= 3) { win.sort((a, b) => a - b); med[i] = win[win.length >> 1]; }
-  }
-  // octave slips: a frame an octave off the notes either side of it belongs with them
-  const oct = Float32Array.from(med);
-  for (let i = 0; i < frames; i++) {
-    if (!(med[i] > 0)) continue;
-    win.length = 0;
-    for (let k = -6; k <= 6; k++) { const v = med[i + k]; if (k && v > 0) win.push(v); }
-    if (win.length < 6) continue;
-    win.sort((a, b) => a - b);
-    const ref = win[win.length >> 1], r = Math.log2(med[i] / ref);
-    if (Math.abs(Math.abs(r) - 1) < 0.08) oct[i] = med[i] * Math.pow(2, -Math.round(r));
-  }
-  med.set(oct);
-  let last = 0, gap = 0;
-  for (let i = 0; i < frames; i++) {
-    if (med[i] > 0) { last = med[i]; gap = 0; }
-    else if (last > 0 && env[i] > 0.12 && ++gap <= 8) med[i] = last;
-    else if (env[i] <= 0.12) gap = 99;
-  }
-  const voiced = Array.from(med).filter((v) => v > 0).sort((a, b) => a - b);
-  const lo = voiced.length ? voiced[Math.floor(voiced.length * 0.05)] : 40;
-  const hi = voiced.length ? voiced[Math.floor(voiced.length * 0.95)] : 100;
-  progress && progress(1);
-  return { hop: hop / fsd, t0: (W / 2) / fsd, f0: med, conf, env, lo, hi };
+    if (!ci) first = band;
+    progress && progress((ci + 1) / chs.length);
+  });
+  return { band: first, fs };
 }
 
 // ---------------------------------------------------------------------------------------------------- the new bass
@@ -138,128 +118,6 @@ export function noteName(f) {
   if (!(f > 0)) return "";
   const m = 69 + 12 * Math.log2(f / 440), r = Math.round(m), cents = Math.round((m - r) * 100);
   return `${NOTE[((r % 12) + 12) % 12]}${Math.floor(r / 12) - 1}` + (cents ? ` ${cents > 0 ? "+" : "−"}${Math.abs(cents)}¢` : "");
-}
-
-/**
- * Where each bass note goes. "musical": the same note, dropped (or raised) by whole octaves into lo..hi, so it stays in
- * key. "stretch": the song's own bass range laid across lo..hi, keeping the shape of the bass line.
- * snap: tune to the nearest semitone (after finding the song's own tuning).
- */
-export function mapBassLine(an, { lo, hi, mode = "musical", snap = true }) {
-  const n = an.f0.length, out = new Float32Array(n);
-  let tune = 0;
-  if (snap) {
-    // the song's tuning: the average offset of its bass notes from the 440 Hz semitone grid
-    let sx = 0, sy = 0, cnt = 0;
-    for (let i = 0; i < n; i += 3) if (an.f0[i] > 0 && an.env[i] > 0.2) {
-      const m = 12 * Math.log2(an.f0[i] / 440), d = (m - Math.round(m)) * 2 * Math.PI;
-      sx += Math.cos(d); sy += Math.sin(d); cnt++;
-    }
-    if (cnt) tune = Math.atan2(sy, sx) / (2 * Math.PI);
-  }
-  const sLo = Math.log2(Math.max(an.lo, 1)), sHi = Math.log2(Math.max(an.hi, an.lo * 1.01, 1));
-  const tLo = Math.log2(lo), tHi = Math.log2(hi);
-  for (let i = 0; i < n; i++) {
-    let f = an.f0[i];
-    if (!(f > 0)) continue;
-    if (snap) { const m = 12 * Math.log2(f / 440) - tune; f = 440 * Math.pow(2, (Math.round(m) + tune) / 12); }
-    if (mode === "stretch") {
-      const u = Math.min(1, Math.max(0, (Math.log2(f) - sLo) / (sHi - sLo)));
-      f = Math.pow(2, tLo + u * (tHi - tLo));
-    } else if (hi / lo >= 2) {
-      while (f > hi) f /= 2;
-      while (f < lo) f *= 2;
-    } else if (hi / lo >= 1.5) {
-      // most of an octave (25-45 Hz, say): the same note, folded in, still in key; the few notes that fall in the gap
-      // above hi go to whichever edge is closer, always the same one for the same note
-      while (f >= 2 * lo) f /= 2;
-      while (f < lo) f *= 2;
-      if (f > hi) f = Math.log2(f / hi) <= Math.log2((2 * lo) / f) ? hi : lo;
-    } else {
-      // a very narrow range (23-30 Hz, say): each note is folded into the octave above lo, and that octave laid across
-      // the range, so a given note always plays the same frequency (never bounced between the two edges)
-      while (f >= 2 * lo) f /= 2;
-      while (f < lo) f *= 2;
-      f = lo * Math.pow(hi / lo, Math.log2(f / lo));
-    }
-    out[i] = Math.min(hi, Math.max(lo, f));
-  }
-  // hold notes steady; in a narrow range, hold them longer still (a deep sub with fewer, cleaner moves); then make sure
-  // every moment the song's own bass sounds has a new note under it
-  return fillBass(stabilize(out, hi / lo < 2 ? 8 : 5), an.env);
-}
-
-/**
- * The old bass is always taken out, so the new one has to be there every time the old one was: wherever the low end
- * sounds (env over thr) but no note was heard clearly (a drum hit on the bass, a slide, a growl), a note is given to it.
- *   Sounding straight on from a note: that note carries on. Running from one note into the next: the first carries on
- *   until the hit that starts the second. On its own: the nearer note (within `reach` frames), else the song's most
- *   used bass note.
- */
-export function fillBass(f, env, thr = 0.08, reach = 300) {
-  const n = f.length, out = Float32Array.from(f);
-  const count = new Map();
-  for (let i = 0; i < n; i++) if (f[i] > 0) count.set(f[i], (count.get(f[i]) || 0) + 1);
-  if (!count.size) return out;
-  let home = 0, best = -1;
-  for (const [k, c] of count) if (c > best) { best = c; home = k; }
-  for (let i = 0; i < n;) {
-    if (f[i] > 0) { i++; continue; }
-    const s = i; while (i < n && !(f[i] > 0)) i++;
-    const e = i, pv = s > 0 ? f[s - 1] : 0, nx = e < n ? f[e] : 0;
-    for (let j = s; j < e;) {
-      if (!(env[j] > thr)) { j++; continue; }
-      const a = j; while (j < e && env[j] > thr) j++;
-      const b = j, touchPrev = a === s && pv > 0, touchNext = b === e && nx > 0;
-      if (touchPrev && touchNext) {
-        // split at the strongest rise in loudness (the next hit), or keep the first note right up to the second
-        let cut = b, rise = 0.12;
-        for (let k = a + 1; k < b; k++) { const r = env[k] - Math.min(env[k - 1], env[Math.max(a, k - 3)]); if (r > rise) { rise = r; cut = k; } }
-        out.fill(pv, a, cut); out.fill(nx, cut, b);
-      } else if (touchPrev) out.fill(pv, a, b);
-      else if (touchNext) out.fill(nx, a, b);
-      else {
-        const dp = pv > 0 ? a - s + 1 : Infinity, dn = nx > 0 ? e - b + 1 : Infinity;
-        const near = Math.min(dp, dn) <= reach ? (dp <= dn ? pv : nx) : home;
-        out.fill(near, a, b);
-      }
-    }
-  }
-  return out;
-}
-
-/** Where the song's own bass is cut: above its bass notes (and above the new bass range), never into the mids. */
-export function removalHz(songBassHi, newHi) {
-  return Math.min(220, Math.max(120, songBassHi * 1.6, newHi * 1.15));
-}
-
-/**
- * Holds each note steady: frames within 35 cents of a note's start are one note (played at its median pitch), and any
- * note shorter than minLen frames (a flicker between two notes) joins the longer neighbour it touches. Done on the
- * whole song at once, so a new note starts exactly when it starts, never late.
- */
-export function stabilize(f, minLen) {
-  const n = f.length, segs = [];
-  for (let i = 0; i < n;) {
-    if (!(f[i] > 0)) { const s = i; while (i < n && !(f[i] > 0)) i++; segs.push({ s, e: i, f: 0 }); continue; }
-    const s = i, base = f[i];
-    while (i < n && f[i] > 0 && Math.abs(1200 * Math.log2(f[i] / base)) < 35) i++;
-    const v = Array.from(f.subarray(s, i)).sort((a, b) => a - b);
-    segs.push({ s, e: i, f: v[v.length >> 1] });
-  }
-  for (let pass = 0; pass < 3; pass++) {
-    for (let k = 0; k < segs.length; k++) {
-      const g = segs[k];
-      if (!g.f || g.e - g.s >= minLen) continue;
-      const a = segs[k - 1], b = segs[k + 1];
-      const la = a && a.f ? a.e - a.s : -1, lb = b && b.f ? b.e - b.s : -1;
-      if (la < 0 && lb < 0) continue;
-      g.f = la >= lb ? a.f : b.f;
-    }
-  }
-  const out = new Float32Array(n);
-  for (const g of segs) out.fill(g.f, g.s, g.e);
-  return out;
 }
 
 /** A mono mix of the channels. */
@@ -349,59 +207,6 @@ export function freeverb(chs, sr, { room = 0.86, damp = 0.32, wet = 0.32, width 
   return [oL, oR];
 }
 
-/**
- * Builds the new bass: one clean sine following the mapped notes, its phase continuous across note changes (no clicks),
- * gliding 6 ms between notes, its loudness following the song's own bass. Returns mono, peak 1.
- */
-export function synthBass(an, mapped, sr, length, progress) {
-  const out = new Float32Array(length);
-  const n = mapped.length;
-  const kG = 1 - Math.exp(-1 / (0.012 * sr));
-  const kA = 1 - Math.exp(-1 / (0.008 * sr)), kR = 1 - Math.exp(-1 / (0.09 * sr));
-  // the target loudness per frame: only where there is a note to play, gated in the quiet, smoothed over 50 ms (within
-  // each note) so the sine swells and settles cleanly instead of fluttering with every drum hit
-  const raw = new Float32Array(n);
-  for (let i = 0; i < n; i++) raw[i] = mapped[i] > 0 ? an.env[i] : 0;
-  const tgt = new Float32Array(n);
-  const W = [1, 2, 3, 2, 1];
-  for (let i = 0; i < n; i++) {
-    if (!(raw[i] > 0)) continue;
-    let s = 0, w = 0;
-    for (let k = -2; k <= 2; k++) { const v = raw[i + k]; if (v > 0) { s += v * W[k + 2]; w += W[k + 2]; } }
-    tgt[i] = s / w;
-    if (tgt[i] < 0.05) tgt[i] = 0;
-  }
-  let ph = 0, f = 0, e = 0, peak = 0;
-  // start on the first note so the sine never sweeps up from zero
-  for (let i = 0; i < n; i++) if (mapped[i] > 0) { f = mapped[i]; break; }
-  if (!f) return { bass: out, peak: 0 };
-  for (let s = 0; s < length; s++) {
-    const p = (s / sr - an.t0) / an.hop;
-    let i0 = Math.floor(p); const u = p - i0;
-    let fT, eT;
-    if (i0 < 0) { fT = mapped[0] || f; eT = 0; }
-    else if (i0 >= n - 1) { fT = f; eT = 0; }
-    else {
-      const a = mapped[i0], b = mapped[i0 + 1];
-      fT = a > 0 && b > 0 ? a + (b - a) * u : (a > 0 ? a : (b > 0 ? b : f));
-      eT = tgt[i0] + (tgt[i0 + 1] - tgt[i0]) * u;
-    }
-    f += (fT - f) * kG;
-    e += (eT - e) * (eT > e ? kA : kR);
-    ph += (2 * Math.PI * f) / sr;
-    if (ph > 6.283185307179586) ph -= 6.283185307179586;
-    const v = Math.sin(ph) * e;
-    out[s] = v;
-    const av = v < 0 ? -v : v;
-    if (av > peak) peak = av;
-    if (progress && (s & 262143) === 0) progress(s / length);
-  }
-  // fade the ends so nothing starts or stops with a click
-  const fade = Math.min(length >> 1, Math.round(0.02 * sr));
-  for (let s = 0; s < fade; s++) { const g = s / fade; out[s] *= g; out[length - 1 - s] *= g; }
-  return { bass: out, peak };
-}
-
 // ---------------------------------------------------------------------------------------------------- mixing without clipping
 /** Sliding minimum over the centred window [i-h, i+h] (a monotonic queue, O(n)). */
 export function slidingMin(x, h) {
@@ -476,11 +281,12 @@ export function truePeak(chs, near = 0.5) {
  * Returns { out: [L, R], stats }.
  */
 export function rebassMix(chs, bass, bassPeak, sr, opts) {
-  const { bassDb = -3, ceilingDb = -0.1, replaceHz = 0, floorDb = -9, progress } = opts;
+  const { bassDb = -3, ceilingDb = -0.1, band = null, floorDb = -12, progress } = opts;
   const C0 = dbToLin(ceilingDb);
   const nCh = chs.length, n = chs[0].length;
   const music = chs.map((c) => Float32Array.from(c));
-  if (replaceHz > 0) music.forEach((m) => butter4(m, "hp", replaceHz, sr));
+  // the song's own content inside the chosen range comes out; nothing outside it is touched
+  if (band) bandStop(music, sr, band[0], band[1]);
   progress && progress(0.2);
   const A = bassPeak > 0 ? Math.min(dbToLin(bassDb), C0) / bassPeak : 0;
   const floor = dbToLin(floorDb);

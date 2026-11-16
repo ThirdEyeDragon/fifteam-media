@@ -2,10 +2,10 @@
 import { $, bus, toast } from "./ui.js";
 import { player } from "./player.js";
 
-export const APP_VERSION = "1.4";
+export const APP_VERSION = "1.5";
 import * as store from "./store.js";
 import { initPlayer } from "./player.js";
-import { initLibrary, library, importFiles } from "./library.js";
+import { initLibrary, library, importFiles, openCode } from "./library.js";
 import { initRebass, rebass } from "./rebass.js";
 import { initTones } from "./tones.js";
 import { initSettings } from "./settings.js";
@@ -13,6 +13,9 @@ import { initDemo } from "./demo.js";
 
 const VIEWS = ["player", "library", "rebass", "tones"];
 function route() {
+  // a link with a rebass code in it: open the code
+  const code = /^#code=(FT1\.[A-Za-z0-9_-]+)/.exec(location.hash);
+  if (code) { history.replaceState(null, "", location.pathname + "#library"); setTimeout(() => openCode(code[1]), 300); }
   let v = location.hash.slice(1);
   if (!VIEWS.includes(v)) v = "player";
   for (const k of VIEWS) $("view-" + k).classList.toggle("active", k === v);

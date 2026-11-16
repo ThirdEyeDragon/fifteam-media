@@ -5,6 +5,7 @@ import { $, toast, openSheet, closeSheet, fmtTime, artUrl, forgetArt, placeholde
 import { player } from "./player.js";
 import { sizeText, isIOS } from "./export.js";
 import { pickImage } from "./image.js";
+import { lockedPart, askUnlock, openCodeSheet, describeRecipe, fingerprint } from "./share.js";
 
 let tracks = [];
 let kind = "song";
@@ -36,9 +37,21 @@ function durationOf(blob) {
   });
 }
 
+const AUDIO_EXT = /\.(mp3|m4a|m4b|mp4|aac|wav|wave|flac|ogg|oga|opus|weba|webm|aif|aiff|aifc|caf|3gp|amr)$/i;
 export async function importFiles(files) {
-  const list = Array.from(files).filter((f) => /^audio\//.test(f.type) || /\.(mp3|m4a|aac|wav|flac|ogg|opus|aif|aiff)$/i.test(f.name));
+  // audio by its type or its name; some phones hand files over with no type at all, so anything not clearly something
+  // else is given a try (if the phone can't play it, it is skipped)
+  const all = Array.from(files);
+  const list = all.filter((f) => /^(audio|video)\//.test(f.type) || AUDIO_EXT.test(f.name) || !f.type || f.type === "application/octet-stream");
   if (!list.length) { toast("Those files aren't audio files"); return []; }
+  // locked songs a friend sent: each asks for its code
+  const locked = [];
+  for (const f of list.slice()) if ((/wav|wave/i.test(f.type) || /\.wav$/i.test(f.name)) && (await lockedPart(f))) { locked.push(f); list.splice(list.indexOf(f), 1); }
+  if (locked.length) {
+    const next = (i) => { if (i < locked.length) askUnlock(locked[i], async (r) => { await addUnlocked(r); next(i + 1); }); };
+    next(0);
+    if (!list.length) return [];
+  }
   const have = new Set(tracks.map((t) => `${t.fileName}|${t.size}`));
   let added = 0, skipped = 0;
   const ids = [];
@@ -48,9 +61,11 @@ export async function importFiles(files) {
     if (have.has(`${f.name}|${f.size}`)) { skipped++; continue; }
     toast(`Adding ${i + 1} of ${list.length}: ${f.name}`, 60000);
     const tags = await readTags(f);
+    const duration = await durationOf(f);
+    if (!duration) { skipped++; toast(`This phone can't play ${f.name}`, 3000); continue; }
     const meta = {
       id: store.newId(), kind: "song", title: tags.title, artist: tags.artist, album: tags.album,
-      duration: await durationOf(f), size: f.size, type: f.type || "audio/mpeg", fileName: f.name, added: Date.now(), hasArt: !!tags.art,
+      duration, size: f.size, type: f.type || "audio/mpeg", fileName: f.name, added: Date.now(), hasArt: !!tags.art,
     };
     try { await store.putTrack(meta, f, tags.art); added++; ids.push(meta.id); }
     catch (e) { toast("Your phone ran out of room for more songs."); break; }
@@ -58,6 +73,54 @@ export async function importFiles(files) {
   await library.refresh();
   toast(added ? `Added ${added} song${added > 1 ? "s" : ""}${skipped ? ` (${skipped} already here)` : ""}` : "Those songs are already in your library");
   return ids;
+}
+
+/** A locked song, opened: into the library with all its details. */
+async function addUnlocked({ meta, audio, cover }) {
+  const kindOf = meta.kind === "rebass" || meta.kind === "tone" ? meta.kind : "song";
+  const t = {
+    id: store.newId(), kind: kindOf, title: meta.title || "Shared song", artist: meta.artist || "", album: meta.album || "",
+    note: meta.note || "", duration: meta.duration || (await durationOf(audio)), size: audio.size, type: audio.type,
+    fileName: meta.fileName || `${meta.title || "song"}.wav`, added: Date.now(), hasArt: !!cover, from: "locked",
+  };
+  try { await library.add(t, audio, cover); toast(`${t.title} unlocked and added${kindOf === "rebass" ? ", under Rebassed" : ""}`, 3500); }
+  catch { toast("Your phone is out of room for it."); }
+}
+
+/** A rebass code: find the song it was made from, and make the very same rebass. */
+async function openRecipe(r) {
+  const songs = tracks.filter((t) => (t.kind || "song") === "song");
+  // the very same file first (its fingerprint), then the same song by name and length
+  const near = songs.filter((t) => Math.abs((t.duration || 0) - r.duration) < 2.5);
+  let match = null;
+  for (const t of near) {
+    if (!t.hash) { const b = await store.getBlob(t.id); if (b) { t.hash = await fingerprint(b); store.updateTrack({ ...t }).catch(() => {}); } }
+    if (t.hash === r.hash) { match = t; break; }
+  }
+  let exact = !!match;
+  if (!match) {
+    const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    match = near.find((t) => norm(t.title) === norm(r.title) && (!r.artist || norm(t.artist) === norm(r.artist))) || null;
+  }
+  if (!match) {
+    openSheet((p) => {
+      p.innerHTML += `<h3>You need this song first</h3>`;
+      const d = document.createElement("p"); d.className = "status"; d.textContent = describeRecipe(r); p.appendChild(d);
+      const e = document.createElement("p"); e.className = "status"; e.textContent = "Add it to your library, then open the code again."; p.appendChild(e);
+      const b = document.createElement("button"); b.className = "btn primary block"; b.textContent = "Add music";
+      b.onclick = () => { closeSheet(); $("file-in").value = ""; $("file-in").click(); }; p.appendChild(b);
+    });
+    return;
+  }
+  toast(exact ? `Rebassing ${match.title} exactly as sent` : `Rebassing your copy of ${match.title} (a different file, so it may differ a little)`, 4000);
+  const { rebass } = await import("./rebass.js");
+  rebass.applyRecipe(match, r.settings);
+}
+export function openCode(prefill = "") {
+  openCodeSheet({ prefill, onRecipe: openRecipe, onLockedFile: async (f) => {
+    if (!(await lockedPart(f))) { toast("That isn't a locked FifTeam file"); return; }
+    askUnlock(f, addUnlocked);
+  } });
 }
 
 function itemHtml(t) {
@@ -108,7 +171,7 @@ function render() {
     $("lib-add-2").hidden = $("lib-add-dir").hidden = kind !== "song" || !!q;
   }
   const n = tracks.filter((t) => (t.kind || "song") === "song").length;
-  store.storageUse().then((u) => { $("lib-foot").textContent = (n || u ? `${n} song${n === 1 ? "" : "s"} · ${sizeText(u)} kept on this device · ` : "") + "FifTeam Media 1.4"; });
+  store.storageUse().then((u) => { $("lib-foot").textContent = (n || u ? `${n} song${n === 1 ? "" : "s"} · ${sizeText(u)} kept on this device · ` : "") + "FifTeam Media 1.5"; });
 }
 
 function menu(t) {
@@ -145,6 +208,7 @@ export function initLibrary() {
   const fileIn = $("file-in"), dirIn = $("dir-in");
   const pick = () => { fileIn.value = ""; fileIn.click(); };
   $("lib-add").onclick = pick; $("lib-add-2").onclick = pick;
+  $("lib-code").onclick = () => openCode();
   $("lib-add-dir").onclick = () => { dirIn.value = ""; dirIn.click(); };
   fileIn.onchange = () => importFiles(fileIn.files);
   dirIn.onchange = () => importFiles(dirIn.files);
