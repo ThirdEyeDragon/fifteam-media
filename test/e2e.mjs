@@ -54,6 +54,12 @@ await cdp("Page.setDownloadBehavior", { behavior: "allow", downloadPath: dl });
 await cdp("Page.navigate", { url });
 await sleep(2500);
 await shot("01_first_open");
+try {
+  const inst = await cdp("Page.getInstallabilityErrors");
+  const man = await cdp("Page.getAppManifest");
+  console.log("installable:", inst.installabilityErrors.length ? JSON.stringify(inst.installabilityErrors) : "yes", "| manifest errors:", man.errors.length ? JSON.stringify(man.errors) : "none");
+  console.log("service worker:", await ev(`navigator.serviceWorker.getRegistration().then(r => r ? (r.active ? 'active' : 'installing') : 'none')`));
+} catch (e) { console.log("install check failed:", e.message); }
 
 // bring two songs in through the real file picker
 const doc = await cdp("DOM.getDocument", { depth: -1 });
