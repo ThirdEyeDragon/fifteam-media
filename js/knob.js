@@ -21,7 +21,7 @@ export function makeKnob(host, { label, value = 5, def = 5, sub = (v) => "", onI
         <path class="trk" d="${arc(A0, A1, 40)}"/>
         <path class="val" stroke="url(#${id})"/>
         <circle class="cap" cx="50" cy="50" r="29"/>
-        <line class="ptr" x1="50" y1="30" x2="50" y2="38"/>
+        <line class="ptr" x1="50" y1="23" x2="50" y2="29"/>
       </svg>
       <span class="knob-num"></span>
     </div>

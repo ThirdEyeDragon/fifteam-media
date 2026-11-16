@@ -173,7 +173,7 @@ input[type="range"]::-moz-range-thumb { width: 22px; height: 22px; border: 0; bo
 .knob .val { fill: none; stroke-width: 6; stroke-linecap: round; filter: drop-shadow(0 0 4px rgba(150, 90, 255, 0.6)); }
 .knob .cap { fill: #1a1748; stroke: rgba(255, 255, 255, 0.1); stroke-width: 1; filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.45)); }
 .knob .ptr { stroke: #fff; stroke-width: 3.2; stroke-linecap: round; }
-.knob-num { position: absolute; inset: 0; display: grid; place-items: center; padding-top: 14px; font: 700 15px/1 var(--font-head); font-variant-numeric: tabular-nums; pointer-events: none; }
+.knob-num { position: absolute; inset: 0; display: grid; place-items: center; font: 700 15px/1 var(--font-head); font-variant-numeric: tabular-nums; pointer-events: none; }
 .knob-label { font: 600 11px/1 var(--font-body); letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); margin-top: 2px; }
 .knob-sub { font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; min-height: 1.2em; }
 .knob:focus-visible { outline: 2px solid var(--violet); outline-offset: 4px; }

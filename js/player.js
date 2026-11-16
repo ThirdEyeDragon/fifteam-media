@@ -4,7 +4,7 @@ import * as store from "./store.js";
 import { $, fmtTime, fill, artUrl, placeholderArt, bus, toast } from "./ui.js";
 import { makeTilt } from "./tilt.js";
 import { makeKnob } from "./knob.js";
-import { eq, dbOf } from "./eq.js";
+import { eq, describe } from "./eq.js";
 
 const audio = new Audio();
 audio.preload = "auto";
@@ -99,8 +99,33 @@ async function render() {
   }
   $("np-rebass").hidden = !t || t.kind === "tone";
   if ("mediaSession" in navigator && t) {
-    navigator.mediaSession.metadata = new MediaMetadata({ title: t.title, artist: t.artist || "", album: t.album || "FifTeam Media", artwork: [{ src: cover, sizes: "512x512" }] });
+    const album = t.album || (t.kind === "rebass" ? "Rebassed" : t.kind === "tone" ? "Tones" : "FifTeam Media");
+    navigator.mediaSession.metadata = new MediaMetadata({ title: t.title, artist: t.artist || "FifTeam Media", album, artwork: [{ src: cover, sizes: "512x512" }] });
+    // then the cover as proper square images in the sizes lock screens, car screens and watches ask for
+    const art = await sessionArtwork(t.id, cover);
+    if (P.cur === t && art.length) navigator.mediaSession.metadata = new MediaMetadata({ title: t.title, artist: t.artist || "FifTeam Media", album, artwork: art });
   }
+}
+
+// the cover for the system's "now playing" (lock screen, Bluetooth car stereos, CarPlay): square JPEGs, six sizes
+let artCache = { id: null, list: [] };
+async function sessionArtwork(id, src) {
+  if (artCache.id === id) return artCache.list;
+  for (const a of artCache.list) URL.revokeObjectURL(a.src);
+  artCache = { id, list: [] };
+  try {
+    const img = await new Promise((ok, bad) => { const i = new Image(); i.onload = () => ok(i); i.onerror = bad; i.src = src; });
+    const s = Math.min(img.naturalWidth, img.naturalHeight), sx = (img.naturalWidth - s) / 2, sy = (img.naturalHeight - s) / 2;
+    const list = [];
+    for (const size of [96, 128, 192, 256, 384, 512]) {
+      const c = document.createElement("canvas"); c.width = c.height = size;
+      const g = c.getContext("2d"); g.imageSmoothingQuality = "high"; g.drawImage(img, sx, sy, s, s, 0, 0, size, size);
+      const b = await new Promise((ok) => c.toBlob(ok, "image/jpeg", 0.9));
+      if (b) list.push({ src: URL.createObjectURL(b), sizes: `${size}x${size}`, type: "image/jpeg" });
+    }
+    if (artCache.id === id) artCache.list = list; else list.forEach((a) => URL.revokeObjectURL(a.src));
+    return list;
+  } catch { return []; }
 }
 
 function setPlayIcons() {
@@ -126,13 +151,13 @@ export function initPlayer() {
     $("mini").classList.toggle("hide", !P.cur || v === "player");
   });
 
-  // the tone knobs: BASS, MIDS, HIGHS, 0 to 10 (5 is flat)
+  // the tone knobs: BASS, MIDS, HIGHS, 0 (that band off) to 10 (loudest), 5 the song as it is
   eq.attach(audio);
-  const sub = (v) => { const d = dbOf(v); return Math.abs(d) < 0.05 ? "flat" : `${d > 0 ? "+" : "−"}${Math.abs(d).toFixed(1)} dB`; };
+  const sub = describe;
   for (const [id, band, label] of [["kn-bass", "bass", "Bass"], ["kn-mids", "mids", "Mids"], ["kn-highs", "highs", "Highs"]])
     makeKnob($(id), { label, value: eq.values[band], sub, onInput: (v) => eq.set(band, v) });
   audio.addEventListener("play", () => eq.engageIfNeeded());
-  bus.on("art", (id) => { if (P.cur && P.cur.id === id) render(); });
+  bus.on("art", (id) => { if (P.cur && P.cur.id === id) { artCache.id = null; render(); } });
 
   $("np-play").onclick = () => { if (!P.cur) { location.hash = "#library"; return; } player.toggle(); };
   $("mini-play").onclick = (e) => { e.stopPropagation(); player.toggle(); };
@@ -174,6 +199,7 @@ export function initPlayer() {
     const ms = navigator.mediaSession;
     const h = (a, f) => { try { ms.setActionHandler(a, f); } catch {} };
     h("play", () => audio.play()); h("pause", () => audio.pause());
+    h("stop", () => { audio.pause(); audio.currentTime = 0; });
     h("nexttrack", () => player.next()); h("previoustrack", () => player.prev());
     h("seekto", (d) => { if (d.seekTime != null) audio.currentTime = d.seekTime; });
     h("seekbackward", (d) => { audio.currentTime = Math.max(0, audio.currentTime - (d.seekOffset || 10)); });

@@ -102,6 +102,28 @@ await ev(`(() => { const k = document.querySelector('#kn-bass .knob'); k.focus()
 await sleep(800);
 console.log("knobs:", await ev(`[...document.querySelectorAll('.knob-wrap')].map(w => w.querySelector('.knob-label').textContent + ' ' + w.querySelector('.knob').getAttribute('aria-valuenow') + ' (' + w.querySelector('.knob-sub').textContent + ')').join(' | ')`),
   "| still playing:", await ev(`!document.querySelector('#np-play use').getAttribute('href').includes('play')`));
+// the crossover itself, measured with tones: at 5/5/5 every frequency comes out as it went in; at 0 a band is gone
+console.log("crossover:", await ev(`(async () => {
+  const { makeBands } = await import('./js/eq.js');
+  const sr = 48000, N = sr;
+  const level = async (f, vals) => {
+    const ctx = new OfflineAudioContext(1, N, sr), osc = ctx.createOscillator(); osc.frequency.value = f;
+    const b = makeBands(ctx); b.set(vals, true); osc.connect(b.input); b.output.connect(ctx.destination); osc.start();
+    const x = (await ctx.startRendering()).getChannelData(0); let s = 0; for (let i = N / 2; i < N; i++) s += x[i] * x[i];
+    return (20 * Math.log10(Math.sqrt(s / (N / 2)) / Math.SQRT1_2)).toFixed(1);
+  };
+  const flat = { bass: 5, mids: 5, highs: 5 }, r = [];
+  for (const f of [40, 120, 250, 1000, 4000, 12000]) r.push(f + ' Hz ' + await level(f, flat));
+  r.push('| bass 0: 50 Hz ' + await level(50, { ...flat, bass: 0 }) + ', 1 kHz ' + await level(1000, { ...flat, bass: 0 }));
+  r.push('| mids 0: 1 kHz ' + await level(1000, { ...flat, mids: 0 }) + ', 50 Hz ' + await level(50, { ...flat, mids: 0 }));
+  r.push('| highs 0: 12 kHz ' + await level(12000, { ...flat, highs: 0 }) + ', 1 kHz ' + await level(1000, { ...flat, highs: 0 }));
+  r.push('| bass 10: 50 Hz ' + await level(50, { ...flat, bass: 10 }));
+  return r.join(', ');
+})()`));
+await ev(`(() => { const k = document.querySelector('#kn-highs .knob'); k.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true })); return 1; })()`);
+await sleep(300);
+console.log("knob labels:", await ev(`[...document.querySelectorAll('.knob-wrap')].map(w => w.querySelector('.knob-label').textContent + ' ' + w.querySelector('.knob').getAttribute('aria-valuenow') + ' ' + w.querySelector('.knob-sub').textContent).join(' | ')`));
+console.log("now playing for the system:", await ev(`(() => { const m = navigator.mediaSession && navigator.mediaSession.metadata; return m ? m.title + ' / ' + m.artist + ' / ' + m.album + ' / artwork ' + [...m.artwork].map(a => a.sizes).join(' ') : 'none'; })()`));
 await ev(`(() => { const v = document.getElementById('view-player'); v.scrollTop = v.scrollHeight; return 1; })()`); await sleep(300);
 await shot("03b_player_knobs");
 
