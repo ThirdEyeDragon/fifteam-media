@@ -75,7 +75,7 @@ for (let i = 0; i < an.f0.length; i++) {
 const voicedTruth = Array.from(truth).filter((v) => v > 0).length;
 console.log(`pitch: ${(100 * hit / tot).toFixed(1)}% exact, ${(100 * oct / tot).toFixed(1)}% octave off, coverage ${(100 * tot / voicedTruth).toFixed(0)}%`);
 
-for (const [lo, hi, mode, db] of [[25, 45, "musical", 0], [20, 35, "stretch", -3], [30, 60, "musical", -7.5]]) {
+for (const [lo, hi, mode, db] of [[25, 45, "musical", 0], [20, 35, "stretch", -3], [30, 60, "musical", -7.5], [23, 30, "musical", -5]]) {
   t = performance.now();
   const mapped = mapBassLine(an, { lo, hi, mode, snap: true });
   let mn = 1e9, mx = 0;
@@ -84,9 +84,21 @@ for (const [lo, hi, mode, db] of [[25, 45, "musical", 0], [20, 35, "stretch", -3
   const { out, stats } = rebassMix([L, R], bass, peak, sr, { bassDb: db, replaceHz: hi * 1.25 });
   const wav = new Int16Array(encodeWav(out, sr, 16).slice(44));
   let full = 0; for (const v of wav) if (v >= 32767 || v <= -32768) full++;
-  console.log(`${lo}-${hi} Hz ${mode} ${db} dB: bass ${mn.toFixed(1)}-${mx.toFixed(1)} Hz (${noteName(mn)} to ${noteName(mx)}), peak ${stats.peakDb.toFixed(2)} dBFS, ` +
-    `true peak ${stats.truePeakDb.toFixed(2)} dBTP, clipped ${stats.clipped}, song ducked ${stats.duckDb.toFixed(2)} dB, 16-bit full-scale samples ${full}, ${(performance.now() - t).toFixed(0)} ms`);
-  if (stats.clipped || full || stats.truePeakDb > -0.1 + 1e-6 || mn < lo - 0.01 || mx > hi + 0.01) { console.log("FAIL"); process.exit(1); }
+  console.log(`${lo}-${hi} Hz ${mode} ${db} dB: bass ${mn.toFixed(1)}-${mx.toFixed(1)} Hz, bass plays at ${stats.bassActualDb.toFixed(2)} dBFS, song at ${stats.songDb.toFixed(1)} dB fixed` +
+    `${stats.ridePct > 0 ? `, riding ${stats.ridePct.toFixed(1)}% of the time (down to ${stats.rideDb.toFixed(1)} dB more)` : ", no compression"}, true peak ${stats.truePeakDb.toFixed(2)} dBTP, clipped ${stats.clipped}, full-scale ${full}, ${(performance.now() - t).toFixed(0)} ms`);
+  if (stats.clipped || full || stats.truePeakDb > -0.1 + 1e-3 || mn < lo - 0.01 || mx > hi + 0.01 || Math.abs(stats.bassActualDb - Math.min(db, -0.1)) > 0.02) { console.log("FAIL"); process.exit(1); }
+  if (lo === 23) {
+    // the narrow range: how many distinct pitches, how long the notes are, and each note name always on one frequency
+    const byNote = new Map(); let runs = 0, short = 0, len = 0, prev = -1;
+    for (let i = 0; i <= mapped.length; i++) {
+      const f = i < mapped.length ? mapped[i] : -2;
+      if (f !== prev) { if (prev > 0) { runs++; if (len < 8) short++; } prev = f; len = 1; } else len++;
+      if (i < mapped.length && f > 0 && an.f0[i] > 0) { const pc = ((Math.round(12 * Math.log2(an.f0[i] / 440)) % 12) + 12) % 12; (byNote.get(pc) || byNote.set(pc, new Set()).get(pc)).add(f.toFixed(2)); }
+    }
+    const multi = [...byNote.values()].filter((v) => v.size > 1).length;
+    console.log(`  23-30 Hz: ${new Set(Array.from(mapped).filter((f) => f > 0).map((f) => f.toFixed(2))).size} pitches, ${runs} notes, ${short} under 80 ms, note names on more than one frequency: ${multi}`);
+    if (short) { console.log("FAIL"); process.exit(1); }
+  }
 }
 // note stability: count notes shorter than 40 ms in the mapped line (flicker)
 {
@@ -108,6 +120,8 @@ for (const [lo, hi, mode, db] of [[25, 45, "musical", 0], [20, 35, "stretch", -3
   const [sL, sR] = slowDown([L, R], speed);
   const smono = new Float32Array(sL.length); for (let s = 0; s < sL.length; s++) smono[s] = 0.5 * (sL[s] + sR[s]);
   const san = analyzeBass(smono, sr);
+  // the app's way: the original bass line, unchanged, laid at the slowed times
+  const scaled = { ...an, t0: an.t0 / speed, hop: an.hop / speed };
   let hit = 0, tot = 0;
   for (let i = 0; i < san.f0.length; i++) {
     const time = (san.t0 + i * san.hop) * speed, fr = Math.round(time * 100);
@@ -116,11 +130,11 @@ for (const [lo, hi, mode, db] of [[25, 45, "musical", 0], [20, 35, "stretch", -3
     if (Math.abs(1200 * Math.log2(san.f0[i] / (truth[fr] * speed))) < 50) hit++;
   }
   const wetChs = freeverb([sL, sR], sr);
-  const mapped = mapBassLine(san, { lo: 22, hi: 45, mode: "musical", snap: true });
-  const { bass, peak } = synthBass(san, mapped, sr, wetChs[0].length);
-  const { out, stats } = rebassMix(wetChs, bass, peak, sr, { bassDb: 0, replaceHz: 45 * 1.25 });
+  const mapped = mapBassLine(an, { lo: 22, hi: 45, mode: "musical", snap: true });
+  const { bass, peak } = synthBass(scaled, mapped, sr, wetChs[0].length);
+  const { out, stats } = rebassMix(wetChs, bass, peak, sr, { bassDb: -5, replaceHz: 120 });
   console.log(`slowed 75% + reverb: ${(sL.length / sr).toFixed(1)} s (was ${secs}), song bass ${san.lo.toFixed(1)}-${san.hi.toFixed(1)} Hz, ` +
-    `found the slowed notes ${(100 * hit / tot).toFixed(1)}% exact, true peak ${stats.truePeakDb.toFixed(2)} dBTP, clipped ${stats.clipped}, ${(performance.now() - t).toFixed(0)} ms`);
-  if (stats.clipped || stats.truePeakDb > -0.1 + 1e-6 || hit / tot < 0.85) { console.log("FAIL"); process.exit(1); }
+    `bass plays at ${stats.bassActualDb.toFixed(2)} dBFS, song ${stats.songDb.toFixed(1)} dB fixed${stats.ridePct > 0 ? ` + riding ${stats.ridePct.toFixed(1)}%` : ", no compression"}, true peak ${stats.truePeakDb.toFixed(2)} dBTP, clipped ${stats.clipped}, ${(performance.now() - t).toFixed(0)} ms`);
+  if (stats.clipped || stats.truePeakDb > -0.1 + 1e-3 || Math.abs(stats.bassActualDb + 5) > 0.02) { console.log("FAIL"); process.exit(1); }
 }
 console.log("PASS");

@@ -1,7 +1,7 @@
 // The music player: one <audio> element (so it keeps playing with the screen off and shows on the lock screen), a queue,
 // shuffle and repeat, the now-playing screen with the tilting cover, and the mini player above the tabs.
 import * as store from "./store.js";
-import { $, fmtTime, fill, artUrl, placeholderArt, bus, toast } from "./ui.js";
+import { $, fmtTime, fill, artUrl, placeholderArt, bus, toast, marquee } from "./ui.js";
 import { makeTilt } from "./tilt.js";
 import { makeKnob } from "./knob.js";
 import { eq, describe } from "./eq.js";
@@ -12,6 +12,7 @@ const P = { tracks: new Map(), queue: [], order: [], pos: -1, shuffle: false, re
 
 export const player = {
   get current() { return P.cur; },
+  get audio() { return audio; },
   get playing() { return !audio.paused; },
   pause() { audio.pause(); },
   setTracks(list) { P.tracks = new Map(list.map((t) => [t.id, t])); },
@@ -84,8 +85,8 @@ async function coverFor(t) {
 let tilt;
 async function render() {
   const t = P.cur;
-  $("np-title").textContent = t ? t.title : "Nothing playing";
-  $("np-artist").textContent = t ? (t.artist || "Unknown artist") : "Add songs in your library to start";
+  marquee($("np-title"), t ? t.title : "Nothing playing");
+  marquee($("np-artist"), t ? (t.artist || "Unknown artist") : "Add songs in your library to start");
   const cover = await coverFor(t);
   $("art-img").src = cover;
   $("art-glow").style.backgroundImage = `url("${cover}")`;
@@ -95,7 +96,7 @@ async function render() {
   $("mini").classList.toggle("hide", !t || location.hash === "#player" || location.hash === "");
   if (t) {
     $("mini-thumb").style.backgroundImage = `url("${cover}")`;
-    $("mini-t").textContent = t.title; $("mini-a").textContent = t.artist || "Unknown artist";
+    marquee($("mini-t"), t.title); $("mini-a").textContent = t.artist || "Unknown artist";
   }
   $("np-rebass").hidden = !t || t.kind === "tone";
   if ("mediaSession" in navigator && t) {

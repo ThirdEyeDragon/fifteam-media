@@ -1,17 +1,22 @@
-// The player's tone knobs: BASS, MIDS and HIGHS, each 0 to 10. 0 silences that band completely, 5 is the song as it
-// is, 10 is that band as loud as it goes (+12 dB). The song is split three ways the way a car amplifier's crossover
-// does it (Linkwitz-Riley, 24 dB per octave, at 250 Hz and 4 kHz): at 5 the three bands add back up to exactly the
-// song, and each band can be turned all the way off. A limiter at the end keeps any boost from clipping. The song is
-// routed through all this only once a knob leaves 5 (straight playback is lighter on the phone).
+// The player's sound path and its tone knobs: BASS, MIDS and HIGHS, each 0 to 10. 0 silences that band completely, 5
+// leaves the song exactly as it is, 10 is that band as loud as it goes (+12 dB).
+//   Until a knob first leaves 5, the song is not routed through anything at all. After that:
+//   all three at 5 -> straight to the speakers, untouched, bit for bit;
+//   any knob below 5 -> the crossover (Linkwitz-Riley, 24 dB/octave, at 250 Hz and 4 kHz; the bands add back up to the
+//   song exactly) with each band's level, and nothing else;
+//   any knob above 5 -> the same, then a clean look-ahead limiter that does nothing unless a sample would clip.
+//   (No compressor anywhere.)
 import { getCtx, dbToLinSafe } from "./ui.js";
 
 const KEY = "fifteam-eq2";
-const st = { vals: { bass: 5, mids: 5, highs: 5 }, nodes: null, audio: null };
+const st = { vals: { bass: 5, mids: 5, highs: 5 }, audio: null, ctx: null, src: null, bands: null, lim: null, limLoading: false, route: "untouched" };
 try { const s = JSON.parse(localStorage.getItem(KEY) || "null"); if (s) Object.assign(st.vals, s); } catch {}
 
-/** A knob's setting as a gain: 0 is silence, 5 unity, 10 four times (+12 dB). Below 5 it fades like a volume knob. */
+const isFive = (v) => Math.abs(v - 5) < 1e-6;
+/** A knob's setting as a gain: 0 is silence, 5 exactly unity, 10 four times (+12 dB). Below 5 it fades like a volume knob. */
 export function gainOf(v) {
   if (v <= 0) return 0;
+  if (isFive(v)) return 1;
   if (v < 5) return Math.pow(v / 5, 1.6);
   return dbToLinSafe((v - 5) * 2.4);
 }
@@ -21,7 +26,8 @@ export function describe(v) {
   const db = 20 * Math.log10(gainOf(v));
   return `${db > 0 ? "+" : "−"}${Math.abs(db).toFixed(1)} dB`;
 }
-const flat = () => st.vals.bass === 5 && st.vals.mids === 5 && st.vals.highs === 5;
+const flat = () => isFive(st.vals.bass) && isFive(st.vals.mids) && isFive(st.vals.highs);
+const boosting = () => st.vals.bass > 5 + 1e-6 || st.vals.mids > 5 + 1e-6 || st.vals.highs > 5 + 1e-6;
 
 /** The crossover and the band gains, on any audio context: { input, output, set(vals, now) }. */
 export function makeBands(ctx) {
@@ -37,6 +43,7 @@ export function makeBands(ctx) {
   // low band: below 250 Hz, plus the 4 kHz crossover's allpass so it stays in phase with the other two
   const gLow = ctx.createGain(), gMid = ctx.createGain(), gHigh = ctx.createGain();
   const punch = bq("peaking", 55, 1.1);
+  punch.gain.value = 0;
   chain(input, bq("lowpass", F1), bq("lowpass", F1), bq("allpass", F2), punch, gLow);
   // the rest, split again at 4 kHz
   const rest = chain(input, bq("highpass", F1), bq("highpass", F1));
@@ -54,35 +61,62 @@ export function makeBands(ctx) {
       at(gLow.gain, gl); at(gMid.gain, gm); at(gHigh.gain, gh);
       // turned up, the bass gets its punch round 55 Hz as well (the "artificial" bass)
       at(punch.gain, Math.max(0, (vals.bass - 5) * 1.2));
-      // turn the whole down by part of the biggest boost, so the limiter only catches what's left
+      // a boost turns the whole down by part of itself, so the limiter has little or nothing to do
       const boostDb = Math.max(0, ...[gl, gm, gh].map((g) => (g > 0 ? 20 * Math.log10(g) : -99)));
       at(trim.gain, dbToLinSafe(-boostDb * 0.6));
     },
   };
 }
 
-function build() {
-  const ctx = getCtx();
+function ensureSource() {
+  if (st.src) return true;
+  if (!st.audio) return false;
+  st.ctx = getCtx();
   try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch {}
-  const src = ctx.createMediaElementSource(st.audio);
-  const bands = makeBands(ctx);
-  const lim = ctx.createDynamicsCompressor();
-  lim.threshold.value = -1.5; lim.knee.value = 0; lim.ratio.value = 20; lim.attack.value = 0.002; lim.release.value = 0.15;
-  src.connect(bands.input); bands.output.connect(lim).connect(ctx.destination);
-  st.nodes = { ctx, bands };
-  st.audio.addEventListener("play", () => { if (ctx.state !== "running") ctx.resume(); });
-  apply(true);
+  st.src = st.ctx.createMediaElementSource(st.audio);
+  st.bands = makeBands(st.ctx);
+  st.audio.addEventListener("play", () => { if (st.ctx.state !== "running") st.ctx.resume(); });
+  loadLimiter();
+  return true;
 }
-function apply(now) { if (st.nodes) st.nodes.bands.set(st.vals, now); }
+function loadLimiter() {
+  if (st.lim || st.limLoading || !st.ctx || !st.ctx.audioWorklet) return;
+  st.limLoading = true;
+  st.ctx.audioWorklet.addModule(new URL("./limiter-worklet.js", import.meta.url).href).then(() => {
+    st.lim = new AudioWorkletNode(st.ctx, "fifteam-limiter", { outputChannelCount: [2] });
+    if (boosting()) rewire();
+  }).catch(() => {}).finally(() => { st.limLoading = false; });
+}
+function rewire() {
+  if (!st.src) { if (flat()) return; if (!ensureSource()) return; }
+  const { ctx, src, bands } = st;
+  for (const n of [src, bands.output, st.lim]) if (n) try { n.disconnect(); } catch {}
+  let tail;
+  if (flat()) tail = src;                        // 5 / 5 / 5: the song itself, nothing in between
+  else {
+    src.connect(bands.input);
+    bands.set(st.vals, true);
+    tail = bands.output;
+    if (boosting() && st.lim) { tail.connect(st.lim); tail = st.lim; }
+  }
+  tail.connect(ctx.destination);
+  st.route = flat() ? "direct" : boosting() && st.lim ? "bands+limiter" : "bands";
+}
 
 export const eq = {
   get values() { return { ...st.vals }; },
+  get route() { return st.route; },
   attach(audio) { st.audio = audio; },
   /** Call from a tap or from play (phones need a gesture before sound can be processed). */
-  engageIfNeeded() { if (!st.nodes && !flat() && st.audio) build(); else if (st.nodes && st.nodes.ctx.state !== "running") st.nodes.ctx.resume(); },
+  engageIfNeeded() {
+    if (!st.src) { if (!flat()) rewire(); }
+    else if (st.ctx.state !== "running") st.ctx.resume();
+  },
   set(band, v) {
+    const wasFlat = flat(), wasBoost = boosting();
     st.vals[band] = v;
     try { localStorage.setItem(KEY, JSON.stringify(st.vals)); } catch {}
-    if (!st.nodes && !flat() && st.audio) build(); else apply(false);
+    if (!st.src || wasFlat !== flat() || wasBoost !== boosting()) rewire();
+    else st.bands.set(st.vals, false);
   },
 };

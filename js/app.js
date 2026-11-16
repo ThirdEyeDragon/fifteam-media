@@ -2,12 +2,14 @@
 import { $, bus, toast } from "./ui.js";
 import { player } from "./player.js";
 
-export const APP_VERSION = "1.2";
+export const APP_VERSION = "1.3";
 import * as store from "./store.js";
 import { initPlayer } from "./player.js";
 import { initLibrary, library, importFiles } from "./library.js";
 import { initRebass, rebass } from "./rebass.js";
 import { initTones } from "./tones.js";
+import { initSettings } from "./settings.js";
+import { initDemo } from "./demo.js";
 
 const VIEWS = ["player", "library", "rebass", "tones"];
 function route() {
@@ -23,6 +25,8 @@ async function boot() {
   initLibrary();
   initRebass();
   initTones();
+  initSettings();
+  initDemo();
   await library.refresh().catch(() => toast("This browser is blocking storage, so songs won't be kept after you close the app."));
   addEventListener("hashchange", route);
   if (!location.hash) location.replace(library.songs().length ? "#player" : "#library");
@@ -39,14 +43,6 @@ async function boot() {
       }
     } catch { toast("Couldn't open the shared file"); }
   }
-  // send the app to a friend: the share sheet where there is one, else the link copied
-  $("btn-share-app").onclick = async () => {
-    const url = location.origin + location.pathname;
-    const data = { title: "FifTeam Media", text: "FifTeam Media: a music player, rebass studio and tone generator. Open it and add it to your home screen.", url };
-    try { if (navigator.share) { await navigator.share(data); return; } } catch (e) { if (e && e.name === "AbortError") return; }
-    try { await navigator.clipboard.writeText(url); toast("Link copied. Send it to your friends."); }
-    catch { toast(url, 8000); }
-  };
   // updates: a new version installs itself in the background (checked on every open and every half hour); when it takes
   // over, the app refreshes into it at once, unless music is playing or a rebass is running (then: next time it opens)
   if ("serviceWorker" in navigator && location.protocol !== "file:") {

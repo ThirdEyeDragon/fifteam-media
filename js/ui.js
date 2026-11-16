@@ -21,6 +21,33 @@ export function openSheet(build) {
 }
 export const closeSheet = () => $("sheet").classList.remove("open");
 
+/** Puts `text` in `el`. If it doesn't fit, it glides slowly to the left, round and round, so all of it can be read. */
+export function marquee(el, text) {
+  if (el._mq === text && el.firstElementChild) { fitMarquee(el); return; }
+  el._mq = text;
+  el.classList.add("mq-host");
+  el.title = text;
+  const track = document.createElement("span"), a = document.createElement("span");
+  track.className = "mq"; a.textContent = text;
+  track.append(a); el.replaceChildren(track);
+  fitMarquee(el);
+  if (!el._mqRO && "ResizeObserver" in window) { el._mqRO = new ResizeObserver(() => fitMarquee(el)); el._mqRO.observe(el); }
+}
+function fitMarquee(el) {
+  const track = el.firstElementChild;
+  if (!track || !el.clientWidth) return;               // not on screen yet: measured when it shows
+  el.classList.remove("mq-on");
+  while (track.children.length > 1) track.lastElementChild.remove();
+  const first = track.firstElementChild;
+  if (first.getBoundingClientRect().width <= el.clientWidth + 1) return;
+  const copy = first.cloneNode(true); copy.setAttribute("aria-hidden", "true"); track.append(copy);
+  el.classList.add("mq-on");
+  // one lap: the title and the gap after it, at about 38 px a second, after a short rest at the start
+  const dist = first.getBoundingClientRect().width;
+  el.style.setProperty("--mq-dist", `${-dist}px`);
+  el.style.setProperty("--mq-dur", `${(dist / 38 / 0.84).toFixed(2)}s`);
+}
+
 export function fmtTime(s) {
   if (!isFinite(s) || s < 0) s = 0;
   const m = Math.floor(s / 60), r = Math.floor(s % 60);

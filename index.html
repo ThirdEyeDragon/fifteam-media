@@ -19,6 +19,17 @@
 <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
+<div class="lock" id="lock" hidden role="dialog" aria-modal="true" aria-labelledby="lock-h">
+  <form class="lock-box" id="lock-form" autocomplete="off">
+    <span class="lock-mark"><svg><use href="#i-lock"/></svg></span>
+    <h2 id="lock-h">FifTeam Media is locked</h2>
+    <p>Enter your password to unlock it.</p>
+    <input class="input" type="password" id="lock-pw" placeholder="Password" autocomplete="current-password" aria-label="Password">
+    <button class="btn primary block" type="submit" id="lock-go">Unlock</button>
+    <p class="lock-err" id="lock-err" aria-live="assertive"></p>
+  </form>
+</div>
+<script>try{if(localStorage.getItem("fifteam-locked")==="1")document.getElementById("lock").hidden=false}catch(e){}</script>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <defs>
     <symbol id="i-play" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5.6v12.8c0 .8.9 1.3 1.6.9l10-6.4a1 1 0 0 0 0-1.8l-10-6.4C8.9 4.3 8 4.8 8 5.6z"/></symbol>
@@ -46,6 +57,9 @@
     <symbol id="i-info" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5h.01"/></g></symbol>
     <symbol id="i-install" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M12 7v8M9 12l3 3 3-3"/></g></symbol>
     <symbol id="i-image" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="1.8"/><path d="M21 16l-5-5-8 9"/></g></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></g></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/><path d="M12 14.5v2"/></g></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8"/></g></symbol>
     <symbol id="i-logo" viewBox="0 0 24 24"><g fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"><path d="M6 19V5h7M6 12h5"/><path d="M15 19v-5M18.5 19v-9" /></g></symbol>
   </defs>
 </svg>
@@ -58,7 +72,7 @@
     <div class="brand"><span class="brand-mark"><svg><use href="#i-logo"/></svg></span><span>FifTeam <b>Media</b></span></div>
     <div class="top-act">
       <button class="btn small" id="btn-install" hidden><svg><use href="#i-install"/></svg>Install</button>
-      <button class="icon-btn glass" id="btn-share-app" aria-label="Share FifTeam Media with a friend"><svg style="width:20px;height:20px"><use href="#i-share"/></svg></button>
+      <button class="icon-btn glass" id="btn-settings" aria-label="Settings"><svg style="width:21px;height:21px"><use href="#i-gear"/></svg></button>
     </div>
   </header>
 
@@ -161,8 +175,9 @@
           <div class="row between"><span class="label">Bass level</span><span class="val" id="rb-db-val">−3.0<small>dB</small></span></div>
           <input type="range" id="rb-db" min="-7.5" max="0" step="0.5" value="-3" aria-label="Bass level in decibels">
           <div class="scale"><span>−7.5 dB</span><span>−5</span><span>−2.5</span><span>0 dB</span></div>
-          <span class="status">0 dB is the hardest the new bass can hit. The song is turned down only where the two together would clip.</span>
-          <label class="switch"><span class="txt">Replace the song's own sub-bass<small>Clears the old low end so the new bass is clean</small></span><input type="checkbox" id="rb-replace" checked></label>
+          <span class="status" id="rb-db-hint">The new bass peaks at exactly this level. The song gets one fixed level under it, so nothing is squashed.</span>
+          <label class="switch"><span class="txt">Only my range plays bass<small>Removes all of the song's own bass, so the only low notes are the ones in your range</small></span><input type="checkbox" id="rb-only"></label>
+          <label class="switch" id="rb-replace-row"><span class="txt">Replace the song's own sub-bass<small>Clears the old low end just under the new bass so it is clean</small></span><input type="checkbox" id="rb-replace" checked></label>
           <label class="switch"><span class="txt">Tune to exact notes<small>Snaps the bass to the song's own tuning</small></span><input type="checkbox" id="rb-snap" checked></label>
         </div>
 

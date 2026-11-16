@@ -97,11 +97,30 @@ await sleep(120);
 console.log("tilt debug:", await ev(`JSON.stringify({perm: typeof (window.DeviceOrientationEvent && DeviceOrientationEvent.requestPermission), motionBtnHidden: document.getElementById('np-motion').hidden, active: document.getElementById('view-player').classList.contains('active')})`));
 console.log("art transform:", await ev(`document.getElementById('art').style.transform`), "| playing:", await ev(`!document.querySelector('#np-play use').getAttribute('href').includes('play')`));
 await shot("03_player_tilted");
+console.log("sound path, all knobs at 5:", await ev(`import('./js/eq.js').then(m => m.eq.route)`));
 // turn BASS up to 8.5 with the keyboard, MIDS down a step, and check the song still plays through them
 await ev(`(() => { const k = document.querySelector('#kn-bass .knob'); k.focus(); for (let i = 0; i < 7; i++) k.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true })); const m = document.querySelector('#kn-mids .knob'); m.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); return 1; })()`);
 await sleep(800);
 console.log("knobs:", await ev(`[...document.querySelectorAll('.knob-wrap')].map(w => w.querySelector('.knob-label').textContent + ' ' + w.querySelector('.knob').getAttribute('aria-valuenow') + ' (' + w.querySelector('.knob-sub').textContent + ')').join(' | ')`),
   "| still playing:", await ev(`!document.querySelector('#np-play use').getAttribute('href').includes('play')`));
+console.log("sound path, bass up:", await ev(`import('./js/eq.js').then(m => m.eq.route)`));
+// the limiter on its own: a sine 6 dB over full scale comes out under the ceiling; one 6 dB under passes bit for bit
+console.log("limiter:", await ev(`(async () => {
+  const sr = 48000, N = sr;
+  const run = async (amp) => {
+    const ctx = new OfflineAudioContext(2, N, sr);
+    await ctx.audioWorklet.addModule('./js/limiter-worklet.js');
+    const osc = ctx.createOscillator(); osc.frequency.value = 60;
+    const g = ctx.createGain(); g.gain.value = amp;
+    const lim = new AudioWorkletNode(ctx, 'fifteam-limiter', { outputChannelCount: [2] });
+    osc.connect(g).connect(lim).connect(ctx.destination); osc.start();
+    const x = (await ctx.startRendering()).getChannelData(0);
+    let pk = 0; for (let i = 0; i < N; i++) pk = Math.max(pk, Math.abs(x[i]));
+    return 20 * Math.log10(pk);
+  };
+  const loud = await run(2), quiet = await run(0.5);
+  return '+6.0 dBFS in -> ' + loud.toFixed(2) + ' dBFS out | -6.02 dBFS in -> ' + quiet.toFixed(2) + ' dBFS out';
+})()`));
 // the crossover itself, measured with tones: at 5/5/5 every frequency comes out as it went in; at 0 a band is gone
 console.log("crossover:", await ev(`(async () => {
   const { makeBands } = await import('./js/eq.js');
@@ -126,6 +145,18 @@ console.log("knob labels:", await ev(`[...document.querySelectorAll('.knob-wrap'
 console.log("now playing for the system:", await ev(`(() => { const m = navigator.mediaSession && navigator.mediaSession.metadata; return m ? m.title + ' / ' + m.artist + ' / ' + m.album + ' / artwork ' + [...m.artwork].map(a => a.sizes).join(' ') : 'none'; })()`));
 await ev(`(() => { const v = document.getElementById('view-player'); v.scrollTop = v.scrollHeight; return 1; })()`); await sleep(300);
 await shot("03b_player_knobs");
+await ev(`(() => { const key = (id, k, n) => { const e = document.querySelector('#' + id + ' .knob'); for (let i = 0; i < n; i++) e.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true })); };
+  key('kn-bass', 'ArrowDown', 7); key('kn-mids', 'ArrowUp', 1); key('kn-highs', 'ArrowUp', 10); return 1; })()`);
+await sleep(300);
+console.log("knobs back to 5:", await ev(`[...document.querySelectorAll('.knob-wrap')].map(w => w.querySelector('.knob-label').textContent + ' ' + w.querySelector('.knob').getAttribute('aria-valuenow') + ' ' + w.querySelector('.knob-sub').textContent).join(' | ')`), "| sound path:", await ev(`import('./js/eq.js').then(m => m.eq.route)`));
+// a title too long for the screen glides to the left
+const realTitle = await ev(`document.getElementById('np-title').textContent`);
+await ev(`(async () => { const { marquee } = await import('./js/ui.js'); marquee(document.getElementById('np-title'), 'Midnight Highway Drive (Extended Club Mix) feat. The Night Riders'); document.getElementById('view-player').scrollTop = 0; return 1; })()`);
+await sleep(2600);
+console.log("long title:", await ev(`(() => { const h = document.getElementById('np-title'), t = h.querySelector('.mq'); return JSON.stringify({ scrolling: h.classList.contains('mq-on'), copies: t.children.length, anim: getComputedStyle(t).animationName, dur: getComputedStyle(t).animationDuration, shift: Math.round(new DOMMatrix(getComputedStyle(t).transform).m41) }); })()`),
+  "| short title:", await ev(`(() => { const h = document.getElementById('np-artist'); return h.classList.contains('mq-on') ? 'scrolling' : 'still'; })()`));
+await shot("03c_long_title");
+await ev(`import('./js/ui.js').then(m => (m.marquee(document.getElementById('np-title'), ${JSON.stringify(realTitle)}), 1))`);
 
 // rebass it
 await ev(`location.hash = '#rebass'`); await sleep(400);
@@ -152,6 +183,11 @@ await sleep(600);
 await until(`document.getElementById('rb-busy').hidden`, 90000, "the slowed render");
 console.log("stats slowed 75% + reverb:", await ev(`[...document.querySelectorAll('#rb-stats .stat')].map(s => s.querySelector('span').textContent + ': ' + s.querySelector('b').textContent).join(' | ')`));
 console.log("name now:", await ev(`document.getElementById('rb-name').value`), "| length:", await ev(`document.getElementById('rb-dur').textContent`));
+console.log("slow hint:", await ev(`document.getElementById('rb-speed-hint').textContent`));
+await click('#rb-only'); await sleep(600);
+await until(`document.getElementById('rb-busy').hidden`, 90000, "the only-my-range render");
+console.log("stats, only my range:", await ev(`[...document.querySelectorAll('#rb-stats .stat')].map(s => s.querySelector('span').textContent + ': ' + s.querySelector('b').textContent).join(' | ')`),
+  "| replace switch disabled:", await ev(`document.getElementById('rb-replace').disabled`), "| level hint:", await ev(`document.getElementById('rb-db-hint').textContent`));
 await click("#rb-play"); await sleep(2500);
 await show('#rb-result'); await sleep(300);
 await shot("05b_rebass_slowed");
@@ -213,6 +249,55 @@ if (tone) {
 await ev(`location.hash = '#library'`); await sleep(300);
 await click('#lib-seg button[data-k="rebass"]'); await sleep(800);
 await shot("09_library_rebassed");
+
+// settings: set a password and lock the app
+await click('#btn-settings'); await sleep(500);
+await shot("10_settings");
+await ev(`(() => { const i = document.querySelectorAll('#set-lock input[type=password]'); i[0].value = 'blue42'; i[1].value = 'blue42'; [...document.querySelectorAll('#set-lock button')].find(b => b.textContent.includes('Set password')).click(); return 1; })()`);
+await until(`[...document.querySelectorAll('#set-lock button')].some(b => b.textContent.includes('Lock now'))`, 10000, "the password to be set");
+await shot("10b_settings_password");
+console.log("password kept as:", await ev(`(() => { const r = JSON.parse(localStorage.getItem('fifteam-lock')); return 'PBKDF2 x' + r.it + ', salt ' + atob(r.salt).length + ' bytes, hash ' + atob(r.hash).length + ' bytes, plain text stored: ' + JSON.stringify(localStorage).includes('blue42'); })()`));
+await ev(`[...document.querySelectorAll('#set-lock button')].find(b => b.textContent.includes('Lock now')).click(), 1`);
+await sleep(500);
+const lockState = () => ev(`JSON.stringify({ overlay: !document.getElementById('lock').hidden, appInert: document.getElementById('app').inert, saved: localStorage.getItem('fifteam-locked') })`);
+console.log("locked:", await lockState());
+// real taps on the Player tab and the play button: nothing may happen
+const hashBefore = await ev("location.hash");
+for (const sel of ['#tabs a[data-v="player"]', '#lib-list .item']) {
+  const [x, y] = await ev(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; })()`).catch(() => [195, 800]);
+  await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] }); await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: 1 });
+}
+await sleep(500);
+console.log("taps while locked: hash", hashBefore, "->", await ev("location.hash"), "| playing:", await ev(`import('./js/player.js').then(m => m.player.playing)`));
+await shot("11_locked");
+// closing and reopening the app: still locked
+await cdp("Page.reload"); await sleep(3000);
+console.log("after reopening:", await lockState());
+await ev(`(() => { document.getElementById('lock-pw').value = 'nope'; document.getElementById('lock-form').requestSubmit(); return 1; })()`); await sleep(900);
+console.log("wrong password:", await ev(`document.getElementById('lock-err').textContent`), "| still locked:", await ev(`!document.getElementById('lock').hidden`));
+await shot("11b_wrong_password");
+await ev(`(() => { document.getElementById('lock-pw').value = 'blue42'; document.getElementById('lock-form').requestSubmit(); return 1; })()`); await sleep(900);
+console.log("right password:", await lockState());
+
+// demo mode: on from settings, straight to the player, and rings on the bass hits
+await click('#btn-settings'); await sleep(400);
+await click('#set-demo'); await sleep(700);
+console.log("demo mode on, screen:", await ev("location.hash"));
+await ev(`location.hash = '#library'`); await sleep(300);
+await click('#lib-seg button[data-k="song"]'); await sleep(500);
+await click("#lib-list .item"); await sleep(400);
+await ev(`location.hash = '#player'`);
+await until(`import('./js/demo.js').then(m => !!m.demo.hits)`, 20000, "the bass hits");
+console.log("demo hits:", await ev(`import('./js/demo.js').then(m => { const h = m.demo.hits, t = []; for (let i = 0; i < h.length; i += 2) t.push(h[i]); const d = t.slice(1).map((v, i) => v - t[i]); return (h.length / 2) + ' hits, first ' + t.slice(0, 8).map(v => v.toFixed(2)).join(' ') + ' s, median gap ' + d.sort((a, b) => a - b)[d.length >> 1].toFixed(3) + ' s'; })`));
+await ev(`window.__rings = 0; new MutationObserver((ms) => { for (const m of ms) for (const n of m.addedNodes) if (n.classList && n.classList.contains('bass-ring')) window.__rings++; }).observe(document.getElementById('art-stage'), { childList: true }); 1`);
+await sleep(4000);
+console.log("rings in 4 s:", await ev("window.__rings"), "| playing:", await ev(`import('./js/player.js').then(m => m.player.playing)`), "| time:", await ev(`import('./js/player.js').then(m => m.player.audio.currentTime.toFixed(1))`));
+await until(`document.querySelectorAll('.bass-ring').length > 0`, 5000, "a ring");
+await sleep(90);
+await shot("12_demo_hit");
+await sleep(600);
+await shot("12b_demo_between");
 
 console.log("errors:", errors.length ? errors.join("\n  ") : "none");
 ws.close(); edge.kill();

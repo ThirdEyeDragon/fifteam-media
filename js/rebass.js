@@ -11,7 +11,7 @@ import { pickImage } from "./image.js";
 
 const S = {
   src: null, worker: null, loaded: false, origBuf: null, refBuf: null, refKey: "", outBuf: null, res: null, version: 0,
-  busy: false, again: false, params: { lo: 25, hi: 45, mode: "musical", db: -3, replace: true, snap: true, speed: 1, reverb: false },
+  busy: false, again: false, params: { lo: 25, hi: 45, mode: "musical", db: -3, only: false, replace: true, snap: true, speed: 1, reverb: false },
   pl: null, ab: "rebass", an: null, spec: null, raf: 0, nameEdited: false, file: null, fileKey: "",
   cover: null, coverUrl: null, segs: [], ovImg: null, disp: null, pk: null, glow: [], lastT: 0, lastRead: 0, drag: null,
 };
@@ -78,7 +78,7 @@ function readParams() {
   const slow = $("rb-slow").checked;
   S.params = {
     lo: +$("rb-lo").value, hi: +$("rb-hi").value, mode: segValue($("rb-mode")), db: +$("rb-db").value,
-    replace: $("rb-replace").checked, snap: $("rb-snap").checked, speed: slow ? +$("rb-speed").value / 100 : 1, reverb: $("rb-reverb").checked,
+    only: $("rb-only").checked, replace: $("rb-replace").checked, snap: $("rb-snap").checked, speed: slow ? +$("rb-speed").value / 100 : 1, reverb: $("rb-reverb").checked,
   };
 }
 function paintRange() {
@@ -99,6 +99,13 @@ function paintDb() {
   const r = $("rb-db"); fill(r);
   const v = +r.value;
   $("rb-db-val").innerHTML = `${v === 0 ? "0.0" : "−" + Math.abs(v).toFixed(1)}<small>dB</small>`;
+  $("rb-db-hint").textContent = v === 0
+    ? "The new bass peaks at 0 dB, as hard as it can hit. At its loudest moments the song has to make room under it."
+    : `The new bass peaks at exactly ${(-Math.abs(v)).toFixed(1).replace("-", "−")} dB. The song gets one fixed level under it, so nothing is squashed.`;
+  // "only my range" already clears all of the old bass, so the softer option is implied
+  const only = $("rb-only").checked;
+  $("rb-replace-row").classList.toggle("off", only);
+  $("rb-replace").disabled = only;
 }
 function paintSlow() {
   const on = $("rb-slow").checked, r = $("rb-speed"), sp = +r.value;
@@ -108,13 +115,13 @@ function paintSlow() {
   document.querySelectorAll("#rb-speed-presets .chip").forEach((c) => c.classList.toggle("on", +c.dataset.s === sp));
   const semis = 12 * Math.log2(sp / 100);
   const dur = S.src && S.src.duration ? ` · ${fmtTime(S.src.duration / (sp / 100))} long (was ${fmtTime(S.src.duration)})` : "";
-  $("rb-speed-hint").textContent = `${sp}% speed: ${Math.abs(semis).toFixed(1)} semitones lower${dur}`;
+  $("rb-speed-hint").textContent = `${sp}% speed: ${Math.abs(semis).toFixed(1)} semitones lower${dur}. The bass keeps the notes and frequencies you chose, just placed at the slowed times: no new notes are added.`;
 }
 function defaultName() {
   if (!S.src) return "";
   const p = S.params, db = p.db === 0 ? "0" : `-${Math.abs(p.db)}`;
   const slow = p.speed < 1 ? `Slowed ${Math.round(p.speed * 100)}%${p.reverb ? " + Reverb" : ""}, ` : (p.reverb ? "Reverb, " : "");
-  return `${S.src.title} (${slow}Rebass ${p.lo}-${p.hi}Hz ${db}dB)`;
+  return `${S.src.title} (${slow}Rebass ${p.lo}-${p.hi}Hz ${db}dB${p.only ? " Only" : ""})`;
 }
 let reT = 0;
 function settingsChanged() {
@@ -218,15 +225,21 @@ function onWorker(e) {
 function paintStats() {
   const s = S.res.stats, p = S.params;
   const f1 = (v) => (v >= 100 ? v.toFixed(0) : v.toFixed(1));
+  const dB = (v, d = 1) => (v > -0.005 ? (0).toFixed(d) : v.toFixed(d).replace("-", "−"));
+  const song = s.ridePct > 0.05
+    ? ["", `${dB(s.songDb)} dB`, Number.isFinite(s.rideDb) && s.rideDb > -40
+      ? `Song level · dips a little more ${(s.ridePct).toFixed(s.ridePct < 1 ? 1 : 0)}% of the time to make room`
+      : `Song level · steps aside for the bass peaks ${(s.ridePct).toFixed(s.ridePct < 1 ? 1 : 0)}% of the time`]
+    : ["good", `${dB(s.songDb)} dB`, s.songDb > -0.05 ? "Song level · untouched, no compression" : "Song level · one fixed level, no compression"];
   const items = [
     ["good", "0", "Clipped samples"],
-    ["", `${s.truePeakDb.toFixed(2)} dBTP`, "True peak (between samples)"],
-    ["", `${s.notes.toLocaleString()}`, "Bass notes found"],
+    ["", `${dB(s.bassActualDb, 2)} dBFS`, "The new bass peaks at"],
+    song,
+    ["", `${dB(s.truePeakDb, 2)} dBTP`, "True peak (between samples)"],
+    ["", `${s.notes.toLocaleString()}`, "Bass notes"],
     ["", p.mode === "musical" ? `${Math.round(s.tunedPct)}%` : "Stretched", p.mode === "musical" ? "Notes kept in tune" : "Notes mapped to the range"],
-    ["", `${f1(s.songLo)}–${f1(s.songHi)} Hz`, s.speed < 1 ? "The slowed song's bass" : "The song's bass"],
-    ["", `${f1(s.newLo)}–${f1(s.newHi)} Hz`, "The new bass"],
-    ["", `${s.peakDb.toFixed(2)} dBFS`, "Loudest sample"],
-    ["", s.duckDb > -0.05 ? "Not needed" : `${s.duckAvgDb.toFixed(1)} dB`, s.duckDb < -40 ? "Song under the loud bass (gone at the very peaks)" : "Song under the loud bass, on average"],
+    ["", `${f1(s.songLo)}–${f1(s.songHi)} Hz`, "The song's bass (original)"],
+    ["", `${f1(s.newLo)}–${f1(s.newHi)} Hz`, p.only ? "The new bass (the only bass)" : "The new bass"],
   ];
   if (s.speed < 1 || s.reverb) items.push(["", s.speed < 1 ? `${Math.round(s.speed * 100)}%${s.reverb ? " + reverb" : ""}` : "Reverb", s.speed < 1 ? `Speed, ${Math.abs(12 * Math.log2(s.speed)).toFixed(1)} semitones lower` : "Added to the song"]);
   if (s.clipped) items[0] = ["", String(s.clipped), "Clipped samples"];
@@ -591,6 +604,7 @@ export function initRebass() {
   });
   onSeg($("rb-mode"), () => { paintRange(); settingsChanged(); });
   $("rb-db").addEventListener("input", () => { paintDb(); settingsChanged(); });
+  $("rb-only").onchange = () => { paintDb(); settingsChanged(); };
   $("rb-replace").onchange = settingsChanged; $("rb-snap").onchange = settingsChanged;
   $("rb-slow").onchange = () => { paintSlow(); settingsChanged(); };
   $("rb-speed").addEventListener("input", () => { paintSlow(); settingsChanged(); });
