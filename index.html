@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>FifTeam Media</title>
+<meta name="description" content="Your music, a rebass studio and a tone generator, in one app.">
+<meta name="theme-color" content="#0b0a24">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="FifTeam">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Sora:wght@600;700&display=swap">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-play" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5.6v12.8c0 .8.9 1.3 1.6.9l10-6.4a1 1 0 0 0 0-1.8l-10-6.4C8.9 4.3 8 4.8 8 5.6z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><rect fill="currentColor" x="6" y="5" width="4.2" height="14" rx="1.4"/><rect fill="currentColor" x="13.8" y="5" width="4.2" height="14" rx="1.4"/></symbol>
+    <symbol id="i-next" viewBox="0 0 24 24"><path fill="currentColor" d="M5 6.3v11.4c0 .8.9 1.3 1.6.8l8.3-5.7a1 1 0 0 0 0-1.6L6.6 5.5C5.9 5 5 5.5 5 6.3z"/><rect fill="currentColor" x="16.5" y="5" width="2.6" height="14" rx="1.2"/></symbol>
+    <symbol id="i-prev" viewBox="0 0 24 24"><path fill="currentColor" d="M19 6.3v11.4c0 .8-.9 1.3-1.6.8l-8.3-5.7a1 1 0 0 1 0-1.6l8.3-5.7c.7-.5 1.6 0 1.6.8z"/><rect fill="currentColor" x="4.9" y="5" width="2.6" height="14" rx="1.2"/></symbol>
+    <symbol id="i-shuffle" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h4v4M20 4l-6.5 6.5M4 20l7-7M16 20h4v-4M20 20l-5-5M4 4l5 5"/></g></symbol>
+    <symbol id="i-repeat" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l3 3-3 3"/><path d="M4 11V9a4 4 0 0 1 4-4h12"/><path d="M7 22l-3-3 3-3"/><path d="M20 13v2a4 4 0 0 1-4 4H4"/></g></symbol>
+    <symbol id="i-repeat1" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l3 3-3 3"/><path d="M4 11V9a4 4 0 0 1 4-4h12"/><path d="M7 22l-3-3 3-3"/><path d="M20 13v2a4 4 0 0 1-4 4H4"/><path d="M11 10l1.5-1v6"/></g></symbol>
+    <symbol id="i-disc" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5"/></g></symbol>
+    <symbol id="i-lib" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 5v14M9 5v14"/><path d="M14 5.5l4.5 13"/></g></symbol>
+    <symbol id="i-bass" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 12c2-6 4-6 6 0s4 6 6 0 4-6 6 0"/><path d="M3 20h18" opacity=".5"/></g></symbol>
+    <symbol id="i-tone" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h3l2-6 4 12 3-9 2 3h4"/></g></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></g></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><g fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></g></symbol>
+    <symbol id="i-save" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5"/><path d="M5 19h14"/></g></symbol>
+    <symbol id="i-share" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3M8 7l4-4 4 4"/><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></g></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></g></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-tilt" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="3" width="10" height="18" rx="2.5" transform="rotate(-14 12 12)"/><path d="M3 9c-.8 2-.8 4 0 6M21 9c.8 2 .8 4 0 6"/></g></symbol>
+    <symbol id="i-queue" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h12M4 12h12M4 18h8"/><path d="M18 14v6l4-3z" fill="currentColor"/></g></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+    <symbol id="i-warn" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18h.01"/></g></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5h.01"/></g></symbol>
+    <symbol id="i-install" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M12 7v8M9 12l3 3 3-3"/></g></symbol>
+    <symbol id="i-logo" viewBox="0 0 24 24"><g fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"><path d="M6 19V5h7M6 12h5"/><path d="M15 19v-5M18.5 19v-9" /></g></symbol>
+  </defs>
+</svg>
+
+<div id="app">
+  <div class="backdrop"></div>
+  <div class="ambient" id="ambient"></div>
+
+  <header class="top">
+    <div class="brand"><span class="brand-mark"><svg><use href="#i-logo"/></svg></span><span>FifTeam <b>Media</b></span></div>
+    <div class="top-act">
+      <button class="btn small" id="btn-install" hidden><svg><use href="#i-install"/></svg>Install</button>
+      <button class="icon-btn glass" id="btn-share-app" aria-label="Share FifTeam Media with a friend"><svg style="width:20px;height:20px"><use href="#i-share"/></svg></button>
+    </div>
+  </header>
+
+  <main>
+    <!-- ======================================================== now playing -->
+    <section class="view" id="view-player" aria-label="Now playing">
+      <div class="np">
+        <div class="art-stage" id="art-stage">
+          <div class="art-glow" id="art-glow"></div>
+          <div class="art" id="art"><img id="art-img" alt=""><div class="art-sheen" id="art-sheen"></div></div>
+        </div>
+        <div class="np-meta"><h1 id="np-title">Nothing playing</h1><p id="np-artist">Add songs in your library to start</p></div>
+        <div class="scrub">
+          <input type="range" id="np-seek" min="0" max="1000" value="0" aria-label="Position in song">
+          <div class="times"><span id="np-cur">0:00</span><span id="np-dur">0:00</span></div>
+        </div>
+        <div class="transport">
+          <button class="icon-btn" id="np-shuffle" aria-label="Shuffle"><svg><use href="#i-shuffle"/></svg></button>
+          <button class="icon-btn" id="np-prev" aria-label="Previous"><svg><use href="#i-prev"/></svg></button>
+          <button class="play-big" id="np-play" aria-label="Play"><svg><use href="#i-play"/></svg></button>
+          <button class="icon-btn" id="np-next" aria-label="Next"><svg><use href="#i-next"/></svg></button>
+          <button class="icon-btn" id="np-repeat" aria-label="Repeat"><svg><use href="#i-repeat"/></svg></button>
+        </div>
+        <div class="np-extra">
+          <button class="btn small" id="np-motion" hidden><svg><use href="#i-tilt"/></svg>Turn on tilt</button>
+          <button class="btn small" id="np-rebass"><svg><use href="#i-bass"/></svg>Rebass this song</button>
+          <button class="btn small" id="np-queue"><svg><use href="#i-queue"/></svg>Up next</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================================================== library -->
+    <section class="view" id="view-library" aria-label="Library">
+      <div class="view-inner">
+        <div class="row between">
+          <h2>Library</h2>
+          <button class="btn small primary" id="lib-add"><svg><use href="#i-plus"/></svg>Add music</button>
+        </div>
+        <div class="search"><svg><use href="#i-search"/></svg><input class="input" id="lib-search" type="search" placeholder="Search songs and artists" autocomplete="off"></div>
+        <div class="seg" id="lib-seg" role="tablist">
+          <button class="on" data-k="song">Songs</button><button data-k="rebass">Rebassed</button><button data-k="tone">Tones</button>
+        </div>
+        <ul class="list" id="lib-list"></ul>
+        <div class="empty" id="lib-empty" hidden>
+          <div class="big"><svg><use href="#i-lib"/></svg></div>
+          <h3 id="lib-empty-h">Bring your music in</h3>
+          <p id="lib-empty-p">Pick songs from your phone. They are copied into FifTeam Media, so they are here every time you open it, even offline.</p>
+          <div class="row wrap" style="justify-content:center">
+            <button class="btn primary" id="lib-add-2"><svg><use href="#i-plus"/></svg>Choose songs</button>
+            <button class="btn" id="lib-add-dir"><svg><use href="#i-folder"/></svg>A whole folder</button>
+          </div>
+        </div>
+        <div class="card hint-card" id="ios-hint" hidden>
+          <svg><use href="#i-install"/></svg>
+          <p><b>Put FifTeam Media on your home screen.</b> Tap the Share button in Safari, then <b>Add to Home Screen</b>. It opens full screen, like an app.</p>
+        </div>
+        <p class="foot" id="lib-foot"></p>
+      </div>
+    </section>
+
+    <!-- ======================================================== rebass -->
+    <section class="view" id="view-rebass" aria-label="Rebass">
+      <div class="view-inner">
+        <div><h2>Rebass</h2><p class="sub">Finds the bass line of a song and lays a new, deeper bass under it, note for note. Nothing clips.</p></div>
+
+        <div class="card">
+          <div class="src" id="rb-src">
+            <div class="thumb" id="rb-thumb"></div>
+            <div class="grow"><div class="t" id="rb-title">No song chosen</div><div class="a" id="rb-artist">Pick one from your library or your files</div></div>
+          </div>
+          <div class="row">
+            <button class="btn small grow" id="rb-pick-lib"><svg><use href="#i-lib"/></svg>From library</button>
+            <button class="btn small grow" id="rb-pick-file"><svg><use href="#i-folder"/></svg>From files</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="row between"><span class="label">Bass range</span><span class="val" id="rb-range-val">25–45<small>Hz</small></span></div>
+          <div class="dual" id="rb-dual">
+            <div class="rail"></div><div class="fill" id="rb-fill"></div>
+            <input type="range" id="rb-lo" min="10" max="120" step="1" value="25" aria-label="Lowest bass frequency">
+            <input type="range" id="rb-hi" min="10" max="120" step="1" value="45" aria-label="Highest bass frequency">
+          </div>
+          <div class="scale"><span>10 Hz</span><span>30</span><span>50</span><span>70</span><span>90</span><span>120 Hz</span></div>
+          <div class="chips" id="rb-presets">
+            <button class="chip" data-r="20,35">Deep 20–35</button><button class="chip on" data-r="25,45">Low 25–45</button>
+            <button class="chip" data-r="30,55">Punch 30–55</button><button class="chip" data-r="25,60">Wide 25–60</button>
+          </div>
+          <div class="field">
+            <span class="label">How notes fit the range</span>
+            <div class="seg" id="rb-mode"><button class="on" data-k="musical">Keep in key</button><button data-k="stretch">Stretch</button></div>
+            <span class="status" id="rb-mode-hint">Each note moves down whole octaves into the range, so the bass stays in tune with the song.</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="row between"><span class="label">Bass level</span><span class="val" id="rb-db-val">−3.0<small>dB</small></span></div>
+          <input type="range" id="rb-db" min="-7.5" max="0" step="0.5" value="-3" aria-label="Bass level in decibels">
+          <div class="scale"><span>−7.5 dB</span><span>−5</span><span>−2.5</span><span>0 dB</span></div>
+          <span class="status">0 dB is the hardest the new bass can hit. The song is turned down only where the two together would clip.</span>
+          <label class="switch"><span class="txt">Replace the song's own sub-bass<small>Clears the old low end so the new bass is clean</small></span><input type="checkbox" id="rb-replace" checked></label>
+          <label class="switch"><span class="txt">Tune to exact notes<small>Snaps the bass to the song's own tuning</small></span><input type="checkbox" id="rb-snap" checked></label>
+        </div>
+
+        <button class="btn primary block" id="rb-go" disabled><svg><use href="#i-bass"/></svg>Rebass it</button>
+        <div class="card" id="rb-busy" hidden>
+          <div class="row between"><span class="status" id="rb-stage">Reading the song</span><span class="status" id="rb-pct">0%</span></div>
+          <div class="progress"><i id="rb-bar"></i></div>
+        </div>
+
+        <div class="card" id="rb-result" hidden>
+          <div class="row between"><span class="label">Live bass</span>
+            <div class="seg" id="rb-ab" style="min-width:210px"><button data-k="orig">Original</button><button class="on" data-k="rebass">Rebassed</button></div>
+          </div>
+          <canvas class="graph" id="rb-spec"></canvas>
+          <div class="legend"><span><i style="background:linear-gradient(90deg,#3d7bff,#b25cff)"></i>Bass added</span><span><i style="background:#9fb3ff"></i>Whole song</span><span><i style="background:rgba(255,255,255,.18)"></i>Your range</span></div>
+          <div class="readout">
+            <div><span class="label">Now</span><b id="rb-now-f">–</b></div>
+            <div><span class="label">Note</span><b id="rb-now-n">–</b></div>
+            <div><span class="label">Bass level</span><b id="rb-now-l">–</b></div>
+          </div>
+          <canvas class="graph map" id="rb-map"></canvas>
+          <div class="legend"><span><i style="background:#b25cff"></i>New bass</span><span><i style="background:rgba(159,179,255,.55)"></i>Song's bass</span><span>Tap the map to jump</span></div>
+          <div class="pl-row">
+            <button class="play-big" id="rb-play" style="width:56px;height:56px" aria-label="Play preview"><svg style="width:24px;height:24px"><use href="#i-play"/></svg></button>
+            <div class="times"><span id="rb-cur">0:00</span> / <span id="rb-dur">0:00</span></div>
+          </div>
+          <div class="stats" id="rb-stats"></div>
+        </div>
+
+        <div class="card" id="rb-export" hidden>
+          <span class="label">Save your rebass</span>
+          <div class="field"><label for="rb-name" class="status">Name</label><input class="input" id="rb-name" maxlength="120" autocomplete="off"></div>
+          <div class="seg" id="rb-format"><button class="on" data-k="wav16">WAV 16-bit</button><button data-k="wav24">WAV 24-bit</button><button data-k="mp3">MP3 320</button></div>
+          <span class="status" id="rb-size"></span>
+          <button class="btn primary block" id="rb-save"><svg><use href="#i-save"/></svg>Save to phone</button>
+          <div class="row">
+            <button class="btn grow" id="rb-share"><svg><use href="#i-share"/></svg>Share</button>
+            <button class="btn grow" id="rb-keep"><svg><use href="#i-plus"/></svg>Add to library</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================================================== tones -->
+    <section class="view" id="view-tones" aria-label="Tone generator">
+      <div class="view-inner">
+        <div><h2>Tones</h2><p class="sub">Test tones, sweeps and noise for tuning speakers, subs and rooms.</p></div>
+        <div class="card">
+          <div class="freq"><span class="num" id="tg-num">40.0</span><span class="unit">Hz</span><div class="note" id="tg-note">E1 −14¢</div></div>
+          <input type="range" id="tg-freq" min="0" max="1000" step="1" value="372" aria-label="Frequency">
+          <div class="scale"><span>1 Hz</span><span>10</span><span>100</span><span>1k</span><span>20k Hz</span></div>
+          <div class="nudge" id="tg-nudge">
+            <button data-d="-10">−10</button><button data-d="-1">−1</button><button data-d="-0.1">−0.1</button>
+            <button data-d="0.1">+0.1</button><button data-d="1">+1</button><button data-d="10">+10</button>
+          </div>
+          <div class="chips" id="tg-presets">
+            <button class="chip" data-f="20">20</button><button class="chip" data-f="25">25</button><button class="chip" data-f="30">30</button>
+            <button class="chip" data-f="35">35</button><button class="chip on" data-f="40">40</button><button class="chip" data-f="50">50</button>
+            <button class="chip" data-f="60">60</button><button class="chip" data-f="80">80</button><button class="chip" data-f="100">100</button>
+            <button class="chip" data-f="1000">1k</button>
+          </div>
+          <canvas class="scope" id="tg-scope"></canvas>
+          <button class="play-big" id="tg-play" style="align-self:center" aria-label="Play tone"><svg><use href="#i-play"/></svg></button>
+        </div>
+        <div class="card">
+          <span class="label">Sound</span>
+          <div class="seg" id="tg-wave"><button class="on" data-k="sine">Sine</button><button data-k="square">Square</button><button data-k="triangle">Triangle</button><button data-k="sawtooth">Saw</button></div>
+          <div class="seg" id="tg-noise"><button data-k="white">White noise</button><button data-k="pink">Pink noise</button></div>
+          <div class="row between"><span class="label">Level</span><span class="val" id="tg-db-val">−12<small>dBFS</small></span></div>
+          <input type="range" id="tg-db" min="-40" max="0" step="1" value="-12" aria-label="Level">
+          <div class="warn" id="tg-warn" hidden><svg><use href="#i-warn"/></svg>Loud. Start low on speakers and subs.</div>
+          <span class="label">Speakers</span>
+          <div class="seg" id="tg-ch"><button class="on" data-k="both">Both</button><button data-k="left">Left</button><button data-k="right">Right</button></div>
+          <label class="switch"><span class="txt">Flip the right speaker's polarity<small>Out of phase: bass thins out if both play at once. A quick wiring check.</small></span><input type="checkbox" id="tg-flip"></label>
+        </div>
+        <div class="card">
+          <span class="label">Sweep</span>
+          <div class="inline-inputs">
+            <label>From (Hz)<input class="input" id="tg-sw-a" inputmode="decimal" value="20"></label>
+            <label>To (Hz)<input class="input" id="tg-sw-b" inputmode="decimal" value="120"></label>
+            <label>Seconds<input class="input" id="tg-sw-t" inputmode="decimal" value="20"></label>
+          </div>
+          <div class="seg" id="tg-sw-k"><button class="on" data-k="log">Log</button><button data-k="lin">Linear</button></div>
+          <label class="switch"><span class="txt">Loop the sweep</span><input type="checkbox" id="tg-sw-loop"></label>
+          <button class="btn block" id="tg-sweep"><svg><use href="#i-tone"/></svg>Play sweep</button>
+        </div>
+        <div class="card">
+          <span class="label">Save this tone</span>
+          <div class="chips" id="tg-len"><button class="chip" data-s="10">10 s</button><button class="chip on" data-s="30">30 s</button><button class="chip" data-s="60">1 min</button><button class="chip" data-s="300">5 min</button></div>
+          <div class="field"><label for="tg-name" class="status">Name</label><input class="input" id="tg-name" maxlength="120" autocomplete="off"></div>
+          <div class="seg" id="tg-format"><button class="on" data-k="wav16">WAV 16-bit</button><button data-k="wav24">WAV 24-bit</button><button data-k="mp3">MP3 320</button></div>
+          <button class="btn primary block" id="tg-save"><svg><use href="#i-save"/></svg>Save to phone</button>
+          <div class="row">
+            <button class="btn grow" id="tg-share"><svg><use href="#i-share"/></svg>Share</button>
+            <button class="btn grow" id="tg-keep"><svg><use href="#i-plus"/></svg>Add to library</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div class="mini hide" id="mini">
+    <div class="thumb" id="mini-thumb"></div>
+    <div class="meta"><div class="t" id="mini-t"></div><div class="a" id="mini-a"></div></div>
+    <button class="icon-btn" id="mini-play" aria-label="Play"><svg><use href="#i-play"/></svg></button>
+    <button class="icon-btn" id="mini-next" aria-label="Next"><svg><use href="#i-next"/></svg></button>
+    <div class="bar" id="mini-bar"></div>
+  </div>
+
+  <nav class="tabs" id="tabs">
+    <a href="#player" data-v="player"><svg><use href="#i-disc"/></svg>Player</a>
+    <a href="#library" data-v="library"><svg><use href="#i-lib"/></svg>Library</a>
+    <a href="#rebass" data-v="rebass"><svg><use href="#i-bass"/></svg>Rebass</a>
+    <a href="#tones" data-v="tones"><svg><use href="#i-tone"/></svg>Tones</a>
+  </nav>
+</div>
+
+<div class="sheet" id="sheet"><div class="sheet-panel" id="sheet-panel"></div></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<input type="file" id="file-in" accept="audio/*,.mp3,.m4a,.aac,.wav,.flac,.ogg,.opus" multiple hidden>
+<input type="file" id="dir-in" webkitdirectory multiple hidden>
+<input type="file" id="one-in" accept="audio/*,.mp3,.m4a,.aac,.wav,.flac,.ogg,.opus" hidden>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

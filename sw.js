@@ -1,0 +1,69 @@
+// FifTeam Media's service worker: the app works offline, and audio files shared to it from other apps (Android) land in
+// its inbox. Bump VERSION whenever the app's files change.
+const VERSION = "fifteam-v1";
+const SHELL = [
+  "./", "index.html", "manifest.webmanifest", "css/app.css",
+  "js/app.js", "js/ui.js", "js/store.js", "js/tags.js", "js/tilt.js", "js/player.js", "js/library.js",
+  "js/rebass.js", "js/rebass-worker.js", "js/tones.js", "js/export.js", "js/dsp.js", "js/mp3-worker.js",
+  "icons/icon-192.png", "icons/icon-512.png", "icons/maskable-512.png", "icons/apple-touch-icon.png",
+];
+
+self.addEventListener("install", (e) => {
+  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+});
+self.addEventListener("activate", (e) => {
+  e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== VERSION && k !== "fifteam-runtime").map((k) => caches.delete(k)))).then(() => self.clients.claim()));
+});
+
+// the same database the app uses (keep in step with js/store.js)
+function openDB() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open("fifteam-media", 1);
+    r.onupgradeneeded = () => {
+      const db = r.result;
+      for (const s of ["tracks", "blobs", "art"]) if (!db.objectStoreNames.contains(s)) s === "tracks" ? db.createObjectStore(s, { keyPath: "id" }) : db.createObjectStore(s);
+      if (!db.objectStoreNames.contains("inbox")) db.createObjectStore("inbox", { autoIncrement: true });
+    };
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  });
+}
+
+self.addEventListener("fetch", (e) => {
+  const req = e.request, url = new URL(req.url);
+  if (req.method === "POST" && url.pathname.endsWith("/share-target")) {
+    e.respondWith((async () => {
+      try {
+        const form = await req.formData();
+        const files = form.getAll("audio").filter((f) => f && f.size);
+        if (files.length) {
+          const db = await openDB();
+          await new Promise((res, rej) => {
+            const t = db.transaction("inbox", "readwrite");
+            files.forEach((f) => t.objectStore("inbox").add(f));
+            t.oncomplete = res; t.onerror = () => rej(t.error);
+          });
+        }
+      } catch {}
+      return Response.redirect(new URL("./?shared=1#rebass", self.registration.scope).href, 303);
+    })());
+    return;
+  }
+  if (req.method !== "GET") return;
+  if (url.origin === location.origin) {
+    // the app's own files: from the cache at once, refreshed in the background
+    e.respondWith(caches.open(VERSION).then(async (c) => {
+      const hit = await c.match(req, { ignoreSearch: true });
+      const net = fetch(req).then((r) => { if (r.ok) c.put(req, r.clone()); return r; }).catch(() => null);
+      return hit || (await net) || (await c.match("index.html"));
+    }));
+  } else if (/fonts\.(googleapis|gstatic)\.com|cdnjs\.cloudflare\.com/.test(url.host)) {
+    // fonts and the MP3 encoder: kept after the first use, so they work offline too
+    e.respondWith(caches.open("fifteam-runtime").then(async (c) => {
+      const hit = await c.match(req);
+      if (hit) return hit;
+      const r = await fetch(req);
+      if (r.ok || r.type === "opaque") c.put(req, r.clone());
+      return r;
+    }));
+  }
+});
