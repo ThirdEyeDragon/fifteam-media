@@ -107,6 +107,18 @@ export function analyzeBass(mono, sr, progress) {
     for (let k = -2; k <= 2; k++) { const v = f0[i + k]; if (v > 0) win.push(v); }
     if (f0[i] > 0 && win.length >= 3) { win.sort((a, b) => a - b); med[i] = win[win.length >> 1]; }
   }
+  // octave slips: a frame an octave off the notes either side of it belongs with them
+  const oct = Float32Array.from(med);
+  for (let i = 0; i < frames; i++) {
+    if (!(med[i] > 0)) continue;
+    win.length = 0;
+    for (let k = -6; k <= 6; k++) { const v = med[i + k]; if (k && v > 0) win.push(v); }
+    if (win.length < 6) continue;
+    win.sort((a, b) => a - b);
+    const ref = win[win.length >> 1], r = Math.log2(med[i] / ref);
+    if (Math.abs(Math.abs(r) - 1) < 0.08) oct[i] = med[i] * Math.pow(2, -Math.round(r));
+  }
+  med.set(oct);
   let last = 0, gap = 0;
   for (let i = 0; i < frames; i++) {
     if (med[i] > 0) { last = med[i]; gap = 0; }
@@ -161,7 +173,123 @@ export function mapBassLine(an, { lo, hi, mode = "musical", snap = true }) {
     }
     out[i] = Math.min(hi, Math.max(lo, f));
   }
+  return stabilize(out, 4);
+}
+
+/**
+ * Holds each note steady: frames within 35 cents of a note's start are one note (played at its median pitch), and any
+ * note shorter than minLen frames (a flicker between two notes) joins the longer neighbour it touches. Done on the
+ * whole song at once, so a new note starts exactly when it starts, never late.
+ */
+export function stabilize(f, minLen) {
+  const n = f.length, segs = [];
+  for (let i = 0; i < n;) {
+    if (!(f[i] > 0)) { const s = i; while (i < n && !(f[i] > 0)) i++; segs.push({ s, e: i, f: 0 }); continue; }
+    const s = i, base = f[i];
+    while (i < n && f[i] > 0 && Math.abs(1200 * Math.log2(f[i] / base)) < 35) i++;
+    const v = Array.from(f.subarray(s, i)).sort((a, b) => a - b);
+    segs.push({ s, e: i, f: v[v.length >> 1] });
+  }
+  for (let pass = 0; pass < 3; pass++) {
+    for (let k = 0; k < segs.length; k++) {
+      const g = segs[k];
+      if (!g.f || g.e - g.s >= minLen) continue;
+      const a = segs[k - 1], b = segs[k + 1];
+      const la = a && a.f ? a.e - a.s : -1, lb = b && b.f ? b.e - b.s : -1;
+      if (la < 0 && lb < 0) continue;
+      g.f = la >= lb ? a.f : b.f;
+    }
+  }
+  const out = new Float32Array(n);
+  for (const g of segs) out.fill(g.f, g.s, g.e);
   return out;
+}
+
+/** A mono mix of the channels. */
+export function mixMono(chs) {
+  const n = chs[0].length, mono = new Float32Array(n), k = 1 / chs.length;
+  for (const c of chs) for (let i = 0; i < n; i++) mono[i] += c[i] * k;
+  return mono;
+}
+
+// ---------------------------------------------------------------------------------------------------- slowed and screwed
+/**
+ * Tape-style slowdown: the song played slower, and so lower, the way slowed and screwed songs are made. speed 0.75 is
+ * 75% speed, a little under five semitones down. 8-tap windowed-sinc (Lanczos) interpolation, so it stays clean.
+ */
+export function slowDown(chs, speed, progress) {
+  const n = chs[0].length, m = Math.max(1, Math.floor((n - 1) / speed));
+  const PH = 512, T = 4;
+  const tab = new Float32Array(PH * 2 * T);
+  for (let p = 0; p < PH; p++) {
+    const u = p / PH;
+    let sum = 0;
+    for (let j = -T + 1; j <= T; j++) {
+      const x = u - j;
+      const v = x === 0 ? 1 : (T * Math.sin(Math.PI * x) * Math.sin((Math.PI * x) / T)) / (Math.PI * Math.PI * x * x);
+      tab[p * 2 * T + j + T - 1] = v; sum += v;
+    }
+    for (let j = 0; j < 2 * T; j++) tab[p * 2 * T + j] /= sum;
+  }
+  return chs.map((x, ci) => {
+    const y = new Float32Array(m);
+    for (let i = 0; i < m; i++) {
+      const pos = i * speed, k = Math.floor(pos), ph = Math.min(PH - 1, Math.round((pos - k) * PH));
+      const o = ph * 2 * T;
+      let acc = 0;
+      for (let j = -T + 1; j <= T; j++) { const idx = k + j; if (idx >= 0 && idx < n) acc += x[idx] * tab[o + j + T - 1]; }
+      y[i] = acc;
+      if (progress && (i & 262143) === 0) progress((ci + i / m) / chs.length);
+    }
+    return y;
+  });
+}
+
+/**
+ * Reverb for "slowed + reverb" (Freeverb: eight damped combs and four allpasses per side). The low end stays dry, so
+ * the bass under it stays tight. Adds a tail of tailSec.
+ */
+export function freeverb(chs, sr, { room = 0.86, damp = 0.32, wet = 0.32, width = 1, tailSec = 2.5 } = {}, progress) {
+  const COMBS = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617], ALLS = [556, 441, 341, 225], SPREAD = 23;
+  const k = sr / 44100, n = chs[0].length, m = n + Math.round(tailSec * sr);
+  const L = chs[0], R = chs[1] || chs[0];
+  const wet1 = wet * (width / 2 + 0.5) * 3, wet2 = wet * ((1 - width) / 2) * 3;
+  const side = (off) => ({
+    combs: COMBS.map((d) => ({ b: new Float32Array(Math.round((d + off) * k)), i: 0, f: 0 })),
+    alls: ALLS.map((d) => ({ b: new Float32Array(Math.round((d + off) * k)), i: 0 })),
+  });
+  const sL = side(0), sR = side(SPREAD);
+  const run = (s, inp) => {
+    let out = 0;
+    for (const c of s.combs) {
+      const y = c.b[c.i];
+      c.f = y * (1 - damp) + c.f * damp;
+      c.b[c.i] = inp + c.f * room;
+      if (++c.i >= c.b.length) c.i = 0;
+      out += y;
+    }
+    for (const a of s.alls) {
+      const bo = a.b[a.i];
+      a.b[a.i] = out + bo * 0.5;
+      if (++a.i >= a.b.length) a.i = 0;
+      out = bo - out;
+    }
+    return out;
+  };
+  // the wet signal only above ~180 Hz
+  const hp = [biquad("hp", 180, sr, 0.7071), biquad("hp", 180, sr, 0.7071)];
+  const z = [[0, 0], [0, 0]];
+  const filt = (c, v) => { const f = hp[c], s = z[c]; const y = f.b0 * v + s[0]; s[0] = f.b1 * v - f.a1 * y + s[1]; s[1] = f.b2 * v - f.a2 * y; return y; };
+  const oL = new Float32Array(m), oR = new Float32Array(m);
+  for (let i = 0; i < m; i++) {
+    const dl = i < n ? L[i] : 0, dr = i < n ? R[i] : 0;
+    const inp = (dl + dr) * 0.015;
+    const wl = filt(0, run(sL, inp)), wr = filt(1, run(sR, inp));
+    oL[i] = dl + wl * wet1 + wr * wet2;
+    oR[i] = dr + wr * wet1 + wl * wet2;
+    if (progress && (i & 262143) === 0) progress(i / m);
+  }
+  return [oL, oR];
 }
 
 /**
@@ -171,15 +299,16 @@ export function mapBassLine(an, { lo, hi, mode = "musical", snap = true }) {
 export function synthBass(an, mapped, sr, length, progress) {
   const out = new Float32Array(length);
   const n = mapped.length;
-  const kG = 1 - Math.exp(-1 / (0.006 * sr));
-  const kA = 1 - Math.exp(-1 / (0.004 * sr)), kR = 1 - Math.exp(-1 / (0.07 * sr));
-  // the target loudness per frame: only where there is a note to play, gated in the quiet
+  const kG = 1 - Math.exp(-1 / (0.01 * sr));
+  const kA = 1 - Math.exp(-1 / (0.006 * sr)), kR = 1 - Math.exp(-1 / (0.09 * sr));
+  // the target loudness per frame: only where there is a note to play, gated in the quiet, smoothed over 30 ms so the
+  // sine swells and settles instead of fluttering
+  const raw = new Float32Array(n);
+  for (let i = 0; i < n; i++) raw[i] = mapped[i] > 0 ? an.env[i] : 0;
   const tgt = new Float32Array(n);
-  let held = 0;
   for (let i = 0; i < n; i++) {
-    const e = an.env[i];
-    if (mapped[i] > 0) held = mapped[i];
-    tgt[i] = mapped[i] > 0 ? e : 0;
+    const a = raw[i - 1] ?? raw[i], b = raw[i + 1] ?? raw[i];
+    tgt[i] = raw[i] > 0 ? 0.25 * a + 0.5 * raw[i] + 0.25 * b : 0;
     if (tgt[i] < 0.05) tgt[i] = 0;
   }
   let ph = 0, f = 0, e = 0, peak = 0;

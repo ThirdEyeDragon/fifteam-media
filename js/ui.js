@@ -1,6 +1,7 @@
 // Small things every screen uses: finding elements, a message at the bottom, a sheet sliding up, times, the shared
 // audio engine, cover art, and a little event bus between the screens.
 export const $ = (id) => document.getElementById(id);
+export const dbToLinSafe = (db) => Math.pow(10, db / 20);
 
 let toastT = 0;
 export function toast(msg, ms = 3200) {

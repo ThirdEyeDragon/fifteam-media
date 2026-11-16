@@ -3,6 +3,8 @@
 import * as store from "./store.js";
 import { $, fmtTime, fill, artUrl, placeholderArt, bus, toast } from "./ui.js";
 import { makeTilt } from "./tilt.js";
+import { makeKnob } from "./knob.js";
+import { eq, dbOf } from "./eq.js";
 
 const audio = new Audio();
 audio.preload = "auto";
@@ -123,6 +125,14 @@ export function initPlayer() {
     } else tilt.stop();
     $("mini").classList.toggle("hide", !P.cur || v === "player");
   });
+
+  // the tone knobs: BASS, MIDS, HIGHS, 0 to 10 (5 is flat)
+  eq.attach(audio);
+  const sub = (v) => { const d = dbOf(v); return Math.abs(d) < 0.05 ? "flat" : `${d > 0 ? "+" : "−"}${Math.abs(d).toFixed(1)} dB`; };
+  for (const [id, band, label] of [["kn-bass", "bass", "Bass"], ["kn-mids", "mids", "Mids"], ["kn-highs", "highs", "Highs"]])
+    makeKnob($(id), { label, value: eq.values[band], sub, onInput: (v) => eq.set(band, v) });
+  audio.addEventListener("play", () => eq.engageIfNeeded());
+  bus.on("art", (id) => { if (P.cur && P.cur.id === id) render(); });
 
   $("np-play").onclick = () => { if (!P.cur) { location.hash = "#library"; return; } player.toggle(); };
   $("mini-play").onclick = (e) => { e.stopPropagation(); player.toggle(); };

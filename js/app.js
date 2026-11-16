@@ -1,5 +1,8 @@
 // FifTeam Media: wiring the screens together.
 import { $, bus, toast } from "./ui.js";
+import { player } from "./player.js";
+
+export const APP_VERSION = "1.1";
 import * as store from "./store.js";
 import { initPlayer } from "./player.js";
 import { initLibrary, library, importFiles } from "./library.js";
@@ -44,8 +47,21 @@ async function boot() {
     try { await navigator.clipboard.writeText(url); toast("Link copied. Send it to your friends."); }
     catch { toast(url, 8000); }
   };
+  // updates: a new version installs itself in the background (checked on every open and every half hour); when it takes
+  // over, the app refreshes into it at once, unless music is playing or a rebass is running (then: next time it opens)
   if ("serviceWorker" in navigator && location.protocol !== "file:") {
-    navigator.serviceWorker.register("sw.js").catch(() => {});
+    const hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.register("sw.js").then((reg) => {
+      setInterval(() => reg.update().catch(() => {}), 30 * 60 * 1000);
+      document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") reg.update().catch(() => {}); });
+    }).catch(() => {});
+    let reloading = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (!hadController || reloading) return;
+      const busy = player.playing || !$("rb-busy").hidden;
+      if (busy) { toast("FifTeam Media has an update. It switches over next time you open it.", 5000); return; }
+      reloading = true; location.reload();
+    });
   }
 }
 boot();

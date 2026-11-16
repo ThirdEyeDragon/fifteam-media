@@ -50,3 +50,21 @@ writeFileSync(join(out, "night-drive.wav"), withInfo(encodeWav(a, sr, 16), "Nigh
 const b = song(30, [55, 55, 65.41, 73.42, 82.41, 73.42, 65.41, 49.0], 96, 11);
 writeFileSync(join(out, "Low Tide - Demo Band.wav"), Buffer.from(encodeWav(b, sr, 16)));
 console.log("wrote 2 songs to", out);
+
+// a test cover image: a 600x400 PNG (wider than tall, to check the square crop)
+import { deflateSync } from "node:zlib";
+{
+  const W = 600, H = 400, raw = Buffer.alloc((W * 3 + 1) * H);
+  for (let y = 0; y < H; y++) {
+    raw[y * (W * 3 + 1)] = 0;
+    for (let x = 0; x < W; x++) {
+      const o = y * (W * 3 + 1) + 1 + x * 3, d = Math.hypot(x - 300, y - 200);
+      raw[o] = 255 - (x * 200) / W; raw[o + 1] = 80 + (y * 120) / H; raw[o + 2] = d < 120 ? 255 : 120;
+    }
+  }
+  const crc = (b) => { let c, t = []; for (let n = 0; n < 256; n++) { c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } let r = 0xffffffff; for (const v of b) r = t[(r ^ v) & 255] ^ (r >>> 8); return (r ^ 0xffffffff) >>> 0; };
+  const chunk = (type, data) => { const l = Buffer.alloc(4); l.writeUInt32BE(data.length); const td = Buffer.concat([Buffer.from(type), data]); const c = Buffer.alloc(4); c.writeUInt32BE(crc(td)); return Buffer.concat([l, td, c]); };
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(W, 0); ihdr.writeUInt32BE(H, 4); ihdr[8] = 8; ihdr[9] = 2;
+  writeFileSync(join(out, "..", "cover.png"), Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]));
+  console.log("wrote cover.png");
+}

@@ -88,4 +88,39 @@ for (const [lo, hi, mode, db] of [[25, 45, "musical", 0], [20, 35, "stretch", -3
     `true peak ${stats.truePeakDb.toFixed(2)} dBTP, clipped ${stats.clipped}, song ducked ${stats.duckDb.toFixed(2)} dB, 16-bit full-scale samples ${full}, ${(performance.now() - t).toFixed(0)} ms`);
   if (stats.clipped || full || stats.truePeakDb > -0.1 + 1e-6 || mn < lo - 0.01 || mx > hi + 0.01) { console.log("FAIL"); process.exit(1); }
 }
+// note stability: count notes shorter than 40 ms in the mapped line (flicker)
+{
+  const mapped = mapBassLine(an, { lo: 25, hi: 50, mode: "musical", snap: true });
+  let runs = 0, short = 0, len = 0, prev = -1;
+  for (let i = 0; i <= mapped.length; i++) {
+    const f = i < mapped.length ? mapped[i] : -2;
+    if (f !== prev) { if (prev > 0) { runs++; if (len < 4) short++; } prev = f; len = 1; } else len++;
+  }
+  console.log(`note stability: ${runs} notes, ${short} shorter than 40 ms`);
+  if (short) { console.log("FAIL"); process.exit(1); }
+}
+
+// slowed and screwed: 75% speed, then the bass found again on the slowed song, then rebassed (with reverb) at 0 dB
+{
+  const { slowDown, freeverb } = await import("../js/dsp.js");
+  t = performance.now();
+  const speed = 0.75;
+  const [sL, sR] = slowDown([L, R], speed);
+  const smono = new Float32Array(sL.length); for (let s = 0; s < sL.length; s++) smono[s] = 0.5 * (sL[s] + sR[s]);
+  const san = analyzeBass(smono, sr);
+  let hit = 0, tot = 0;
+  for (let i = 0; i < san.f0.length; i++) {
+    const time = (san.t0 + i * san.hop) * speed, fr = Math.round(time * 100);
+    if (!truth[fr] || !san.f0[i]) continue;
+    tot++;
+    if (Math.abs(1200 * Math.log2(san.f0[i] / (truth[fr] * speed))) < 50) hit++;
+  }
+  const wetChs = freeverb([sL, sR], sr);
+  const mapped = mapBassLine(san, { lo: 22, hi: 45, mode: "musical", snap: true });
+  const { bass, peak } = synthBass(san, mapped, sr, wetChs[0].length);
+  const { out, stats } = rebassMix(wetChs, bass, peak, sr, { bassDb: 0, replaceHz: 45 * 1.25 });
+  console.log(`slowed 75% + reverb: ${(sL.length / sr).toFixed(1)} s (was ${secs}), song bass ${san.lo.toFixed(1)}-${san.hi.toFixed(1)} Hz, ` +
+    `found the slowed notes ${(100 * hit / tot).toFixed(1)}% exact, true peak ${stats.truePeakDb.toFixed(2)} dBTP, clipped ${stats.clipped}, ${(performance.now() - t).toFixed(0)} ms`);
+  if (stats.clipped || stats.truePeakDb > -0.1 + 1e-6 || hit / tot < 0.85) { console.log("FAIL"); process.exit(1); }
+}
 console.log("PASS");

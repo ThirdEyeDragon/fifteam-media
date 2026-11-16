@@ -1,15 +1,17 @@
 // FifTeam Media's service worker: the app works offline, and audio files shared to it from other apps (Android) land in
 // its inbox. Bump VERSION whenever the app's files change.
-const VERSION = "fifteam-v1";
+const VERSION = "fifteam-v2";
 const SHELL = [
   "./", "index.html", "manifest.webmanifest", "css/app.css",
   "js/app.js", "js/ui.js", "js/store.js", "js/tags.js", "js/tilt.js", "js/player.js", "js/library.js",
   "js/rebass.js", "js/rebass-worker.js", "js/tones.js", "js/export.js", "js/dsp.js", "js/mp3-worker.js",
+  "js/knob.js", "js/eq.js", "js/image.js",
   "icons/icon-192.png", "icons/icon-512.png", "icons/maskable-512.png", "icons/apple-touch-icon.png",
 ];
 
 self.addEventListener("install", (e) => {
-  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  // straight from the server (not the browser's cache), so a new version is really new
+  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: "reload" })))).then(() => self.skipWaiting()));
 });
 self.addEventListener("activate", (e) => {
   e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== VERSION && k !== "fifteam-runtime").map((k) => caches.delete(k)))).then(() => self.clients.claim()));

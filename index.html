@@ -45,6 +45,7 @@
     <symbol id="i-warn" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18h.01"/></g></symbol>
     <symbol id="i-info" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5h.01"/></g></symbol>
     <symbol id="i-install" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M12 7v8M9 12l3 3 3-3"/></g></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="1.8"/><path d="M21 16l-5-5-8 9"/></g></symbol>
     <symbol id="i-logo" viewBox="0 0 24 24"><g fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"><path d="M6 19V5h7M6 12h5"/><path d="M15 19v-5M18.5 19v-9" /></g></symbol>
   </defs>
 </svg>
@@ -80,6 +81,9 @@
           <button class="play-big" id="np-play" aria-label="Play"><svg><use href="#i-play"/></svg></button>
           <button class="icon-btn" id="np-next" aria-label="Next"><svg><use href="#i-next"/></svg></button>
           <button class="icon-btn" id="np-repeat" aria-label="Repeat"><svg><use href="#i-repeat"/></svg></button>
+        </div>
+        <div class="knobs" id="np-knobs" aria-label="Tone">
+          <div id="kn-bass"></div><div id="kn-mids"></div><div id="kn-highs"></div>
         </div>
         <div class="np-extra">
           <button class="btn small" id="np-motion" hidden><svg><use href="#i-tilt"/></svg>Turn on tilt</button>
@@ -162,6 +166,21 @@
           <label class="switch"><span class="txt">Tune to exact notes<small>Snaps the bass to the song's own tuning</small></span><input type="checkbox" id="rb-snap" checked></label>
         </div>
 
+        <div class="card">
+          <label class="switch"><span class="txt">Slow it down<small>Slowed and screwed: the whole song plays slower and lower, like a tape running slow. The bass is found again on the slowed song, so it still lands on every note.</small></span><input type="checkbox" id="rb-slow"></label>
+          <div class="stack" id="rb-slow-box" hidden>
+            <div class="row between"><span class="label">Speed</span><span class="val" id="rb-speed-val">80<small>%</small></span></div>
+            <input type="range" id="rb-speed" min="60" max="95" step="1" value="80" aria-label="Speed in percent">
+            <div class="scale"><span>60%</span><span>70</span><span>80</span><span>95%</span></div>
+            <div class="chips" id="rb-speed-presets">
+              <button class="chip" data-s="90">90%</button><button class="chip" data-s="85">85%</button><button class="chip on" data-s="80">80%</button>
+              <button class="chip" data-s="75">75%</button><button class="chip" data-s="70">70%</button>
+            </div>
+            <span class="status" id="rb-speed-hint"></span>
+          </div>
+          <label class="switch"><span class="txt">Add reverb<small>The "slowed + reverb" sound. The low end stays dry, so the bass stays tight.</small></span><input type="checkbox" id="rb-reverb"></label>
+        </div>
+
         <button class="btn primary block" id="rb-go" disabled><svg><use href="#i-bass"/></svg>Rebass it</button>
         <div class="card" id="rb-busy" hidden>
           <div class="row between"><span class="status" id="rb-stage">Reading the song</span><span class="status" id="rb-pct">0%</span></div>
@@ -179,8 +198,9 @@
             <div><span class="label">Note</span><b id="rb-now-n">–</b></div>
             <div><span class="label">Bass level</span><b id="rb-now-l">–</b></div>
           </div>
-          <canvas class="graph map" id="rb-map"></canvas>
-          <div class="legend"><span><i style="background:#b25cff"></i>New bass</span><span><i style="background:rgba(159,179,255,.55)"></i>Song's bass</span><span>Tap the map to jump</span></div>
+          <canvas class="graph roll" id="rb-map" aria-label="The bass line around the play position"></canvas>
+          <canvas class="overview" id="rb-ov" aria-label="The whole song: tap to jump"></canvas>
+          <div class="legend"><span><i style="background:linear-gradient(90deg,#3d7bff,#b25cff)"></i>New bass</span><span><i style="background:rgba(159,179,255,.55)"></i>Song's bass</span><span>Drag to scrub</span></div>
           <div class="pl-row">
             <button class="play-big" id="rb-play" style="width:56px;height:56px" aria-label="Play preview"><svg style="width:24px;height:24px"><use href="#i-play"/></svg></button>
             <div class="times"><span id="rb-cur">0:00</span> / <span id="rb-dur">0:00</span></div>
@@ -190,6 +210,12 @@
 
         <div class="card" id="rb-export" hidden>
           <span class="label">Save your rebass</span>
+          <div class="cover-row">
+            <div class="cover" id="rb-cover"></div>
+            <div class="grow stack-sm"><span class="status" id="rb-cover-note">Cover: the song's own</span>
+              <div class="row wrap"><button class="btn small" id="rb-cover-pick"><svg><use href="#i-image"/></svg>Choose image</button><button class="btn small" id="rb-cover-reset" hidden>Use the song's</button></div>
+            </div>
+          </div>
           <div class="field"><label for="rb-name" class="status">Name</label><input class="input" id="rb-name" maxlength="120" autocomplete="off"></div>
           <div class="seg" id="rb-format"><button class="on" data-k="wav16">WAV 16-bit</button><button data-k="wav24">WAV 24-bit</button><button data-k="mp3">MP3 320</button></div>
           <span class="status" id="rb-size"></span>
@@ -248,6 +274,12 @@
         <div class="card">
           <span class="label">Save this tone</span>
           <div class="chips" id="tg-len"><button class="chip" data-s="10">10 s</button><button class="chip on" data-s="30">30 s</button><button class="chip" data-s="60">1 min</button><button class="chip" data-s="300">5 min</button></div>
+          <div class="cover-row">
+            <div class="cover" id="tg-cover"></div>
+            <div class="grow stack-sm"><span class="status" id="tg-cover-note">Cover: FifTeam's tone art</span>
+              <div class="row wrap"><button class="btn small" id="tg-cover-pick"><svg><use href="#i-image"/></svg>Choose image</button><button class="btn small" id="tg-cover-reset" hidden>Use the default</button></div>
+            </div>
+          </div>
           <div class="field"><label for="tg-name" class="status">Name</label><input class="input" id="tg-name" maxlength="120" autocomplete="off"></div>
           <div class="seg" id="tg-format"><button class="on" data-k="wav16">WAV 16-bit</button><button data-k="wav24">WAV 24-bit</button><button data-k="mp3">MP3 320</button></div>
           <button class="btn primary block" id="tg-save"><svg><use href="#i-save"/></svg>Save to phone</button>

@@ -4,6 +4,7 @@ import { readTags } from "./tags.js";
 import { $, toast, openSheet, closeSheet, fmtTime, artUrl, forgetArt, placeholderArt, bus, onSeg, segValue } from "./ui.js";
 import { player } from "./player.js";
 import { sizeText, isIOS } from "./export.js";
+import { pickImage } from "./image.js";
 
 let tracks = [];
 let kind = "song";
@@ -107,7 +108,7 @@ function render() {
     $("lib-add-2").hidden = $("lib-add-dir").hidden = kind !== "song" || !!q;
   }
   const n = tracks.filter((t) => (t.kind || "song") === "song").length;
-  store.storageUse().then((u) => { $("lib-foot").textContent = n || u ? `${n} song${n === 1 ? "" : "s"} · ${sizeText(u)} kept on this device` : ""; });
+  store.storageUse().then((u) => { $("lib-foot").textContent = (n || u ? `${n} song${n === 1 ? "" : "s"} · ${sizeText(u)} kept on this device · ` : "") + "FifTeam Media 1.1"; });
 }
 
 function menu(t) {
@@ -121,6 +122,13 @@ function menu(t) {
     add("i-play", "Play", () => playIn(t));
     add("i-queue", "Play next", () => { player.playNext(t.id); toast("Plays next"); });
     if ((t.kind || "song") !== "tone") add("i-bass", "Rebass this song", () => bus.emit("rebass", t));
+    add("i-image", t.hasArt ? "Change cover image" : "Add a cover image", async () => {
+      const b = await pickImage(); if (!b) return;
+      await store.putArt(t.id, b);
+      t.hasArt = true; await store.updateTrack(t);
+      forgetArt(t.id); await library.refresh(); bus.emit("art", t.id);
+      toast("Cover updated");
+    });
     add("i-trash", "Remove from library", async () => {
       player.forget(t.id); forgetArt(t.id);
       await store.deleteTrack(t.id); await library.refresh(); toast("Removed");

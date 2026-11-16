@@ -26,7 +26,22 @@ ws.addEventListener("message", (m) => {
   if (d.method === "Runtime.exceptionThrown") errors.push(d.params.exceptionDetails.exception?.description || d.params.exceptionDetails.text);
   if (d.method === "Runtime.consoleAPICalled" && (d.params.type === "error" || d.params.type === "warning")) errors.push(d.params.args.map((a) => a.value || a.description).join(" "));
   if (d.method === "Log.entryAdded" && d.params.entry.level === "error") errors.push(`${d.params.entry.text} ${d.params.entry.url || ""}`);
+  if (d.method) { events.push(d); if (events.length > 500) events.shift(); }
 });
+const events = [];
+const waitEvent = async (method, ms = 10000) => { const t = Date.now(); while (Date.now() - t < ms) { const i = events.findIndex((e) => e.method === method); if (i >= 0) return events.splice(i, 1)[0].params; await sleep(100); } throw new Error("no " + method); };
+// pick a file in a chooser the page opens itself (cover images)
+const chooseFile = async (sel, path) => {
+  await cdp("Page.setInterceptFileChooserDialog", { enabled: true });
+  events.length = 0;
+  await ev(`document.querySelector(${JSON.stringify(sel)}).click(), 1`);
+  const fc = await waitEvent("Page.fileChooserOpened");
+  await cdp("DOM.setFileInputFiles", { backendNodeId: fc.backendNodeId, files: [path] });
+  await cdp("Page.setInterceptFileChooserDialog", { enabled: false });
+};
+// the samples of a 16-bit WAV (its "data" chunk, whatever else the file carries)
+const wavData = (b) => { let o = 12; while (o + 8 <= b.length) { const id = b.toString("ascii", o, o + 4), n = b.readUInt32LE(o + 4); if (id === "data") return new Int16Array(b.buffer.slice(b.byteOffset + o + 8, b.byteOffset + o + 8 + n)); o += 8 + n + (n & 1); } return new Int16Array(0); };
+const cover = resolve(songsDir, "..", "cover.png");
 const cdp = (method, params = {}) => new Promise((res, rej) => {
   const id = ++seq; pending.set(id, (d) => (d.error ? rej(new Error(`${method}: ${d.error.message}`)) : res(d.result)));
   ws.send(JSON.stringify({ id, method, params }));
@@ -82,6 +97,13 @@ await sleep(120);
 console.log("tilt debug:", await ev(`JSON.stringify({perm: typeof (window.DeviceOrientationEvent && DeviceOrientationEvent.requestPermission), motionBtnHidden: document.getElementById('np-motion').hidden, active: document.getElementById('view-player').classList.contains('active')})`));
 console.log("art transform:", await ev(`document.getElementById('art').style.transform`), "| playing:", await ev(`!document.querySelector('#np-play use').getAttribute('href').includes('play')`));
 await shot("03_player_tilted");
+// turn BASS up to 8.5 with the keyboard, MIDS down a step, and check the song still plays through them
+await ev(`(() => { const k = document.querySelector('#kn-bass .knob'); k.focus(); for (let i = 0; i < 7; i++) k.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true })); const m = document.querySelector('#kn-mids .knob'); m.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); return 1; })()`);
+await sleep(800);
+console.log("knobs:", await ev(`[...document.querySelectorAll('.knob-wrap')].map(w => w.querySelector('.knob-label').textContent + ' ' + w.querySelector('.knob').getAttribute('aria-valuenow') + ' (' + w.querySelector('.knob-sub').textContent + ')').join(' | ')`),
+  "| still playing:", await ev(`!document.querySelector('#np-play use').getAttribute('href').includes('play')`));
+await ev(`(() => { const v = document.getElementById('view-player'); v.scrollTop = v.scrollHeight; return 1; })()`); await sleep(300);
+await shot("03b_player_knobs");
 
 // rebass it
 await ev(`location.hash = '#rebass'`); await sleep(400);
@@ -100,7 +122,22 @@ await ev(`(() => { const lo = document.getElementById('rb-lo'), hi = document.ge
 await sleep(600);
 await until(`document.getElementById('rb-busy').hidden`, 60000, "the re-render");
 console.log("stats at 20-35 Hz, 0 dB:", await ev(`[...document.querySelectorAll('#rb-stats .stat')].map(s => s.querySelector('span').textContent + ': ' + s.querySelector('b').textContent).join(' | ')`));
+// slow it to 75% with reverb: the bass is found again on the slowed song
+await click('#rb-slow'); await sleep(100);
+await click('#rb-speed-presets .chip[data-s="75"]'); await sleep(100);
+await click('#rb-reverb');
+await sleep(600);
+await until(`document.getElementById('rb-busy').hidden`, 90000, "the slowed render");
+console.log("stats slowed 75% + reverb:", await ev(`[...document.querySelectorAll('#rb-stats .stat')].map(s => s.querySelector('span').textContent + ': ' + s.querySelector('b').textContent).join(' | ')`));
+console.log("name now:", await ev(`document.getElementById('rb-name').value`), "| length:", await ev(`document.getElementById('rb-dur').textContent`));
+await click("#rb-play"); await sleep(2500);
+await show('#rb-result'); await sleep(300);
+await shot("05b_rebass_slowed");
+await click("#rb-play");
 await show('#rb-export'); await sleep(300);
+await chooseFile("#rb-cover-pick", cover);
+await until(`document.getElementById('rb-cover-note').textContent.includes('your image')`, 10000, "the cover");
+console.log("cover:", await ev(`document.getElementById('rb-cover-note').textContent`));
 await ev(`(() => { const n = document.getElementById('rb-name'); n.value = 'My Night Drive Rebass'; n.dispatchEvent(new Event('input')); return 1; })()`);
 await shot("06_rebass_export");
 await ev(`delete window.showSaveFilePicker; window.showSaveFilePicker = undefined; 1`);
@@ -110,9 +147,9 @@ for (let i = 0; i < 60 && !saved; i++) { await sleep(500); saved = readdirSync(d
 console.log("downloaded:", saved || "nothing");
 if (saved) {
   const b = readFileSync(join(dl, saved));
-  const data = new Int16Array(b.buffer, b.byteOffset + 44, (b.length - 44) >> 1);
+  const data = wavData(b);
   let pk = 0, full = 0; for (const v of data) { const a = Math.abs(v); if (a > pk) pk = a; if (v >= 32767 || v <= -32768) full++; }
-  console.log(`saved WAV: ${(b.length / 1e6).toFixed(1)} MB, peak ${(20 * Math.log10(pk / 32768)).toFixed(2)} dBFS, full-scale samples ${full}`);
+  console.log(`saved WAV: ${(b.length / 1e6).toFixed(1)} MB, ${(data.length / 2 / 48000).toFixed(1)} s, peak ${(20 * Math.log10(pk / 32768)).toFixed(2)} dBFS, full-scale samples ${full}, tags ${b.includes("id3 ") ? "id3" : "-"}/${b.includes("INAM") ? "INFO" : "-"}`);
 }
 // the same rebass as an MP3 (encoded, decoded again and checked for clipping before it is handed over)
 await click('#rb-format button[data-k="mp3"]');
@@ -120,6 +157,12 @@ await click("#rb-save");
 let mp3 = null;
 for (let i = 0; i < 120 && !mp3; i++) { await sleep(500); mp3 = readdirSync(dl).find((f) => f.endsWith(".mp3")); }
 console.log("downloaded MP3:", mp3 ? `${mp3} (${(readFileSync(join(dl, mp3)).length / 1e6).toFixed(2)} MB)` : "nothing");
+if (mp3) {
+  const b = readFileSync(join(dl, mp3));
+  const tagLen = ((b[6] & 127) << 21) | ((b[7] & 127) << 14) | ((b[8] & 127) << 7) | (b[9] & 127);
+  const tag = b.subarray(10, 10 + tagLen), apic = tag.indexOf("APIC"), jpg = tag.indexOf(Buffer.from([0xff, 0xd8, 0xff]));
+  console.log(`MP3 tag: ${b.subarray(0, 3).toString()} v2.${b[3]}, ${tagLen} bytes, title frame ${tag.indexOf("TIT2") >= 0}, cover ${apic >= 0 && jpg > apic ? "JPEG " + (tagLen - jpg) + " bytes" : "missing"}`);
+}
 await click('#rb-format button[data-k="wav16"]');
 await click("#rb-keep");
 await sleep(2500);
@@ -139,7 +182,7 @@ await click("#tg-save");
 let tone = null;
 for (let i = 0; i < 60 && !tone; i++) { await sleep(500); tone = readdirSync(dl).find((f) => f.endsWith(".wav") && !f.startsWith("My Night")); }
 if (tone) {
-  const b = readFileSync(join(dl, tone)), d = new Int16Array(b.buffer, b.byteOffset + 44, (b.length - 44) >> 1);
+  const b = readFileSync(join(dl, tone)), d = wavData(b);
   let pk = 0; for (const v of d) pk = Math.max(pk, Math.abs(v));
   console.log(`tone file: ${tone}, ${(d.length / 2 / 48000).toFixed(1)} s, peak ${(20 * Math.log10(pk / 32768)).toFixed(1)} dBFS`);
 } else console.log("tone file: nothing");

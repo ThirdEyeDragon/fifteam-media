@@ -1,29 +1,34 @@
-// The Rebass screen: choose a song, set the range and level, let the worker find the bass line and build the new bass,
-// listen (with a live graph of the bass being added), then name it and save it, share it, or keep it in the library.
+// The Rebass screen: choose a song, set the range and level (and, if wanted, slow it down), let the worker find the bass
+// line and build the new bass, listen with a live graph of the bass being added, then name it, give it a cover, and save
+// it, share it, or keep it in the library.
 import { $, toast, openSheet, closeSheet, fmtTime, fill, getCtx, artUrl, placeholderArt, bus, onSeg, segValue } from "./ui.js";
 import * as store from "./store.js";
 import { library } from "./library.js";
 import { player } from "./player.js";
 import { FORMATS, makeFile, saveFile, shareFile, canShareFiles, sizeText, isIOS } from "./export.js";
 import { noteName, linToDb } from "./dsp.js";
+import { pickImage } from "./image.js";
 
 const S = {
-  src: null, worker: null, loaded: false, origBuf: null, outBuf: null, res: null, version: 0,
-  busy: false, again: false, params: { lo: 25, hi: 45, mode: "musical", db: -3, replace: true, snap: true },
-  pl: null, ab: "rebass", an: null, spec: null, raf: 0, mapImg: null, nameEdited: false, file: null, fileKey: "",
-  trail: [],
+  src: null, worker: null, loaded: false, origBuf: null, refBuf: null, refKey: "", outBuf: null, res: null, version: 0,
+  busy: false, again: false, params: { lo: 25, hi: 45, mode: "musical", db: -3, replace: true, snap: true, speed: 1, reverb: false },
+  pl: null, ab: "rebass", an: null, spec: null, raf: 0, nameEdited: false, file: null, fileKey: "",
+  cover: null, coverUrl: null, segs: [], ovImg: null, disp: null, pk: null, glow: [], lastT: 0, lastRead: 0, drag: null,
 };
 
 // ---------------------------------------------------------------------------------------------------- choosing a song
 async function setSource(src) {
   stopPreview();
   if (S.worker) { S.worker.terminate(); S.worker = null; }
-  S.src = src; S.loaded = false; S.origBuf = null; S.outBuf = null; S.res = null; S.file = null; S.nameEdited = false;
+  S.src = src; S.loaded = false; S.origBuf = null; S.refBuf = null; S.refKey = ""; S.outBuf = null; S.res = null; S.file = null; S.nameEdited = false;
+  S.cover = null; if (S.coverUrl) URL.revokeObjectURL(S.coverUrl); S.coverUrl = null;
   $("rb-title").textContent = src.title; $("rb-artist").textContent = src.artist || "Unknown artist";
   $("rb-thumb").style.backgroundImage = `url("${src.cover || placeholderArt(src.title)}")`;
   $("rb-go").disabled = false;
+  $("rb-go").innerHTML = '<svg><use href="#i-bass"/></svg>Rebass it';
   $("rb-result").hidden = true; $("rb-export").hidden = true; $("rb-busy").hidden = true;
   $("rb-name").value = defaultName();
+  paintCover(); paintSlow();
 }
 
 async function fromTrack(t) {
@@ -57,21 +62,24 @@ function pickFromLibrary() {
   });
 }
 
+async function fromFile(f) {
+  const { readTags } = await import("./tags.js");
+  const tags = await readTags(f);
+  setSource({ title: tags.title, artist: tags.artist, blob: f, cover: tags.art ? URL.createObjectURL(tags.art) : null, art: tags.art });
+}
 function pickFile() {
   const inp = $("one-in"); inp.value = "";
-  inp.onchange = async () => {
-    const f = inp.files[0]; if (!f) return;
-    const { readTags } = await import("./tags.js");
-    const tags = await readTags(f);
-    setSource({ title: tags.title, artist: tags.artist, blob: f, cover: tags.art ? URL.createObjectURL(tags.art) : null, art: tags.art });
-  };
+  inp.onchange = () => { const f = inp.files[0]; if (f) fromFile(f); };
   inp.click();
 }
 
 // ---------------------------------------------------------------------------------------------------- the settings
 function readParams() {
-  const lo = +$("rb-lo").value, hi = +$("rb-hi").value;
-  S.params = { lo, hi, mode: segValue($("rb-mode")), db: +$("rb-db").value, replace: $("rb-replace").checked, snap: $("rb-snap").checked };
+  const slow = $("rb-slow").checked;
+  S.params = {
+    lo: +$("rb-lo").value, hi: +$("rb-hi").value, mode: segValue($("rb-mode")), db: +$("rb-db").value,
+    replace: $("rb-replace").checked, snap: $("rb-snap").checked, speed: slow ? +$("rb-speed").value / 100 : 1, reverb: $("rb-reverb").checked,
+  };
 }
 function paintRange() {
   const lo = $("rb-lo"), hi = $("rb-hi");
@@ -92,10 +100,21 @@ function paintDb() {
   const v = +r.value;
   $("rb-db-val").innerHTML = `${v === 0 ? "0.0" : "−" + Math.abs(v).toFixed(1)}<small>dB</small>`;
 }
+function paintSlow() {
+  const on = $("rb-slow").checked, r = $("rb-speed"), sp = +r.value;
+  $("rb-slow-box").hidden = !on;
+  fill(r);
+  $("rb-speed-val").innerHTML = `${sp}<small>%</small>`;
+  document.querySelectorAll("#rb-speed-presets .chip").forEach((c) => c.classList.toggle("on", +c.dataset.s === sp));
+  const semis = 12 * Math.log2(sp / 100);
+  const dur = S.src && S.src.duration ? ` · ${fmtTime(S.src.duration / (sp / 100))} long (was ${fmtTime(S.src.duration)})` : "";
+  $("rb-speed-hint").textContent = `${sp}% speed: ${Math.abs(semis).toFixed(1)} semitones lower${dur}`;
+}
 function defaultName() {
   if (!S.src) return "";
   const p = S.params, db = p.db === 0 ? "0" : `-${Math.abs(p.db)}`;
-  return `${S.src.title} (Rebass ${p.lo}-${p.hi}Hz ${db}dB)`;
+  const slow = p.speed < 1 ? `Slowed ${Math.round(p.speed * 100)}%${p.reverb ? " + Reverb" : ""}, ` : (p.reverb ? "Reverb, " : "");
+  return `${S.src.title} (${slow}Rebass ${p.lo}-${p.hi}Hz ${db}dB)`;
 }
 let reT = 0;
 function settingsChanged() {
@@ -105,7 +124,10 @@ function settingsChanged() {
 }
 
 // ---------------------------------------------------------------------------------------------------- the work
-const STAGES = { decode: ["Reading the song", 0, 0.12], find: ["Finding the bass line", 0.12, 0.5], build: ["Building the new bass", 0.5, 0.72], master: ["Mastering with zero clipping", 0.72, 1] };
+const STAGES = {
+  decode: ["Reading the song", 0, 0.1], slow: ["Slowing it down", 0.1, 0.3], find: ["Finding the bass line", 0.3, 0.55],
+  verb: ["Adding reverb", 0.55, 0.65], build: ["Building the new bass", 0.65, 0.8], master: ["Mastering with zero clipping", 0.8, 1],
+};
 function progress(stage, p) {
   const [label, a, b] = STAGES[stage];
   const v = a + (b - a) * Math.max(0, Math.min(1, p));
@@ -124,6 +146,7 @@ async function go() {
       const buf = await ctx.decodeAudioData(await S.src.blob.arrayBuffer());
       if (buf.duration > 20 * 60) throw new Error("That song is over 20 minutes long. Pick a shorter one.");
       S.origBuf = buf;
+      if (!S.src.duration) { S.src.duration = buf.duration; paintSlow(); }
       progress("decode", 1);
       const chs = [buf.getChannelData(0).slice(), (buf.numberOfChannels > 1 ? buf.getChannelData(1) : buf.getChannelData(0)).slice()];
       S.worker = new Worker(new URL("./rebass-worker.js", import.meta.url), { type: "module" });
@@ -165,13 +188,17 @@ function onWorker(e) {
   else if (m.type === "analysis") { if (S._loaded) { S._loaded(); S._loaded = null; } }
   else if (m.type === "error") fail(m.message);
   else if (m.type === "result") {
-    const ctx = getCtx();
+    const ctx = getCtx(), sr = S.origBuf.sampleRate;
     const n = m.out[0].length;
-    const wasPlaying = !!S.pl, at = S.pl ? curTime() : 0;
+    const wasPlaying = !!S.pl, frac = S.outBuf ? curTime() / S.outBuf.duration : 0;
     stopPreview();
-    const ob = ctx.createBuffer(2, n, S.origBuf.sampleRate);
+    const ob = ctx.createBuffer(2, n, sr);
     ob.copyToChannel(m.out[0], 0); ob.copyToChannel(m.out[1], 1);
     S.outBuf = ob;
+    // what "Original" plays: the slowed (or reverbed) song without the new bass, or the song itself
+    if (m.ref) { const rb = ctx.createBuffer(2, m.ref[0].length, sr); rb.copyToChannel(m.ref[0], 0); rb.copyToChannel(m.ref[1], 1); S.refBuf = rb; }
+    S.refKey = m.refKey;
+    if (!m.refKey) S.refBuf = null;
     S.res = { stats: m.stats, map: m.map, t0: m.t0, hop: m.hop };
     S.version++; S.file = null;
     S.busy = false;
@@ -179,9 +206,11 @@ function onWorker(e) {
     $("rb-go").innerHTML = '<svg><use href="#i-bass"/></svg>Rebass again';
     $("rb-result").hidden = false; $("rb-export").hidden = false;
     $("rb-dur").textContent = fmtTime(ob.duration);
-    paintStats(); drawMap(); paintSize();
+    S.pausedAt = Math.min(frac * ob.duration, ob.duration);
+    buildSegments(); drawOverview(); paintStats(); paintSize();
+    S.pk = null; S.glow = []; S.disp = null;
     startGraph();
-    if (wasPlaying) playPreview(at);
+    if (wasPlaying) playPreview(S.pausedAt);
     if (S.again) render();
   }
 }
@@ -194,11 +223,12 @@ function paintStats() {
     ["", `${s.truePeakDb.toFixed(2)} dBTP`, "True peak (between samples)"],
     ["", `${s.notes.toLocaleString()}`, "Bass notes found"],
     ["", p.mode === "musical" ? `${Math.round(s.tunedPct)}%` : "Stretched", p.mode === "musical" ? "Notes kept in tune" : "Notes mapped to the range"],
-    ["", `${f1(s.songLo)}–${f1(s.songHi)} Hz`, "The song's bass"],
+    ["", `${f1(s.songLo)}–${f1(s.songHi)} Hz`, s.speed < 1 ? "The slowed song's bass" : "The song's bass"],
     ["", `${f1(s.newLo)}–${f1(s.newHi)} Hz`, "The new bass"],
     ["", `${s.peakDb.toFixed(2)} dBFS`, "Loudest sample"],
     ["", s.duckDb > -0.05 ? "Not needed" : `${s.duckAvgDb.toFixed(1)} dB`, s.duckDb < -40 ? "Song under the loud bass (gone at the very peaks)" : "Song under the loud bass, on average"],
   ];
+  if (s.speed < 1 || s.reverb) items.push(["", s.speed < 1 ? `${Math.round(s.speed * 100)}%${s.reverb ? " + reverb" : ""}` : "Reverb", s.speed < 1 ? `Speed, ${Math.abs(12 * Math.log2(s.speed)).toFixed(1)} semitones lower` : "Added to the song"]);
   if (s.clipped) items[0] = ["", String(s.clipped), "Clipped samples"];
   $("rb-stats").innerHTML = items.map(([c, b, t]) => `<div class="stat ${c}"><b>${b}</b><span>${t}</span></div>`).join("");
 }
@@ -206,13 +236,13 @@ function paintStats() {
 // ---------------------------------------------------------------------------------------------------- listening
 function curTime() {
   if (!S.pl) return S.pausedAt || 0;
-  return Math.min(S.outBuf.duration, getCtx().currentTime - S.pl.t0);
+  return Math.max(0, Math.min(S.outBuf.duration, getCtx().currentTime - S.pl.t0));
 }
 function ensureAnalyser() {
   const ctx = getCtx();
   if (!S.an || S.an.context !== ctx) {
     S.an = ctx.createAnalyser();
-    S.an.fftSize = 32768; S.an.smoothingTimeConstant = 0.55; S.an.minDecibels = -110; S.an.maxDecibels = -5;
+    S.an.fftSize = 32768; S.an.smoothingTimeConstant = 0.82; S.an.minDecibels = -110; S.an.maxDecibels = -5;
     S.an.connect(ctx.destination);
     S.spec = new Float32Array(S.an.frequencyBinCount);
   }
@@ -224,13 +254,14 @@ function playPreview(at = 0) {
   const ctx = getCtx();
   ensureAnalyser();
   const so = ctx.createBufferSource(), sr = ctx.createBufferSource();
-  so.buffer = S.origBuf; sr.buffer = S.outBuf;
+  so.buffer = S.refKey && S.refBuf ? S.refBuf : S.origBuf; sr.buffer = S.outBuf;
   const go = ctx.createGain(), gr = ctx.createGain();
   go.gain.value = S.ab === "orig" ? 1 : 0; gr.gain.value = S.ab === "rebass" ? 1 : 0;
   so.connect(go).connect(S.an); sr.connect(gr).connect(S.an);
   const t = ctx.currentTime + 0.04;
   at = Math.max(0, Math.min(at, S.outBuf.duration - 0.05));
-  so.start(t, at); sr.start(t, at);
+  if (at < so.buffer.duration) so.start(t, at);
+  sr.start(t, at);
   S.pl = { so, sr, go, gr, t0: t - at };
   sr.onended = () => { if (S.pl && S.pl.sr === sr) { S.pausedAt = 0; stopPreview(); } };
   setPlayIcon(true);
@@ -240,8 +271,13 @@ function stopPreview(keepPos) {
   if (keepPos) S.pausedAt = curTime();
   const { so, sr } = S.pl;
   S.pl = null;
-  try { so.stop(); sr.stop(); } catch {}
+  try { so.stop(); } catch {}
+  try { sr.stop(); } catch {}
   setPlayIcon(false);
+}
+function seekTo(t) {
+  t = Math.max(0, Math.min(S.outBuf.duration, t));
+  if (S.pl) playPreview(t); else S.pausedAt = t;
 }
 function setPlayIcon(on) {
   const b = $("rb-play"); b.querySelector("use").setAttribute("href", on ? "#i-pause" : "#i-play"); b.setAttribute("aria-label", on ? "Pause preview" : "Play preview");
@@ -262,136 +298,248 @@ function sizeCanvas(c) {
   const g = c.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
   return { g, w, h };
 }
+const GRAD = (g, x0, x1) => { const gr = g.createLinearGradient(x0, 0, x1, 0); gr.addColorStop(0, "#3d7bff"); gr.addColorStop(0.55, "#7b5cff"); gr.addColorStop(1, "#b25cff"); return gr; };
+
+/** The new bass at time t, read smoothly between the 10 ms frames. */
+function bassAt(t) {
+  const r = S.res; if (!r) return null;
+  const p = (t - r.t0) / r.hop, i = Math.floor(p), u = p - i, n = r.map.length / 3;
+  if (i < 0 || i >= n - 1) return null;
+  const f0 = r.map[i * 3 + 1], f1 = r.map[i * 3 + 4], e0 = r.map[i * 3 + 2], e1 = r.map[i * 3 + 5];
+  const e = (f0 > 0 ? e0 : 0) * (1 - u) + (f1 > 0 ? e1 : 0) * u;
+  const f = f0 > 0 && f1 > 0 ? f0 * Math.pow(f1 / f0, u) : (f0 > 0 ? f0 : f1);
+  return f > 0 ? { f, e } : null;
+}
+
+// the live spectrum: the whole song's low end (smoothed and drawn as a curve) and the bass being added (a glowing peak)
 const F0 = 10, F1 = 250;
 const xOf = (f, w) => ((Math.log(f) - Math.log(F0)) / (Math.log(F1) - Math.log(F0))) * w;
-
-function frameAt(t) {
-  const r = S.res; if (!r) return null;
-  const i = Math.round((t - r.t0) / r.hop);
-  if (i < 0 || i * 3 + 2 >= r.map.length) return null;
-  return { fo: r.map[i * 3], fn: r.map[i * 3 + 1], e: r.map[i * 3 + 2] };
-}
-
-function drawSpec() {
+function drawSpec(dt) {
   const c = $("rb-spec"), { g, w, h } = sizeCanvas(c);
   g.clearRect(0, 0, w, h);
-  const yOf = (db) => h - 18 - ((db + 100) / 100) * (h - 30);
-  // grid
-  g.font = "600 10px Inter, system-ui, sans-serif"; g.textAlign = "center";
+  const yOf = (db) => h - 20 - ((db + 100) / 100) * (h - 32);
+  g.font = "600 10px Inter, system-ui, sans-serif"; g.textAlign = "center"; g.lineWidth = 1;
   for (const f of [10, 20, 30, 40, 60, 80, 100, 150, 200]) {
-    const x = xOf(f, w); g.strokeStyle = "rgba(190,196,255,0.08)"; g.beginPath(); g.moveTo(x, 8); g.lineTo(x, h - 18); g.stroke();
-    g.fillStyle = "rgba(190,196,255,0.45)"; g.fillText(f >= 100 ? `${f}` : `${f}`, Math.min(w - 10, Math.max(10, x)), h - 5);
+    const x = xOf(f, w); g.strokeStyle = "rgba(190,196,255,0.07)"; g.beginPath(); g.moveTo(x, 8); g.lineTo(x, h - 20); g.stroke();
+    g.fillStyle = "rgba(190,196,255,0.45)"; g.fillText(`${f}`, Math.min(w - 10, Math.max(10, x)), h - 6);
   }
   g.textAlign = "left";
-  for (const db of [-20, -40, -60, -80]) { const y = yOf(db); g.strokeStyle = "rgba(190,196,255,0.06)"; g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); g.fillStyle = "rgba(190,196,255,0.35)"; g.fillText(`${db}`, 4, y - 3); }
-  // the chosen range
+  for (const db of [-20, -40, -60, -80]) { const y = yOf(db); g.strokeStyle = "rgba(190,196,255,0.05)"; g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); g.fillStyle = "rgba(190,196,255,0.32)"; g.fillText(`${db}`, 4, y - 3); }
   const p = S.params, xa = xOf(p.lo, w), xb = xOf(p.hi, w);
-  g.fillStyle = "rgba(255,255,255,0.06)"; g.fillRect(xa, 8, xb - xa, h - 26);
-  // the whole song's low end, live
-  const ctx = getCtx(), playing = !!S.pl;
+  const band = g.createLinearGradient(0, 8, 0, h - 20); band.addColorStop(0, "rgba(178,92,255,0.10)"); band.addColorStop(1, "rgba(61,123,255,0.04)");
+  g.fillStyle = band; g.fillRect(xa, 8, xb - xa, h - 28);
+  const playing = !!S.pl;
+  // the song: the analyser (already averaged), eased again on screen, one point every 3 px, drawn through midpoints
+  const cols = Math.ceil(w / 3) + 1;
+  if (!S.disp || S.disp.length !== cols) S.disp = new Float32Array(cols).fill(-100);
+  const k = 1 - Math.exp(-dt / 0.06);
   if (playing && S.an) {
     S.an.getFloatFrequencyData(S.spec);
-    const binHz = ctx.sampleRate / S.an.fftSize;
-    g.beginPath();
-    for (let x = 0; x <= w; x += 2) {
-      const f = F0 * Math.pow(F1 / F0, x / w), k = f / binHz, k0 = Math.floor(k), u = k - k0;
-      const v = (S.spec[k0] ?? -120) * (1 - u) + (S.spec[k0 + 1] ?? -120) * u;
-      const y = yOf(Math.max(-100, v + 6));
-      x === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
+    const binHz = getCtx().sampleRate / S.an.fftSize;
+    for (let i = 0; i < cols; i++) {
+      const f = F0 * Math.pow(F1 / F0, (i * 3) / w), kb = f / binHz, k0 = Math.floor(kb), u = kb - k0;
+      const v = Math.max(-100, ((S.spec[k0] ?? -120) * (1 - u) + (S.spec[k0 + 1] ?? -120) * u) + 6);
+      S.disp[i] += (v - S.disp[i]) * k;
     }
-    g.strokeStyle = "rgba(159,179,255,0.85)"; g.lineWidth = 1.6; g.stroke();
-  }
-  // the bass being added right now: one clean sine, drawn as its peak, with a short trail of the last moments
-  const t = curTime(), fr = frameAt(t), A = S.res ? S.res.stats.bassGain : 0;
-  let now = null;
-  if (fr && fr.fn > 0 && fr.e > 0.05) now = { f: fr.fn, db: linToDb(A * fr.e) };
-  if (playing) { S.trail.push(now); if (S.trail.length > 40) S.trail.shift(); }
-  const peak = (pt, alpha) => {
-    const x = xOf(pt.f, w), y = yOf(pt.db), base = h - 18;
-    const grd = g.createLinearGradient(0, y, 0, base);
-    grd.addColorStop(0, `rgba(178,92,255,${0.75 * alpha})`); grd.addColorStop(1, `rgba(61,123,255,${0.05 * alpha})`);
-    g.beginPath(); g.moveTo(x - 26, base);
-    for (let dx = -26; dx <= 26; dx += 2) g.lineTo(x + dx, base - (base - y) * Math.exp(-(dx * dx) / 60));
-    g.closePath(); g.fillStyle = grd; g.fill();
-  };
-  S.trail.forEach((pt, i) => { if (pt) peak(pt, ((i + 1) / S.trail.length) * 0.25); });
-  if (now) {
-    peak(now, S.ab === "rebass" ? 1 : 0.4);
-    const x = xOf(now.f, w), y = yOf(now.db);
+  } else for (let i = 0; i < cols; i++) S.disp[i] += (-100 - S.disp[i]) * k * 0.5;
+  const pts = Array.from(S.disp, (v, i) => [i * 3, yOf(v)]);
+  g.beginPath(); g.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length - 1; i++) { const mx = (pts[i][0] + pts[i + 1][0]) / 2, my = (pts[i][1] + pts[i + 1][1]) / 2; g.quadraticCurveTo(pts[i][0], pts[i][1], mx, my); }
+  const songFill = g.createLinearGradient(0, 8, 0, h - 20); songFill.addColorStop(0, "rgba(159,179,255,0.16)"); songFill.addColorStop(1, "rgba(159,179,255,0)");
+  g.strokeStyle = "rgba(159,179,255,0.85)"; g.lineWidth = 1.6; g.stroke();
+  g.lineTo(w, h - 20); g.lineTo(0, h - 20); g.closePath(); g.fillStyle = songFill; g.fill();
+  // the added bass: one clean sine, so one peak; its place and height eased so it glides from note to note
+  const t = curTime(), now = bassAt(t), A = S.res ? S.res.stats.bassGain : 0;
+  const tgt = now ? { lf: Math.log(now.f), db: linToDb(A * now.e) } : null;
+  if (!S.pk) S.pk = tgt ? { ...tgt } : { lf: Math.log(p.lo), db: -100 };
+  const kf = 1 - Math.exp(-dt / 0.035), kd = 1 - Math.exp(-dt / (tgt && tgt.db > S.pk.db ? 0.03 : 0.09));
+  if (tgt) S.pk.lf += (tgt.lf - S.pk.lf) * kf;
+  S.pk.db += ((tgt ? tgt.db : -100) - S.pk.db) * kd;
+  const f = Math.exp(S.pk.lf), x = xOf(f, w), y = yOf(Math.max(-100, S.pk.db)), base = h - 20;
+  if (S.pk.db > -95) {
+    const alpha = S.ab === "rebass" ? 1 : 0.45;
+    // its afterglow: where it has just been
+    S.glow.push([x, y]); if (S.glow.length > 18) S.glow.shift();
+    if (S.glow.length > 2) {
+      g.beginPath(); g.moveTo(S.glow[0][0], S.glow[0][1]);
+      for (const [gx, gy] of S.glow) g.lineTo(gx, gy);
+      g.strokeStyle = `rgba(178,92,255,${0.25 * alpha})`; g.lineWidth = 2; g.stroke();
+    }
+    const width = 16 + 10 * Math.min(1, (S.pk.db + 60) / 50);
+    const fillG = g.createLinearGradient(0, y, 0, base);
+    fillG.addColorStop(0, `rgba(178,92,255,${0.85 * alpha})`); fillG.addColorStop(0.6, `rgba(123,92,255,${0.35 * alpha})`); fillG.addColorStop(1, `rgba(61,123,255,${0.04 * alpha})`);
+    g.beginPath(); g.moveTo(x - width * 2.2, base);
+    for (let dx = -width * 2.2; dx <= width * 2.2; dx += 1.5) g.lineTo(x + dx, base - (base - y) * Math.exp(-(dx * dx) / (2 * width * width / 4.5)));
+    g.lineTo(x + width * 2.2, base); g.closePath(); g.fillStyle = fillG; g.fill();
+    g.shadowColor = "rgba(178,92,255,0.9)"; g.shadowBlur = 14 * alpha;
     g.fillStyle = "#fff"; g.beginPath(); g.arc(x, y, 3.5, 0, Math.PI * 2); g.fill();
+    g.shadowBlur = 0;
+  } else S.glow.length = 0;
+  // the numbers, ten times a second
+  if (performance.now() - S.lastRead > 100) {
+    S.lastRead = performance.now();
+    const live = now && S.pk.db > -95;
+    $("rb-now-f").textContent = live ? `${now.f.toFixed(1)} Hz` : "–";
+    $("rb-now-n").textContent = live ? noteName(now.f).split(" ")[0] : "–";
+    $("rb-now-l").textContent = live ? `${S.pk.db.toFixed(1)} dB` : "–";
   }
-  $("rb-now-f").textContent = now ? `${now.f.toFixed(1)} Hz` : "–";
-  $("rb-now-n").textContent = now ? noteName(now.f).split(" ")[0] : "–";
-  $("rb-now-l").textContent = now ? `${now.db.toFixed(1)} dB` : "–";
 }
 
-function mapRange() { const s = S.res.stats; return [12, Math.max(130, s.songHi * 1.2, S.params.hi * 1.4)]; }
-function drawMap() {
-  if (!S.res) return;
-  const c = $("rb-map"), dpr = Math.min(3, devicePixelRatio || 1), w = c.clientWidth || 300, h = c.clientHeight || 130;
-  const off = document.createElement("canvas"); off.width = Math.round(w * dpr); off.height = Math.round(h * dpr);
-  const g = off.getContext("2d"); g.scale(dpr, dpr);
-  const [y0, y1] = mapRange(), dur = S.outBuf.duration, r = S.res;
-  const yOf = (f) => h - 8 - ((Math.log(f) - Math.log(y0)) / (Math.log(y1) - Math.log(y0))) * (h - 16);
-  g.font = "600 10px Inter, system-ui, sans-serif";
-  for (const f of [20, 40, 80]) { if (f < y0 || f > y1) continue; const y = yOf(f); g.strokeStyle = "rgba(190,196,255,0.07)"; g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); g.fillStyle = "rgba(190,196,255,0.45)"; g.fillText(`${f} Hz`, 4, y - 3); }
-  const ya = yOf(S.params.hi), yb = yOf(S.params.lo);
-  g.fillStyle = "rgba(255,255,255,0.05)"; g.fillRect(0, ya, w, yb - ya);
-  const frames = r.map.length / 3;
-  const grd = g.createLinearGradient(0, 0, w, 0); grd.addColorStop(0, "#3d7bff"); grd.addColorStop(0.55, "#7b5cff"); grd.addColorStop(1, "#b25cff");
-  for (let i = 0; i < frames; i += 2) {
-    const t = r.t0 + i * r.hop, x = (t / dur) * w, e = r.map[i * 3 + 2];
-    if (e < 0.05) continue;
-    const fo = r.map[i * 3], fn = r.map[i * 3 + 1];
-    if (fo > 0 && fo >= y0 && fo <= y1) { g.fillStyle = `rgba(159,179,255,${0.12 + 0.3 * e})`; g.fillRect(x, yOf(fo) - 1, 1.2, 2); }
-    if (fn > 0) { g.globalAlpha = 0.25 + 0.75 * e; g.fillStyle = grd; g.fillRect(x, yOf(fn) - 1.5, 1.4, 3); g.globalAlpha = 1; }
+// the bass roll: eight seconds round the play position, each new bass note a bar at its pitch (thicker when louder),
+// the song's own bass behind it, the note playing now lit and named; drag it to scrub
+const WIN = 8, AT = 0.35;
+function buildSegments() {
+  const r = S.res, n = r.map.length / 3, segs = [];
+  let cur = null;
+  for (let i = 0; i < n; i++) {
+    const fn = r.map[i * 3 + 1], e = r.map[i * 3 + 2], fo = r.map[i * 3], t = r.t0 + i * r.hop;
+    const on = fn > 0 && e > 0.05;
+    if (on && cur && Math.abs(fn / cur.f - 1) < 0.01 && t - cur.t1 < 0.025) { cur.t1 = t + r.hop; cur.e = Math.max(cur.e, e); if (fo > 0) cur.fo.push(fo); continue; }
+    if (cur) segs.push(cur);
+    cur = on ? { t0: t, t1: t + r.hop, f: fn, e, fo: fo > 0 ? [fo] : [] } : null;
   }
-  S.mapImg = off;
+  if (cur) segs.push(cur);
+  for (const s of segs) { s.fo.sort((a, b) => a - b); s.fom = s.fo.length ? s.fo[s.fo.length >> 1] : 0; }
+  S.segs = segs;
+  const lo = Math.min(S.params.lo, r.stats.newLo), hi = Math.max(S.params.hi, r.stats.newHi, r.stats.songHi * 1.05);
+  S.yr = [lo / 1.12, hi * 1.08];
 }
-function paintMap() {
+function drawRoll() {
+  if (!S.res) return;
   const c = $("rb-map"), { g, w, h } = sizeCanvas(c);
   g.clearRect(0, 0, w, h);
-  if (S.mapImg) g.drawImage(S.mapImg, 0, 0, w, h);
-  if (S.outBuf) {
-    const x = (curTime() / S.outBuf.duration) * w;
-    g.strokeStyle = "#fff"; g.lineWidth = 1.5; g.beginPath(); g.moveTo(x, 4); g.lineTo(x, h - 4); g.stroke();
+  const t = curTime(), tA = t - WIN * AT, sx = w / WIN;
+  const [y0, y1] = S.yr, top = 10, bot = h - 18;
+  const yOf = (f) => bot - ((Math.log(f) - Math.log(y0)) / (Math.log(y1) - Math.log(y0))) * (bot - top);
+  // the note lanes: every semitone faint, each E and A (the bass strings) a little brighter, and named
+  g.font = "600 10px Inter, system-ui, sans-serif"; g.textBaseline = "middle";
+  const m0 = Math.ceil(69 + 12 * Math.log2(y0 / 440)), m1 = Math.floor(69 + 12 * Math.log2(y1 / 440));
+  const pxPerSemi = (bot - top) / (12 * Math.log2(y1 / y0));
+  for (let m = m0; m <= m1; m++) {
+    const f = 440 * Math.pow(2, (m - 69) / 12), y = yOf(f), pc = ((m % 12) + 12) % 12, named = pc === 4 || pc === 9 || pc === 0;
+    g.strokeStyle = named ? "rgba(190,196,255,0.10)" : "rgba(190,196,255,0.035)"; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke();
+    if (named && pxPerSemi * 3 > 10 && y > top + 6 && y < bot - 4) { g.fillStyle = "rgba(190,196,255,0.42)"; g.fillText(noteName(f).split(" ")[0], 4, y - 6); }
   }
-  $("rb-cur").textContent = fmtTime(curTime());
+  // the chosen range
+  const ra = yOf(S.params.hi), rb = yOf(S.params.lo);
+  g.fillStyle = "rgba(255,255,255,0.035)"; g.fillRect(0, ra, w, rb - ra);
+  // seconds along the bottom
+  g.fillStyle = "rgba(190,196,255,0.35)"; g.textAlign = "center";
+  for (let s = Math.ceil(tA); s < tA + WIN; s++) { if (s < 0) continue; const x = (s - tA) * sx; g.fillRect(x, bot + 2, 1, 4); if (s % 2 === 0) g.fillText(fmtTime(s), x, bot + 11); }
+  g.textAlign = "left";
+  const grad = GRAD(g, 0, w);
+  let current = null;
+  for (const s of S.segs) {
+    if (s.t1 < tA || s.t0 > tA + WIN) continue;
+    const x0 = (s.t0 - tA) * sx, x1 = Math.max(x0 + 2, (s.t1 - tA) * sx);
+    // the song's own note, faint, behind
+    if (s.fom >= y0 && s.fom <= y1) { g.fillStyle = "rgba(159,179,255,0.22)"; roundRect(g, x0, yOf(s.fom) - 1.5, x1 - x0, 3, 1.5); g.fill(); }
+    const y = yOf(s.f), th = 4 + 6 * s.e, past = s.t1 < t, on = s.t0 <= t && s.t1 >= t;
+    if (on) current = { s, x0, x1, y };
+    g.globalAlpha = past ? 0.5 : 1;
+    g.fillStyle = grad; roundRect(g, x0, y - th / 2, x1 - x0, th, th / 2); g.fill();
+    g.globalAlpha = 1;
+  }
+  // the play position
+  const px = WIN * AT * sx;
+  const pg = g.createLinearGradient(px - 18, 0, px + 1, 0); pg.addColorStop(0, "rgba(178,92,255,0)"); pg.addColorStop(1, "rgba(178,92,255,0.18)");
+  g.fillStyle = pg; g.fillRect(px - 18, top - 6, 18, bot - top + 6);
+  g.fillStyle = "#fff"; g.fillRect(px - 0.75, top - 6, 1.5, bot - top + 8);
+  if (current) {
+    const { s, y } = current, th = 4 + 6 * s.e;
+    g.shadowColor = "rgba(178,92,255,0.95)"; g.shadowBlur = 16;
+    g.fillStyle = "#fff"; roundRect(g, px - 3, y - th / 2, 6, th, th / 2); g.fill();
+    g.shadowBlur = 0;
+    const label = `${noteName(s.f).split(" ")[0]} · ${s.f.toFixed(1)} Hz`;
+    g.font = "700 11px Inter, system-ui, sans-serif";
+    const tw = g.measureText(label).width, lx = Math.min(w - tw - 12, px + 8), ly = Math.max(top + 8, y - th / 2 - 12);
+    g.fillStyle = "rgba(20,17,58,0.9)"; roundRect(g, lx - 6, ly - 9, tw + 12, 18, 9); g.fill();
+    g.fillStyle = "#fff"; g.fillText(label, lx, ly);
+  }
+  $("rb-cur").textContent = fmtTime(t);
 }
+function roundRect(g, x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r); g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath();
+}
+
+// the whole song at a glance: how much bass there is along it, the window the roll shows, and the play position
+function drawOverview() {
+  const c = $("rb-ov"), dpr = Math.min(3, devicePixelRatio || 1), w = c.clientWidth || 300, h = c.clientHeight || 34;
+  const off = document.createElement("canvas"); off.width = Math.round(w * dpr); off.height = Math.round(h * dpr);
+  const g = off.getContext("2d"); g.scale(dpr, dpr);
+  const r = S.res, n = r.map.length / 3, dur = S.outBuf.duration, cols = Math.max(1, Math.floor(w / 2));
+  const env = new Float32Array(cols);
+  for (let i = 0; i < n; i++) {
+    if (!(r.map[i * 3 + 1] > 0)) continue;
+    const col = Math.min(cols - 1, Math.floor(((r.t0 + i * r.hop) / dur) * cols));
+    env[col] = Math.max(env[col], r.map[i * 3 + 2]);
+  }
+  g.fillStyle = GRAD(g, 0, w);
+  for (let i = 0; i < cols; i++) { const v = env[i] * (h - 8); g.globalAlpha = 0.35 + 0.65 * env[i]; g.fillRect(i * 2, (h - v) / 2, 1.4, Math.max(1, v)); }
+  g.globalAlpha = 1;
+  S.ovImg = off;
+}
+function paintOverview() {
+  if (!S.ovImg || !S.outBuf) return;
+  const c = $("rb-ov"), { g, w, h } = sizeCanvas(c);
+  g.clearRect(0, 0, w, h);
+  g.drawImage(S.ovImg, 0, 0, w, h);
+  const dur = S.outBuf.duration, t = curTime();
+  const a = ((t - WIN * AT) / dur) * w, b = ((t + WIN * (1 - AT)) / dur) * w;
+  g.fillStyle = "rgba(255,255,255,0.08)"; g.fillRect(a, 1, b - a, h - 2);
+  g.strokeStyle = "rgba(255,255,255,0.28)"; g.lineWidth = 1; g.strokeRect(a + 0.5, 1.5, b - a - 1, h - 3);
+  g.fillStyle = "#fff"; g.fillRect((t / dur) * w - 0.75, 2, 1.5, h - 4);
+}
+
 function startGraph() {
   cancelAnimationFrame(S.raf);
-  const tick = () => {
+  S.lastT = 0;
+  const tick = (now) => {
     if ($("rb-result").hidden || location.hash !== "#rebass") { S.raf = 0; return; }
-    drawSpec(); paintMap();
+    const dt = S.lastT ? Math.min(0.1, (now - S.lastT) / 1000) : 0.016;
+    S.lastT = now;
+    drawSpec(dt); drawRoll(); paintOverview();
     S.raf = requestAnimationFrame(tick);
   };
   S.raf = requestAnimationFrame(tick);
+}
+
+// ---------------------------------------------------------------------------------------------------- the cover
+function coverBlob() { return S.cover || (S.src && S.src.art) || null; }
+function paintCover() {
+  const el = $("rb-cover");
+  const url = S.coverUrl || (S.src && S.src.cover) || placeholderArt(S.src ? S.src.title : "FifTeam");
+  el.style.backgroundImage = `url("${url}")`;
+  $("rb-cover-note").textContent = S.cover ? "Cover: your image" : S.src && S.src.art ? "Cover: the song's own" : "Cover: none yet (FifTeam art)";
+  $("rb-cover-reset").hidden = !S.cover;
 }
 
 // ---------------------------------------------------------------------------------------------------- saving and sharing
 function paintSize() {
   if (!S.outBuf) return;
   const f = FORMATS[segValue($("rb-format"))];
-  $("rb-size").textContent = `About ${sizeText(S.outBuf.duration * f.bytesPerSec(S.outBuf.sampleRate))} · ${S.outBuf.sampleRate / 1000} kHz stereo`;
+  $("rb-size").textContent = `About ${sizeText(S.outBuf.duration * f.bytesPerSec(S.outBuf.sampleRate))} · ${S.outBuf.sampleRate / 1000} kHz stereo · ${fmtTime(S.outBuf.duration)}`;
 }
+const fileKeyNow = () => `${S.version}|${segValue($("rb-format"))}|${S.cover ? S.cover.size : 0}|${$("rb-name").value.trim()}`;
 async function buildFile() {
   const fmt = segValue($("rb-format")), name = $("rb-name").value.trim() || defaultName();
-  const key = `${S.version}|${fmt}`;
-  if (!S.file || S.fileKey !== key) {
+  const key = fileKeyNow();
+  const fresh = !S.file || S.fileKey !== key;
+  if (fresh) {
     toast(fmt === "mp3" ? "Making the MP3…" : "Making the file…", 60000);
     const chs = [S.outBuf.getChannelData(0), S.outBuf.getChannelData(1)];
-    const { file } = await makeFile(chs, S.outBuf.sampleRate, name, fmt, getCtx());
+    const { file } = await makeFile(chs, S.outBuf.sampleRate, name, fmt, getCtx(), null,
+      { title: name, artist: (S.src && S.src.artist) || "", album: "FifTeam Media", cover: coverBlob() });
     S.file = file; S.fileKey = key;
   }
-  const want = `${name.replace(/[\\/:*?"<>|]+/g, " ").trim() || "FifTeam Media"}.${S.file.name.split(".").pop()}`;
-  if (S.file.name !== want) S.file = new File([S.file], want, { type: S.file.type });
-  return S.file;
+  return { file: S.file, fresh };
 }
 async function save() {
   if (!S.outBuf) return;
   try {
-    const fresh = !S.file || S.fileKey !== `${S.version}|${segValue($("rb-format"))}`;
-    const file = await buildFile();
+    const { file, fresh } = await buildFile();
     if (isIOS() && fresh) { toast("Ready. Tap Save again, then choose Save to Files."); return; }
     if (isIOS()) toast("Choose Save to Files to keep it on your iPhone", 5000);
     const r = await saveFile(file);
@@ -402,8 +550,7 @@ async function save() {
 async function share() {
   if (!S.outBuf) return;
   try {
-    const fresh = !S.file || S.fileKey !== `${S.version}|${segValue($("rb-format"))}`;
-    const file = await buildFile();
+    const { file, fresh } = await buildFile();
     if (!canShareFiles(file)) { toast("This browser can't share files. Saving it instead."); await saveFile(file); return; }
     if (fresh) { toast("Your file is ready. Tap Share again to send it."); return; }
     const r = await shareFile(file, $("rb-name").value.trim() || defaultName());
@@ -416,14 +563,15 @@ async function keep() {
   toast("Adding to your library…", 60000);
   const chs = [S.outBuf.getChannelData(0), S.outBuf.getChannelData(1)];
   const fmt = segValue($("rb-format")) === "mp3" ? "mp3" : "wav16";
-  const { file } = await makeFile(chs, S.outBuf.sampleRate, name, fmt, getCtx());
+  const cover = coverBlob();
+  const { file } = await makeFile(chs, S.outBuf.sampleRate, name, fmt, getCtx(), null, { title: name, artist: S.src.artist || "", album: "FifTeam Media", cover });
   const p = S.params;
   const meta = {
     id: store.newId(), kind: "rebass", title: name, artist: S.src.artist || "", album: "Rebassed",
-    note: `${p.lo}–${p.hi} Hz · ${p.db === 0 ? "0" : "−" + Math.abs(p.db)} dB`, duration: S.outBuf.duration, size: file.size, type: file.type,
-    fileName: file.name, added: Date.now(), hasArt: !!S.src.art,
+    note: `${p.speed < 1 ? Math.round(p.speed * 100) + "% · " : ""}${p.lo}–${p.hi} Hz · ${p.db === 0 ? "0" : "−" + Math.abs(p.db)} dB`,
+    duration: S.outBuf.duration, size: file.size, type: file.type, fileName: file.name, added: Date.now(), hasArt: !!cover,
   };
-  try { await library.add(meta, file, S.src.art || null); toast("Added to your library, under Rebassed"); }
+  try { await library.add(meta, file, cover); toast("Added to your library, under Rebassed"); }
   catch { toast("Your phone is out of room for it."); }
 }
 
@@ -444,27 +592,50 @@ export function initRebass() {
   onSeg($("rb-mode"), () => { paintRange(); settingsChanged(); });
   $("rb-db").addEventListener("input", () => { paintDb(); settingsChanged(); });
   $("rb-replace").onchange = settingsChanged; $("rb-snap").onchange = settingsChanged;
+  $("rb-slow").onchange = () => { paintSlow(); settingsChanged(); };
+  $("rb-speed").addEventListener("input", () => { paintSlow(); settingsChanged(); });
+  $("rb-speed-presets").addEventListener("click", (e) => { const c = e.target.closest(".chip"); if (!c) return; $("rb-speed").value = c.dataset.s; paintSlow(); settingsChanged(); });
+  $("rb-reverb").onchange = settingsChanged;
   $("rb-name").addEventListener("input", () => { S.nameEdited = true; });
   onSeg($("rb-ab"), setAB);
   onSeg($("rb-format"), () => paintSize());
   $("rb-play").onclick = () => { getCtx(); if (S.pl) stopPreview(true); else playPreview(S.pausedAt || 0); };
-  const seekMap = (e) => {
+  // the roll: drag to scrub (the music follows when you let go), tap to jump there
+  const roll = $("rb-map");
+  roll.addEventListener("pointerdown", (e) => {
     if (!S.outBuf) return;
-    const r = $("rb-map").getBoundingClientRect();
-    const t = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * S.outBuf.duration;
-    if (S.pl) playPreview(t); else { S.pausedAt = t; }
+    roll.setPointerCapture(e.pointerId);
+    S.drag = { x: e.clientX, t: curTime(), moved: false, was: !!S.pl };
+    if (S.pl) stopPreview(true);
+  });
+  roll.addEventListener("pointermove", (e) => {
+    if (!S.drag) return;
+    const dx = e.clientX - S.drag.x;
+    if (Math.abs(dx) > 3) S.drag.moved = true;
+    S.pausedAt = Math.max(0, Math.min(S.outBuf.duration, S.drag.t - (dx / roll.clientWidth) * WIN));
+  });
+  const endDrag = (e) => {
+    if (!S.drag) return;
+    const d = S.drag; S.drag = null;
+    if (!d.moved) { const r = roll.getBoundingClientRect(); S.pausedAt = Math.max(0, Math.min(S.outBuf.duration, d.t + ((e.clientX - r.left) / r.width - AT) * WIN)); }
+    if (d.was) playPreview(S.pausedAt);
   };
-  $("rb-map").addEventListener("pointerdown", seekMap);
+  roll.addEventListener("pointerup", endDrag); roll.addEventListener("pointercancel", endDrag);
+  const ov = $("rb-ov");
+  const ovSeek = (e) => { if (!S.outBuf) return; const r = ov.getBoundingClientRect(); seekTo(((e.clientX - r.left) / r.width) * S.outBuf.duration); };
+  ov.addEventListener("pointerdown", (e) => { ov.setPointerCapture(e.pointerId); ovSeek(e); });
+  // the cover
+  $("rb-cover-pick").onclick = async () => {
+    const b = await pickImage(); if (!b) return;
+    S.cover = b; if (S.coverUrl) URL.revokeObjectURL(S.coverUrl); S.coverUrl = URL.createObjectURL(b); paintCover();
+  };
+  $("rb-cover-reset").onclick = () => { S.cover = null; if (S.coverUrl) URL.revokeObjectURL(S.coverUrl); S.coverUrl = null; paintCover(); };
   $("rb-save").onclick = save; $("rb-share").onclick = share; $("rb-keep").onclick = keep;
   bus.on("rebass", (t) => { location.hash = "#rebass"; fromTrack(t); });
   bus.on("view", (v) => { if (v !== "rebass") stopPreview(true); else if (S.res) startGraph(); });
   bus.on("music-playing", () => stopPreview(true));
-  addEventListener("resize", () => { if (S.res) drawMap(); });
-  paintRange(); paintDb(); readParams();
+  addEventListener("resize", () => { if (S.res) drawOverview(); });
+  paintRange(); paintDb(); paintSlow(); readParams(); paintCover();
 }
 
-export const rebass = { fromFile: async (f) => {
-  const { readTags } = await import("./tags.js");
-  const tags = await readTags(f);
-  setSource({ title: tags.title, artist: tags.artist, blob: f, cover: tags.art ? URL.createObjectURL(tags.art) : null, art: tags.art });
-} };
+export const rebass = { fromFile };

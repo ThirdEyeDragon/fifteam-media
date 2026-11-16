@@ -6,8 +6,15 @@ import { makeFile, saveFile, shareFile, canShareFiles, isIOS } from "./export.js
 import { library } from "./library.js";
 import { player } from "./player.js";
 import * as store from "./store.js";
+import { pickImage } from "./image.js";
+import { placeholderArt } from "./ui.js";
 
-const T = { f: 40, wave: "sine", noise: null, db: -12, ch: "both", flip: false, node: null, sweep: null, raf: 0, file: null, fileKey: "" };
+const T = { f: 40, wave: "sine", noise: null, db: -12, ch: "both", flip: false, node: null, sweep: null, raf: 0, file: null, fileKey: "", cover: null, coverUrl: null };
+function paintCover() {
+  $("tg-cover").style.backgroundImage = `url("${T.coverUrl || placeholderArt("Tone", "tone")}")`;
+  $("tg-cover-note").textContent = T.cover ? "Cover: your image" : "Cover: FifTeam's tone art";
+  $("tg-cover-reset").hidden = !T.cover;
+}
 const FMIN = 1, FMAX = 20000;
 const posToF = (p) => FMIN * Math.pow(FMAX / FMIN, p / 1000);
 const fToPos = (f) => Math.round((Math.log(f / FMIN) / Math.log(FMAX / FMIN)) * 1000);
@@ -137,12 +144,12 @@ async function render() {
 }
 async function buildFile() {
   const fmt = segValue($("tg-format")), name = $("tg-name").value.trim() || defaultName();
-  const key = JSON.stringify([T.f, T.wave, T.noise, T.db, T.ch, T.flip, fmt, document.querySelector("#tg-len .chip.on").dataset.s]);
+  const key = JSON.stringify([T.f, T.wave, T.noise, T.db, T.ch, T.flip, fmt, document.querySelector("#tg-len .chip.on").dataset.s, T.cover ? T.cover.size : 0, name]);
   const fresh = !T.file || T.fileKey !== key;
   if (fresh) {
     toast("Making the file…", 60000);
     const [L, R, sr] = await render();
-    T.file = (await makeFile([L, R], sr, name, fmt, getCtx())).file; T.fileKey = key;
+    T.file = (await makeFile([L, R], sr, name, fmt, getCtx(), null, { title: name, artist: "FifTeam Media tones", album: "FifTeam Media", cover: T.cover })).file; T.fileKey = key;
   }
   const want = `${name.replace(/[\\/:*?"<>|]+/g, " ").trim()}.${T.file.name.split(".").pop()}`;
   if (T.file.name !== want) T.file = new File([T.file], want, { type: T.file.type });
@@ -199,10 +206,16 @@ export function initTones() {
     const { file } = await buildFile();
     const sec = +document.querySelector("#tg-len .chip.on").dataset.s;
     const meta = { id: store.newId(), kind: "tone", title: $("tg-name").value.trim() || defaultName(), artist: "Tone generator", album: "Tones",
-      note: T.noise ? `${T.noise} noise` : `${fmtF(T.f)} Hz`, duration: sec, size: file.size, type: file.type, fileName: file.name, added: Date.now(), hasArt: false };
-    await library.add(meta, file, null);
+      note: T.noise ? `${T.noise} noise` : `${fmtF(T.f)} Hz`, duration: sec, size: file.size, type: file.type, fileName: file.name, added: Date.now(), hasArt: !!T.cover };
+    await library.add(meta, file, T.cover);
     toast("Added to your library, under Tones");
   };
+  $("tg-cover-pick").onclick = async () => {
+    const b = await pickImage(); if (!b) return;
+    T.cover = b; if (T.coverUrl) URL.revokeObjectURL(T.coverUrl); T.coverUrl = URL.createObjectURL(b); paintCover();
+  };
+  $("tg-cover-reset").onclick = () => { T.cover = null; if (T.coverUrl) URL.revokeObjectURL(T.coverUrl); T.coverUrl = null; paintCover(); };
+  paintCover();
   bus.on("view", (v) => { if (v === "tones") scope(); else stop(); });
   bus.on("music-playing", stop);
   paint();
