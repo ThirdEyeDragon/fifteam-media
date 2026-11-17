@@ -104,50 +104,7 @@ await sleep(800);
 console.log("knobs:", await ev(`[...document.querySelectorAll('.knob-wrap')].map(w => w.querySelector('.knob-label').textContent + ' ' + w.querySelector('.knob').getAttribute('aria-valuenow') + ' (' + w.querySelector('.knob-sub').textContent + ')').join(' | ')`),
   "| still playing:", await ev(`!document.querySelector('#np-play use').getAttribute('href').includes('play')`));
 console.log("sound path, bass up:", await ev(`import('./js/eq.js').then(m => m.eq.route)`));
-// the limiter on its own: a sine 6 dB over full scale comes out under the ceiling; one 6 dB under passes bit for bit
-console.log("limiter:", await ev(`(async () => {
-  const sr = 48000, N = sr;
-  const run = async (amp) => {
-    const ctx = new OfflineAudioContext(2, N, sr);
-    await ctx.audioWorklet.addModule('./js/limiter-worklet.js');
-    const osc = ctx.createOscillator(); osc.frequency.value = 60;
-    const g = ctx.createGain(); g.gain.value = amp;
-    const lim = new AudioWorkletNode(ctx, 'fifteam-limiter', { outputChannelCount: [2] });
-    osc.connect(g).connect(lim).connect(ctx.destination); osc.start();
-    const x = (await ctx.startRendering()).getChannelData(0);
-    let pk = 0; for (let i = 0; i < N; i++) pk = Math.max(pk, Math.abs(x[i]));
-    return 20 * Math.log10(pk);
-  };
-  const loud = await run(2), quiet = await run(0.5);
-  return '+6.0 dBFS in -> ' + loud.toFixed(2) + ' dBFS out | -6.02 dBFS in -> ' + quiet.toFixed(2) + ' dBFS out';
-})()`));
-// the crossover itself, measured with tones: at 5/5/5 every frequency comes out as it went in; at 0 a band is gone
-console.log("crossover:", await ev(`(async () => {
-  const { makeBands } = await import('./js/eq.js');
-  const sr = 48000, N = sr;
-  const level = async (f, vals) => {
-    const ctx = new OfflineAudioContext(1, N, sr), osc = ctx.createOscillator(); osc.frequency.value = f;
-    const b = makeBands(ctx); b.set(vals, true); osc.connect(b.input); b.output.connect(ctx.destination); osc.start();
-    const x = (await ctx.startRendering()).getChannelData(0); let s = 0; for (let i = N / 2; i < N; i++) s += x[i] * x[i];
-    return (20 * Math.log10(Math.sqrt(s / (N / 2)) / Math.SQRT1_2)).toFixed(1);
-  };
-  const flat = { bass: 5, mids: 5, highs: 5 }, r = [];
-  for (const f of [40, 120, 250, 1000, 4000, 12000]) r.push(f + ' Hz ' + await level(f, flat));
-  r.push('| bass 0: 50 Hz ' + await level(50, { ...flat, bass: 0 }) + ', 1 kHz ' + await level(1000, { ...flat, bass: 0 }));
-  r.push('| mids 0: 1 kHz ' + await level(1000, { ...flat, mids: 0 }) + ', 50 Hz ' + await level(50, { ...flat, mids: 0 }));
-  r.push('| highs 0: 12 kHz ' + await level(12000, { ...flat, highs: 0 }) + ', 1 kHz ' + await level(1000, { ...flat, highs: 0 }));
-  r.push('| bass 10: 50 Hz ' + await level(50, { ...flat, bass: 10 }));
-  const lvlM = async (f, mute) => {
-    const ctx = new OfflineAudioContext(1, N, sr), osc = ctx.createOscillator(); osc.frequency.value = f;
-    const b = makeBands(ctx); b.set(flat, true, mute); osc.connect(b.input); b.output.connect(ctx.destination); osc.start();
-    const x = (await ctx.startRendering()).getChannelData(0); let s = 0; for (let i = N / 2; i < N; i++) s += x[i] * x[i];
-    return s > 0 ? (20 * Math.log10(Math.sqrt(s / (N / 2)) / Math.SQRT1_2)).toFixed(1) : '-inf';
-  };
-  r.push('| MUTED bass: 30 Hz ' + await lvlM(30, { bass: true }) + ', 50 Hz ' + await lvlM(50, { bass: true }) + ', 100 Hz ' + await lvlM(100, { bass: true }) + ', 1 kHz ' + await lvlM(1000, { bass: true }));
-  r.push('| MUTED mids: 1 kHz ' + await lvlM(1000, { mids: true }) + ', 50 Hz ' + await lvlM(50, { mids: true }) + ', 12 kHz ' + await lvlM(12000, { mids: true }));
-  r.push('| MUTED highs: 12 kHz ' + await lvlM(12000, { highs: true }) + ', 1 kHz ' + await lvlM(1000, { highs: true }));
-  return r.join(', ');
-})()`));
+// (the knobs' sound itself is measured in test/eq.test.mjs)
 await ev(`(() => { const k = document.querySelector('#kn-highs .knob'); k.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true })); return 1; })()`);
 await sleep(300);
 console.log("knob labels:", await ev(`[...document.querySelectorAll('.knob-wrap')].map(w => w.querySelector('.knob-label').textContent + ' ' + w.querySelector('.knob').getAttribute('aria-valuenow') + ' ' + w.querySelector('.knob-sub').textContent).join(' | ')`));
@@ -217,7 +174,7 @@ await until(`document.getElementById('rb-busy').hidden`, 90000, "the slowed rend
 console.log("stats slowed 75% + reverb:", await ev(`[...document.querySelectorAll('#rb-stats .stat')].map(s => s.querySelector('span').textContent + ': ' + s.querySelector('b').textContent).join(' | ')`));
 console.log("name now:", await ev(`document.getElementById('rb-name').value`), "| length:", await ev(`document.getElementById('rb-dur').textContent`));
 console.log("slow hint:", await ev(`document.getElementById('rb-speed-hint').textContent`));
-console.log("old bass removed:", await ev(`[...document.querySelectorAll('#rb-stats .stat')].find(s => s.querySelector('span').textContent === 'Old bass removed')?.querySelector('b').textContent`));
+console.log("old bass removed:", await ev(`(() => { const s = [...document.querySelectorAll('#rb-stats .stat')].find(s => s.querySelector('span').textContent.startsWith('Old bass removed')); return s ? s.querySelector('b').textContent + ' (' + s.querySelector('span').textContent + ')' : 'none'; })()`));
 console.log("options gone (old-bass switches, keep in key / stretch, snap):", await ev(`['rb-only', 'rb-replace', 'rb-mode', 'rb-snap'].filter(id => document.getElementById(id)).join(', ') || 'all gone'`));
 await click("#rb-play"); await sleep(2500);
 await show('#rb-result'); await sleep(300);
@@ -229,6 +186,20 @@ await until(`document.getElementById('rb-cover-note').textContent.includes('your
 console.log("cover:", await ev(`document.getElementById('rb-cover-note').textContent`));
 await ev(`(() => { const n = document.getElementById('rb-name'); n.value = 'My Night Drive Rebass'; n.dispatchEvent(new Event('input')); return 1; })()`);
 await shot("06_rebass_export");
+// the intro: on, the rebass starts with the FifTeam Production tag (5.4 s longer); off, it's gone again
+const durOf = () => ev(`document.getElementById('rb-dur').textContent`);
+const durNo = await durOf();
+await ev(`(() => { const i = document.getElementById('rb-intro'); i.checked = true; i.dispatchEvent(new Event('change')); return 1; })()`);
+await until(`document.getElementById('rb-dur').textContent !== ${JSON.stringify(durNo)}`, 10000, "the intro");
+const durIntro = await durOf();
+await ev(`(() => { const i = document.getElementById('rb-intro'); i.checked = false; i.dispatchEvent(new Event('change')); return 1; })()`); await sleep(500);
+console.log("intro:", durNo, "->", durIntro, "with it ->", await durOf(), "without | remembered:", await ev(`localStorage.getItem('fifteam-intro')`));
+await ev(`(() => { const i = document.getElementById('rb-intro'); i.checked = true; i.dispatchEvent(new Event('change')); return 1; })()`); await sleep(800);
+await show('#rb-intro'); await sleep(300);
+await shot("05c_intro_switch");
+await show('#rb-ov'); await sleep(300);
+await shot("05d_intro_in_strip");
+await show('#rb-export'); await sleep(300);
 await ev(`delete window.showSaveFilePicker; window.showSaveFilePicker = undefined; 1`);
 await click("#rb-save");
 let saved = null;
@@ -239,6 +210,10 @@ if (saved) {
   const data = wavData(b);
   let pk = 0, full = 0; for (const v of data) { const a = Math.abs(v); if (a > pk) pk = a; if (v >= 32767 || v <= -32768) full++; }
   console.log(`saved WAV: ${(b.length / 1e6).toFixed(1)} MB, ${(data.length / 2 / 48000).toFixed(1)} s, peak ${(20 * Math.log10(pk / 32768)).toFixed(2)} dBFS, full-scale samples ${full}, tags ${b.includes("id3 ") ? "id3" : "-"}/${b.includes("INAM") ? "INFO" : "-"}`);
+  // the intro's 5.4 s at its start, then the song
+  let a1 = 0, a2 = 0; const n1 = Math.round(5.3 * 48000) * 2, n2 = Math.round(5.6 * 48000) * 2;
+  for (let i = 0; i < n1; i++) a1 = Math.max(a1, Math.abs(data[i])); for (let i = n2; i < n2 + 96000; i++) a2 = Math.max(a2, Math.abs(data[i]));
+  console.log(`saved WAV starts with the intro: peak of its first 5.3 s ${(20 * Math.log10(a1 / 32768)).toFixed(1)} dBFS, the song after it ${(20 * Math.log10(a2 / 32768)).toFixed(1)} dBFS`);
 }
 // the same rebass as an MP3 (encoded, decoded again and checked for clipping before it is handed over)
 await click('#rb-format button[data-k="mp3"]');
@@ -259,7 +234,7 @@ await show('#rb-stats'); await sleep(200);
 await shot("06b_rebass_stats");
 
 // share: a locked file, sent and opened again as a friend would
-const statsLine = () => ev(`[...document.querySelectorAll('#rb-stats .stat')].map(s => s.querySelector('span').textContent + ': ' + s.querySelector('b').textContent).join(' | ')`);
+const statsLine = () => ev(`[...document.querySelectorAll('#rb-stats .stat')].map(s => s.querySelector('span').textContent.replace(/^(Old bass removed) · .*/, '$1') + ': ' + s.querySelector('b').textContent).join(' | ')`);
 const statsBefore = await statsLine();
 await ev(`navigator.share = undefined; navigator.canShare = undefined; 1`);
 await click("#rb-share"); await sleep(500);
@@ -325,6 +300,26 @@ await shot("15b_from_code");
 await cdp("Page.navigate", { url: url.replace(/#.*$/, "").replace(/\/?$/, "/") + "#code=" + recipe }); await sleep(3500);
 console.log("a link with the code:", await ev(`location.hash`));
 
+// sharing a file: what happens for each answer the phone can give
+console.log("sharing a file:", await ev(`(async () => {
+  const { sendFile } = await import('./js/share.js'), { fitFormat, SHARE_MAX } = await import('./js/export.js');
+  window.showSaveFilePicker = undefined;
+  const f = new File([new Uint8Array(1000)], 'share test.wav', { type: 'audio/wav' }), box = document.createElement('div');
+  let calls = 0; navigator.canShare = () => true;
+  const as = (name, msg) => async () => { calls++; if (name) throw new DOMException(msg, name); };
+  const r = [];
+  navigator.share = as(''); r.push('works: ' + await sendFile(f, 't', box));
+  navigator.share = as('AbortError', 'Share canceled'); r.push('closed by the person: ' + await sendFile(f, 't', box));
+  navigator.share = as('NotAllowedError', 'Must be handling a user gesture to perform a share request.'); r.push('tap ran out: ' + await sendFile(f, 't', box) + (box.querySelector('button') ? ' (button shown)' : ''));
+  navigator.share = as('NotAllowedError', 'Permission denied'); r.push('refused: ' + await sendFile(f, 't', box));
+  navigator.share = as('AbortError', 'Share failed'); r.push('failed: ' + await sendFile(f, 't', box));
+  const c0 = calls; const big = new File([new Uint8Array(SHARE_MAX + 1)], 'big.wav', { type: 'audio/wav' });
+  r.push('60 MB file: ' + await sendFile(big, 't', box) + (calls === c0 ? ' (not offered to the sheet)' : ' (offered!)'));
+  r.push('5 min slowed WAV 16 shares as ' + fitFormat('wav16', 300, 48000, SHARE_MAX) + ', a 3 min one as ' + fitFormat('wav16', 180, 48000, SHARE_MAX) + ', 3 min WAV 24 as ' + fitFormat('wav24', 180, 48000, SHARE_MAX));
+  navigator.share = undefined; navigator.canShare = undefined;
+  return r.join(' | ');
+})()`));
+
 // tones
 await ev(`location.hash = '#tones'`); await sleep(400);
 await click("#tg-play"); await sleep(1200);
@@ -336,7 +331,7 @@ await shot("08_tones_more");
 await click('#tg-len .chip[data-s="10"]');
 await click("#tg-save");
 let tone = null;
-for (let i = 0; i < 60 && !tone; i++) { await sleep(500); tone = readdirSync(dl).find((f) => f.endsWith(".wav") && !f.startsWith("My Night")); }
+for (let i = 0; i < 60 && !tone; i++) { await sleep(500); tone = readdirSync(dl).find((f) => f.endsWith(".wav") && !f.startsWith("My Night") && !/^(share test|big)/.test(f)); }
 if (tone) {
   const b = readFileSync(join(dl, tone)), d = wavData(b);
   let pk = 0; for (const v of d) pk = Math.max(pk, Math.abs(v));

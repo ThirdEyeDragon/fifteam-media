@@ -3,7 +3,14 @@
 
 export function makeTilt({ stage, art, img, glow, sheen }) {
   const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const st = { tx: 0, ty: 0, rx: 0, ry: 0, vx: 0, vy: 0, b0: null, g0: null, active: false, lastT: 0, sensor: false };
+  const st = { tx: 0, ty: 0, rx: 0, ry: 0, vx: 0, vy: 0, b0: null, g0: null, active: false, lastT: 0, sensor: false, raf: 0 };
+  // it only draws while it moves: a new target (past a small dead zone, so a phone lying still doesn't keep it busy)
+  // wakes it, and it goes back to sleep once it has settled
+  const aim = (tx, ty) => {
+    if (Math.abs(tx - st.tx) + Math.abs(ty - st.ty) < 0.3) return;
+    st.tx = tx; st.ty = ty;
+    if (st.active && !st.raf) { st.lastT = 0; st.raf = requestAnimationFrame(frame); }
+  };
   const MAX = 22;
 
   function onOrient(e) {
@@ -19,18 +26,18 @@ export function makeTilt({ stage, art, img, glow, sheen }) {
     if (st.b0 == null) { st.b0 = beta; st.g0 = gamma; }
     st.b0 += (beta - st.b0) * 0.004;
     st.g0 += (gamma - st.g0) * 0.004;
-    st.ty = clamp((gamma - st.g0) * 0.9, -MAX, MAX);
-    st.tx = clamp(-(beta - st.b0) * 0.9, -MAX, MAX);
+    aim(clamp(-(beta - st.b0) * 0.9, -MAX, MAX), clamp((gamma - st.g0) * 0.9, -MAX, MAX));
   }
   function onPointer(e) {
     if (st.sensor) return;
     const r = stage.getBoundingClientRect();
     const x = (e.clientX - r.left) / r.width - 0.5, y = (e.clientY - r.top) / r.height - 0.5;
-    st.ty = clamp(x * 2 * MAX, -MAX, MAX); st.tx = clamp(-y * 2 * MAX, -MAX, MAX);
+    aim(clamp(-y * 2 * MAX, -MAX, MAX), clamp(x * 2 * MAX, -MAX, MAX));
   }
-  function onLeave() { if (!st.sensor) { st.tx = 0; st.ty = 0; } }
+  function onLeave() { if (!st.sensor) aim(0, 0); }
 
   function frame(t) {
+    st.raf = 0;
     if (!st.active) return;
     const dt = Math.min(0.05, st.lastT ? (t - st.lastT) / 1000 : 0.016);
     st.lastT = t;
@@ -47,7 +54,8 @@ export function makeTilt({ stage, art, img, glow, sheen }) {
     const ang = 115 + st.ry * 2.2 - st.rx * 1.4;
     const pos = 50 + st.ry * 1.8;
     sheen.style.background = `linear-gradient(${ang.toFixed(1)}deg, rgba(255,255,255,0) ${(pos - 30).toFixed(1)}%, rgba(255,255,255,${(0.05 + Math.min(0.14, (Math.abs(st.rx) + Math.abs(st.ry)) / 160)).toFixed(3)}) ${pos.toFixed(1)}%, rgba(255,255,255,0) ${(pos + 30).toFixed(1)}%)`;
-    requestAnimationFrame(frame);
+    const still = Math.abs(st.vx) + Math.abs(st.vy) < 0.05 && Math.abs(st.tx - st.rx) + Math.abs(st.ty - st.ry) < 0.03;
+    if (!still) st.raf = requestAnimationFrame(frame);
   }
 
   const canAsk = typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function";
@@ -65,7 +73,7 @@ export function makeTilt({ stage, art, img, glow, sheen }) {
     start() {
       if (reduce || st.active) return;
       st.active = true; st.lastT = 0;
-      requestAnimationFrame(frame);
+      if (!st.raf) st.raf = requestAnimationFrame(frame);
     },
     stop() { st.active = false; },
     get hasSensor() { return st.sensor; },

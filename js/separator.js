@@ -1,6 +1,10 @@
 // FifTeam Media - the bass separator, inside the rebass worker. Demucs v4 (the bass model of htdemucs_ft) runs through
 // ONNX Runtime: on the phone's graphics chip (WebGPU) when it has one, otherwise on its processor. Its files (about
 // 51 MB) are downloaded the first time and kept on the phone, so after that it works offline too.
+// The network runs as 16 stages one after another (models/README.txt): ONNX Runtime hands a run's in-between memory
+// back only when the run ends, so one run per 7.8 s piece held about 2.4 GB on the graphics chip (on a phone, the
+// phone's own memory) and kept the chip busy for seconds at a time. Stage by stage it holds a few hundred MB, and
+// between stages the chip is left free for a moment, so the phone's screens and apps stay smooth.
 //   separate(chs, sr, { progress(stage, p), cancelled() }) -> [left, right] the song's bass, at sr
 import { separateBass, SEG, NB, LE } from "./demucs.js";
 
@@ -8,12 +12,13 @@ const ROOT = new URL("../", import.meta.url).href;
 const CACHE = "fifteam-sep-1";
 const FILES = [
   { key: "wasm", path: "vendor/ort/ort-wasm-simd-threaded.asyncify.wasm.gz", size: 7103195 },
-  { key: "graph", path: "models/bass-sep.onnx.gz", size: 163163 },
+  { key: "graph", path: "models/bass-sep.stages.gz", size: 152132 },
   { key: "q8", path: "models/bass-sep.q8", size: 43702127 },
 ];
 export const DOWNLOAD_MB = Math.round(FILES.reduce((a, f) => a + f.size, 0) / 1e6);
 
-let ort = null, session = null, backend = "";
+let ort = null, plan = null, backend = "", queue = null;
+const GPU_REST = 0.33;
 
 /** Are the separator's files already on this phone? */
 export async function isKept() {
@@ -55,6 +60,7 @@ async function getFile(f, onBytes) {
 }
 function check(f, u8) {
   if (f.key === "wasm" && !(u8[0] === 0 && u8[1] === 0x61 && u8[2] === 0x73 && u8[3] === 0x6d)) throw new Error("download");
+  if (f.key === "graph") readStages(u8);
   if (f.key === "q8") {
     const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
     if (u8.length < 8 || dv.getUint32(0, true) !== 0x38515446) throw new Error("download");
@@ -102,8 +108,32 @@ function expand(q8) {
   return new Uint8Array(out.buffer);
 }
 
+/** The staged network: "FTST", the header's length, the header { stages: [{ len, inputs, outputs }], outputs, last:
+ * { tensor: the stage that uses it last } }, then each stage's ONNX bytes. */
+function readStages(u8) {
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  if (u8.length < 8 || dv.getUint32(0, true) !== 0x54535446) throw new Error("download");
+  const hl = dv.getUint32(4, true), hdr = JSON.parse(new TextDecoder().decode(u8.subarray(8, 8 + hl)));
+  let p = 8 + hl;
+  for (const st of hdr.stages) { st.bytes = u8.subarray(p, p + st.len); p += st.len; }
+  if (p !== u8.length) throw new Error("download");
+  return hdr;
+}
+
+// the graphics chip's queue (seen as ONNX Runtime sends it work), to wait for it to finish a stage
+function watchQueue() {
+  if (!self.GPUQueue || GPUQueue.prototype.__ftWatched) return;
+  const submit = GPUQueue.prototype.submit;
+  GPUQueue.prototype.submit = function (cbs) { queue = this; return submit.call(this, cbs); };
+  GPUQueue.prototype.__ftWatched = true;
+}
+
+async function release() {
+  if (plan) for (const st of plan.stages) if (st.session) { try { await st.session.release(); } catch {} st.session = null; }
+}
+
 async function start(progress, forceCpu) {
-  if (session && (!forceCpu || backend === "wasm")) return;
+  if (plan && plan.stages[0].session && (!forceCpu || backend === "wasm")) return;
   const total = FILES.reduce((a, f) => a + f.size, 0);
   const got = {}, data = {};
   const kept = await isKept();
@@ -117,19 +147,74 @@ async function start(progress, forceCpu) {
   if (!ort) {
     ort = await import(new URL("vendor/ort/ort.webgpu.min.mjs", ROOT).href);
     ort.env.wasm.wasmPaths = new URL("vendor/ort/", ROOT).href;
-    ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1)) : 1;
+    // on the processor, it leaves the phone most of its cores (3 of 8), so everything else on it stays quick
+    const cores = navigator.hardwareConcurrency || 2;
+    ort.env.wasm.numThreads = self.crossOriginIsolated ? (cores >= 8 ? 3 : cores >= 6 ? 2 : 1) : 1;
     ort.env.logLevel = "error";
   }
   ort.env.wasm.wasmBinary = data.wasm;
-  const weights = expand(data.q8);
-  progress("start", 0.3);
-  const opts = (ep) => ({ executionProviders: [ep], graphOptimizationLevel: "all", externalData: [{ path: "bass-sep.weights", data: weights }] });
-  if (session) { try { await session.release(); } catch {} session = null; }
+  let weights = expand(data.q8);
+  data.q8 = null;
+  await release();
+  plan = readStages(data.graph);
+  const finals = new Set(plan.outputs);
+  // every stage takes its own weights from the one expanded block; on the graphics chip what passes between stages
+  // stays there, only the network's two outputs come back. On the processor its threads wait asleep (not spinning),
+  // and memory goes back after each stage rather than into a pool kept per stage.
+  const make = (ep, st, gpu) => ort.InferenceSession.create(st.bytes, {
+    executionProviders: [ep], graphOptimizationLevel: "all", enableCpuMemArena: false,
+    externalData: [{ path: "bass-sep.weights", data: weights }],
+    ...(gpu ? { preferredOutputLocation: Object.fromEntries(st.outputs.map((k) => [k, finals.has(k) ? "cpu" : "gpu-buffer"])) } : {}),
+    extra: { session: { intra_op: { allow_spinning: "0" }, inter_op: { allow_spinning: "0" } } },
+  });
+  // each stage is made just before its first run (making them all at once held every stage's weights twice on the
+  // graphics chip for a moment); the expanded weights go once the last one is made
+  const lazy = (ep, gpu) => {
+    plan.make = async (st) => {
+      st.session = await make(ep, st, gpu);
+      if (plan.stages.every((x) => x.session)) { weights = null; plan.make = null; }
+    };
+  };
+  backend = "";
   if (!forceCpu && self.navigator && navigator.gpu) {
-    try { if (await navigator.gpu.requestAdapter()) { session = await ort.InferenceSession.create(data.graph, opts("webgpu")); backend = "webgpu"; } } catch { session = null; }
+    watchQueue();
+    try {
+      if (await navigator.gpu.requestAdapter()) {
+        // (in-between buffers handed back at the end of each stage, not kept in a pool)
+        lazy({ name: "webgpu", storageBufferCacheMode: "lazyRelease" }, true);
+        await plan.make(plan.stages[0]);
+        backend = "webgpu";
+      }
+    } catch { await release(); }
   }
-  if (!session) { session = await ort.InferenceSession.create(data.graph, opts("wasm")); backend = "wasm"; }
+  if (!backend) { lazy("wasm", false); await plan.make(plan.stages[0]); backend = "wasm"; }
   progress("start", 1);
+}
+
+/** One 7.8 s piece through the network, stage by stage: { z, xt }. */
+async function runNet(seg, sp, cancelled) {
+  const finals = new Set(plan.outputs);
+  const vals = { mix: new ort.Tensor("float32", seg, [1, 2, SEG]), spec: new ort.Tensor("float32", sp, [1, 4, NB, LE]) };
+  const drop = (k) => { const v = vals[k]; delete vals[k]; if (v && v.location === "gpu-buffer") v.dispose(); };
+  try {
+    for (let s = 0; s < plan.stages.length; s++) {
+      if (cancelled()) throw new Error("cancelled");
+      const st = plan.stages[s], t1 = performance.now();
+      if (!st.session) await plan.make(st);
+      const o = await st.session.run(Object.fromEntries(st.inputs.map((k) => [k, vals[k]])));
+      for (const k of st.outputs) vals[k] = o[k];
+      for (const k of st.inputs) if (plan.last[k] === s && !finals.has(k)) drop(k);
+      // on the graphics chip: wait for it to finish this stage, then leave it free for a third as long again, so the
+      // phone's own screens and apps get it too (and it stays cool)
+      if (backend === "webgpu") {
+        if (queue) await queue.onSubmittedWorkDone();
+        await new Promise((r) => setTimeout(r, Math.min(250, (performance.now() - t1) * GPU_REST)));
+      }
+    }
+    return { z: vals.zspec.data, xt: vals.xt.data };
+  } finally {
+    for (const k of Object.keys(vals)) if (!finals.has(k)) drop(k);
+  }
 }
 
 /** The song's bass: [left, right] at sr. Throws "cancelled" if cancelled() turns true. */
@@ -138,9 +223,7 @@ export async function separate(chs, sr, { progress = () => {}, cancelled = () =>
   for (let attempt = 0; attempt < 2; attempt++) {
     let first = true, t0 = 0;
     const run = async (seg, sp) => {
-      if (cancelled()) throw new Error("cancelled");
-      const o = await session.run({ mix: new ort.Tensor("float32", seg, [1, 2, SEG]), spec: new ort.Tensor("float32", sp, [1, 4, NB, LE]) });
-      const z = o.zspec.data, xt = o.xt.data;
+      const { z, xt } = await runNet(seg, sp, cancelled);
       if (first) {
         first = false;
         // a graphics chip that gets it wrong: everything again on the processor

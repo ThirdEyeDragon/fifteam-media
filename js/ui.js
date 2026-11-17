@@ -76,6 +76,59 @@ export function artUrl(id, blob) {
 }
 export function forgetArt(id) { const u = artUrls.get(id); if (u) URL.revokeObjectURL(u); artUrls.delete(id); }
 
+/**
+ * A soft copy of a cover for the glows behind things: small, blurred and a little more saturated, made once. (A big
+ * image blurred on screen costs the graphics chip on every frame; a small blurred one scaled up looks the same.)
+ * pad: a clear margin round it, as a share of the size, so its edges fade out like a glow.
+ */
+const softs = new Map();
+export function softArt(src, { size = 64, pad = 0, blur = 4, sat = 1.6 } = {}) {
+  const key = `${src}|${size}|${pad}|${blur}|${sat}`;
+  if (softs.has(key)) return softs.get(key);
+  const p = new Promise((ok) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const c = document.createElement("canvas"); c.width = c.height = size;
+        const g = c.getContext("2d", { willReadFrequently: true });
+        const s = Math.min(img.naturalWidth, img.naturalHeight), sx = (img.naturalWidth - s) / 2, sy = (img.naturalHeight - s) / 2;
+        const m = Math.round(size * pad);
+        g.drawImage(img, sx, sy, s, s, m, m, size - 2 * m, size - 2 * m);
+        const d = g.getImageData(0, 0, size, size), px = d.data, f = new Float32Array(px.length);
+        // premultiplied, so a clear margin blurs into a soft edge without darkening the colours
+        for (let i = 0; i < px.length; i += 4) { const a = px[i + 3] / 255; f[i] = px[i] * a; f[i + 1] = px[i + 1] * a; f[i + 2] = px[i + 2] * a; f[i + 3] = px[i + 3]; }
+        for (let k = 0; k < 3; k++) boxBlur(f, size, blur);                 // three box blurs: close to a gaussian
+        for (let i = 0; i < px.length; i += 4) {
+          const a = f[i + 3], q = a > 0 ? 255 / a : 0;
+          let r = f[i] * q, gr = f[i + 1] * q, b = f[i + 2] * q;
+          const l = 0.299 * r + 0.587 * gr + 0.114 * b;
+          px[i] = l + (r - l) * sat; px[i + 1] = l + (gr - l) * sat; px[i + 2] = l + (b - l) * sat; px[i + 3] = a;
+        }
+        g.putImageData(d, 0, 0);
+        ok(c.toDataURL("image/png"));
+      } catch { ok(src); }
+    };
+    img.onerror = () => ok(src);
+    img.src = src;
+  });
+  softs.set(key, p);
+  if (softs.size > 24) softs.delete(softs.keys().next().value);
+  return p;
+}
+function boxBlur(f, n, r) {
+  r = Math.max(1, Math.round(r));
+  const line = new Float32Array(n), w = 2 * r + 1;
+  for (const [stride, step] of [[4, n * 4], [n * 4, 4]]) {           // the rows, then the columns
+    for (let a = 0; a < n; a++) for (let ch = 0; ch < 4; ch++) {
+      const off = a * step + ch;
+      let acc = 0;
+      for (let i = -r; i <= r; i++) acc += f[off + Math.min(n - 1, Math.max(0, i)) * stride];
+      for (let i = 0; i < n; i++) { line[i] = acc / w; acc += f[off + Math.min(n - 1, i + r + 1) * stride] - f[off + Math.max(0, i - r) * stride]; }
+      for (let i = 0; i < n; i++) f[off + i * stride] = line[i];
+    }
+  }
+}
+
 /** Cover for songs without one: the brand gradient with the first letter of the title. */
 const placeholders = new Map();
 export function placeholderArt(title = "", kind = "song") {

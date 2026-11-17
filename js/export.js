@@ -7,6 +7,14 @@ export const FORMATS = {
   mp3: { label: "MP3 320k", ext: "mp3", type: "audio/mpeg", bytesPerSec: () => 40000 },
 };
 
+/** The most a phone's share sheet takes at once (Chrome: 50 MB for all the files together), with room to spare. */
+export const SHARE_MAX = 50 * 1024 * 1024 - 512 * 1024;
+/** The format to make for a file that must stay under maxBytes: the one chosen if it fits, else MP3 320. */
+export function fitFormat(fmt, seconds, sr, maxBytes) {
+  if (!maxBytes || fmt === "mp3" || ![32000, 44100, 48000].includes(sr)) return fmt;
+  return seconds * FORMATS[fmt].bytesPerSec(sr) + 2e6 > maxBytes ? "mp3" : fmt;
+}
+
 export const isIOS = () => /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 
 export function safeName(name, ext) {

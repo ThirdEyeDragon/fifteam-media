@@ -1,7 +1,7 @@
 // The music player: one <audio> element (so it keeps playing with the screen off and shows on the lock screen), a queue,
 // shuffle and repeat, the now-playing screen with the tilting cover, and the mini player above the tabs.
 import * as store from "./store.js";
-import { $, fmtTime, fill, artUrl, placeholderArt, bus, toast, marquee } from "./ui.js";
+import { $, fmtTime, fill, artUrl, placeholderArt, bus, toast, marquee, softArt } from "./ui.js";
 import { makeTilt } from "./tilt.js";
 import { makeKnob } from "./knob.js";
 import { eq, describe } from "./eq.js";
@@ -89,9 +89,10 @@ async function render() {
   marquee($("np-artist"), t ? (t.artist || "Unknown artist") : "Add songs in your library to start");
   const cover = await coverFor(t);
   $("art-img").src = cover;
-  $("art-glow").style.backgroundImage = `url("${cover}")`;
   const amb = $("ambient");
-  amb.style.backgroundImage = `url("${cover}")`;
+  // the glow behind the art and the colour behind every screen: soft copies of the cover, made once per cover
+  softArt(cover, { size: 96, pad: 0.21, blur: 6 }).then((u) => { if (P.cur === t) $("art-glow").style.backgroundImage = `url("${u}")`; });
+  softArt(cover, { size: 64, blur: 5, sat: 1.7 }).then((u) => { if (P.cur === t) amb.style.backgroundImage = `url("${u}")`; });
   amb.classList.toggle("on", !!t);
   $("mini").classList.toggle("hide", !t || location.hash === "#player" || location.hash === "");
   if (t) {

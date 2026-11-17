@@ -5,6 +5,7 @@
 //   Rebass code: a short sealed code carrying exactly which song (title, artist, length, a fingerprint of the file) and
 //   exactly how it was rebassed. A friend with the same song gets the very same rebass from it, without the file.
 import { $, toast, openSheet, closeSheet, fmtTime } from "./ui.js";
+import { SHARE_MAX, sizeText, saveFile } from "./export.js";
 
 const enc = new TextEncoder(), dec = new TextDecoder();
 const rand = (n) => crypto.getRandomValues(new Uint8Array(n));
@@ -122,8 +123,9 @@ const esc = (s) => String(s || "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<
 async function copy(text) { try { await navigator.clipboard.writeText(text); return true; } catch { return false; } }
 
 /**
- * The Share sheet. opts: { what ("song" | "tone"), name, build() -> { file, fresh }, save(file), meta() -> details for a
- * locked file, cover() -> Blob|null, recipe() -> { title, artist, duration, hash, settings } (rebasses only) }
+ * The Share sheet. opts: { what ("song" | "tone"), name, build({ maxBytes }) -> { file, fresh, swapped }, meta() -> details
+ * for a locked file, cover() -> Blob|null, recipe() -> { title, artist, duration, hash, settings } (rebasses only) }
+ * build() makes the file in the chosen format, or as an MP3 (swapped) when that format would be too big to share.
  */
 export function openShareSheet(opts) {
   openSheet((p) => {
@@ -136,21 +138,26 @@ export function openShareSheet(opts) {
     const out = el('<div class="share-out" hidden></div>');
     p.append(out);
     const busy = (b, on, label) => { b.disabled = on; if (label) b.querySelector("small").textContent = label; };
+    const tooBig = (swapped) => { if (swapped) toast("As a WAV it's too big to share (50 MB most), so it's going as an MP3 320.", 4500); };
     plain.onclick = async () => {
+      const t0 = Date.now();
       busy(plain, true, "Getting it ready…");
       try {
-        const { file } = await opts.build();
+        const { file, swapped } = await opts.build({ maxBytes: SHARE_MAX });
         busy(plain, false, "Any app");
-        await sendFile(file, opts.name(), out);
+        tooBig(swapped);
+        await sendFile(file, opts.name(), out, t0);
       } catch (e) { busy(plain, false, "Any app"); toast("Couldn't make the file. " + (e.message || "")); }
     };
     locked.onclick = async () => {
       if (!canSeal()) { toast("Locking needs the app opened from its https address."); return; }
       busy(locked, true, "Sealing it…");
       try {
-        const { file } = await opts.build();
+        const cover = opts.cover ? await opts.cover() : null;
+        const { file, swapped } = await opts.build({ maxBytes: SHARE_MAX - (cover ? cover.size : 0) - 64 * 1024 });
+        tooBig(swapped);
         const code = newCode();
-        const sealed = await lockFile({ audio: file, cover: opts.cover ? await opts.cover() : null, meta: { ...opts.meta(), fileName: file.name } }, code);
+        const sealed = await lockFile({ audio: file, cover, meta: { ...opts.meta(), fileName: file.name } }, code);
         const lf = new File([sealed], `${opts.name()} (locked).wav`, { type: "audio/wav" });
         busy(locked, false, "Opens only with its code");
         out.hidden = false;
@@ -184,29 +191,38 @@ export function openShareSheet(opts) {
   });
 }
 
-/** Hands a file to the phone's share sheet. Making a file can outlast the tap that asked for it, so if the phone says
- * the tap has expired, a button appears to send it with a fresh one. Phones that can't share files save it instead. */
-async function sendFile(file, title, out) {
+/** Hands a file to the phone's share sheet.
+ * - Over the share sheet's limit (50 MB on Android) or a phone that can't share files: saved to the phone instead.
+ * - Making a file can outlast the tap that asked for it (a phone gives a tap about 5 s): then a button appears to send
+ *   it with a fresh tap.
+ * - The sheet closed by the person: nothing more. Any other failure: saved to the phone instead, and said so. */
+export async function sendFile(file, title, out, t0 = Date.now()) {
+  const instead = async (why) => {
+    toast(`${why} Saving it to your phone instead, so you can send it from your files.`, 6000);
+    try { await saveFile(file); } catch {}
+    return "saved";
+  };
+  if (file.size > SHARE_MAX) return instead(`It's ${sizeText(file.size)}, more than a share sheet takes (50 MB).`);
   const can = (() => { try { return !!(navigator.canShare && navigator.canShare({ files: [file] })); } catch { return false; } })();
-  if (!can) {
-    const { saveFile } = await import("./export.js");
-    toast("This phone can't share files from here. Saving it instead, then send it from your files.", 4000);
-    await saveFile(file); return;
-  }
-  try { await navigator.share({ files: [file], title }); }
+  if (!can) return instead("This phone can't share files from here.");
+  const go = () => navigator.share({ files: [file], title });
+  const closed = (e) => e && e.name === "AbortError" && !/fail/i.test(e.message || "");
+  try { await go(); return "shared"; }
   catch (e) {
-    if (e && e.name === "AbortError") return;
-    if (e && e.name === "NotAllowedError") {
-      const box = out || document.querySelector(".share-out");
-      if (box) {
-        box.hidden = false;
-        const b = el('<button class="btn primary block">Ready: tap to send</button>');
-        b.onclick = async () => { b.remove(); try { await navigator.share({ files: [file], title }); } catch (err) { if (!err || err.name !== "AbortError") toast("Sharing didn't go through. Try Save to phone."); } };
-        box.prepend(b);
-        return;
-      }
+    if (closed(e)) return "closed";
+    const expired = e && e.name === "NotAllowedError" && (/gesture|activation/i.test(e.message || "") || Date.now() - t0 > 4000);
+    const box = out || document.querySelector(".share-out");
+    if (expired && box) {
+      box.hidden = false;
+      const b = el('<button class="btn primary block">Ready: tap to send</button>');
+      b.onclick = async () => {
+        b.remove();
+        try { await go(); } catch (err) { if (!closed(err)) instead("Sharing didn't go through."); }
+      };
+      box.prepend(b);
+      return "ready";
     }
-    toast("Sharing didn't go through. Try Save to phone.");
+    return instead("Sharing didn't go through.");
   }
 }
 

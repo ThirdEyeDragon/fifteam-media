@@ -187,6 +187,7 @@
             <span class="status" id="rb-speed-hint"></span>
           </div>
           <label class="switch"><span class="txt">Reverb</span><input type="checkbox" id="rb-reverb"></label>
+          <label class="switch"><span class="txt">Intro<small>The FifTeam Production tag at the start</small></span><input type="checkbox" id="rb-intro"></label>
         </div>
 
         <button class="btn primary block" id="rb-go" disabled><svg><use href="#i-bass"/></svg>Rebass it</button>
@@ -208,7 +209,7 @@
             <div><span class="label">Bass level</span><b id="rb-now-l">–</b></div>
           </div>
           <canvas class="graph roll" id="rb-map" aria-label="The bass line around the play position"></canvas>
-          <canvas class="overview" id="rb-ov" aria-label="The whole song: tap to jump"></canvas>
+          <canvas class="overview" id="rb-ov" aria-label="The whole song: drag or tap to move through it"></canvas>
           <div class="legend"><span><i style="background:linear-gradient(90deg,#2f78ff,#bb4dff)"></i>New bass</span><span><i style="background:rgba(159,179,255,.55)"></i>Old bass</span></div>
           <div class="pl-row">
             <button class="play-big" id="rb-play" style="width:56px;height:56px" aria-label="Play preview"><svg style="width:24px;height:24px"><use href="#i-play"/></svg></button>

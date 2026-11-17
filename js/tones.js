@@ -2,7 +2,7 @@
 // level in dBFS, left/right/both and a polarity flip, log or linear sweeps, a live scope, and saving the tone as a file.
 import { $, toast, fill, getCtx, bus, onSeg, segValue, setSeg } from "./ui.js";
 import { noteName, dbToLin, pinkNoise } from "./dsp.js";
-import { makeFile, saveFile, isIOS } from "./export.js";
+import { makeFile, saveFile, isIOS, fitFormat } from "./export.js";
 import { openShareSheet } from "./share.js";
 import { library } from "./library.js";
 import { player } from "./player.js";
@@ -143,8 +143,9 @@ async function render() {
   const buf = await off.startRendering();
   return [buf.getChannelData(0), buf.getChannelData(1), sr, sec];
 }
-async function buildFile() {
-  const fmt = segValue($("tg-format")), name = $("tg-name").value.trim() || defaultName();
+async function buildFile({ maxBytes } = {}) {
+  const chosen = segValue($("tg-format")), name = $("tg-name").value.trim() || defaultName();
+  const fmt = fitFormat(chosen, +document.querySelector("#tg-len .chip.on").dataset.s, 48000, maxBytes);
   const key = JSON.stringify([T.f, T.wave, T.noise, T.db, T.ch, T.flip, fmt, document.querySelector("#tg-len .chip.on").dataset.s, T.cover ? T.cover.size : 0, name]);
   const fresh = !T.file || T.fileKey !== key;
   if (fresh) {
@@ -154,7 +155,7 @@ async function buildFile() {
   }
   const want = `${name.replace(/[\\/:*?"<>|]+/g, " ").trim()}.${T.file.name.split(".").pop()}`;
   if (T.file.name !== want) T.file = new File([T.file], want, { type: T.file.type });
-  return { file: T.file, fresh };
+  return { file: T.file, fresh, swapped: fmt !== chosen };
 }
 function readSweep() {
   const a = parseFloat($("tg-sw-a").value), b = parseFloat($("tg-sw-b").value), dur = parseFloat($("tg-sw-t").value);
