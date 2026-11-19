@@ -409,6 +409,7 @@ input[type="range"]::-moz-range-thumb { width: 22px; height: 22px; border: 0; bo
 .so-cover { width: 52px; height: 52px; border-radius: 10px; flex: none; background: var(--grad) center / cover; }
 .so-play { width: 40px; height: 40px; border-radius: 50%; flex: none; display: grid; place-items: center; color: #fff; background: var(--grad); box-shadow: 0 6px 16px rgba(110, 66, 255, 0.4); }
 .so-play svg { width: 18px; height: 18px; }
+.so-play.busy { opacity: 0.6; }
 .so-smeta { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .so-smeta b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .so-smeta small { color: var(--dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

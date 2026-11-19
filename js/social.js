@@ -1,8 +1,8 @@
 // FifTeam Social: pictures and rebassed songs from everyone using FifTeam Media. No accounts: pick a username, post.
-//   Posts go to a Discord channel through a webhook (social/config.json). The feed is a list kept in one message of
-//   that channel (the "index": a feed.json attached to it), each entry pointing at a post's message; a post's picture
-//   and song are read from its own message when it comes into view (Discord's file links expire, so they are always
-//   fetched fresh). Deleting a message in Discord takes the post off the feed.
+//   Posts go to the feed service (social/config.json). The feed is a list kept in one message there (the "index": a
+//   feed.json attached to it), each entry pointing at a post's message; a post's picture and song are read from its
+//   own message when it comes into view (file links expire, so they are always fetched fresh). A message deleted on
+//   the service is gone from the feed.
 //   Everything from other people is shown as text (textContent), never as markup. @mentions never ping anyone.
 import { $, toast, openSheet, closeSheet, fmtTime, bus, placeholderArt, getCtx, artUrl } from "./ui.js";
 import * as store from "./store.js";
@@ -12,7 +12,7 @@ import { fitJpeg, squareJpeg } from "./image.js";
 import { makeFile, sizeText } from "./export.js";
 
 const NAME_KEY = "fifteam-social-name", MINE_KEY = "fifteam-social-mine";
-const MAX_MSG = 9.5 * 1024 * 1024;   // what one Discord message may carry (10 MB), with room to spare
+const MAX_MSG = 9.5 * 1024 * 1024;   // what one post may carry (10 MB), with room to spare
 const MAX_FEED = 300;
 const S = {
   cfg: null, name: "", editingName: false, mine: new Set(), feed: [], loadedAt: 0, loading: null, error: "", shown: 30,
@@ -22,32 +22,32 @@ try { S.name = localStorage.getItem(NAME_KEY) || ""; } catch {}
 try { S.mine = new Set(JSON.parse(localStorage.getItem(MINE_KEY) || "[]")); } catch {}
 const saveMine = () => { try { localStorage.setItem(MINE_KEY, JSON.stringify([...S.mine].slice(-500))); } catch {} };
 
-// ---------------------------------------------------------------------------------------------------- Discord
+// ---------------------------------------------------------------------------------------------------- the feed service
 async function config() {
   if (S.cfg) return S.cfg;
   const r = await fetch(new URL("../social/config.json", import.meta.url), { cache: "no-cache" });
   const c = await r.json();
   if (!c.hook || !c.key || !c.index) throw new Error("setup");
-  // (the webhook's key is kept reversed in the file, so robots that search code for Discord links don't pick it up)
+  // (the key is kept reversed in the file, so robots that search code for links don't pick it up)
   S.cfg = { base: `https://discord.com/api/v10/webhooks/${c.hook}/${atob(c.key).split("").reverse().join("")}`, index: c.index };
   return S.cfg;
 }
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-/** A request to the webhook, waiting and trying again if Discord says "slow down". */
+/** A request to the feed service, waiting and trying again if it says "slow down". */
 async function dc(path, { method = "GET", form, json } = {}) {
   const { base } = await config();
   for (let attempt = 0; attempt < 5; attempt++) {
     let r;
     try {
       r = await fetch(base + path, { method, body: form || (json ? JSON.stringify(json) : undefined), headers: json ? { "Content-Type": "application/json" } : undefined, cache: "no-store" });
-    } catch { throw new Error("You're offline, or Discord can't be reached."); }
+    } catch { throw new Error("You're offline, or the feed can't be reached."); }
     if (r.status === 429) { let s = 1; try { s = (await r.json()).retry_after || 1; } catch {} await wait(Math.min(10, s) * 1000 + 100); continue; }
     if (r.status === 204) return null;
     let data = null; try { data = await r.json(); } catch {}
-    if (!r.ok) { const e = new Error(r.status === 404 ? "gone" : r.status === 413 ? "That's too big to post (10 MB at most)." : `Discord said: ${(data && data.message) || r.status}`); e.status = r.status; throw e; }
+    if (!r.ok) { const e = new Error(r.status === 404 ? "gone" : r.status === 413 ? "That's too big to post (10 MB at most)." : `Couldn't reach the feed (${r.status}). Try again.`); e.status = r.status; throw e; }
     return data;
   }
-  throw new Error("Discord is busy. Try again in a moment.");
+  throw new Error("The feed is busy. Try again in a moment.");
 }
 /** The feed list, fresh: [{ id, at, user, text, image, song }] newest first. */
 async function readIndex() {
@@ -100,6 +100,20 @@ function pump() {
   }
 }
 const fileOf = (m, name) => ((m && m.attachments) || []).find((a) => a.filename === name);
+// A song is stored as song.mp4, its MP3 bytes lightly scrambled behind a "FTS1" mark: the file service only lets the app
+// download files it doesn't take for audio, and it recognises MP3s by what's inside them.
+const songOf = (m) => fileOf(m, "song.mp4") || fileOf(m, "song.mp3");
+const MARK = [0x46, 0x54, 0x53, 0x31];
+const mix = (u8, from) => { for (let i = from; i < u8.length; i++) u8[i] ^= (0x5a + (i - from) * 13) & 255; return u8; };
+async function scramble(blob) {
+  const raw = new Uint8Array(await blob.arrayBuffer()), out = new Uint8Array(raw.length + 4);
+  out.set(MARK); out.set(raw, 4);
+  return new Blob([mix(out, 4)], { type: "video/mp4" });
+}
+function unscramble(buf) {
+  const u8 = new Uint8Array(buf);
+  return MARK.every((b, i) => u8[i] === b) ? mix(u8, 4).subarray(4) : u8;
+}
 
 // ---------------------------------------------------------------------------------------------------- the screen
 const h = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
@@ -176,7 +190,7 @@ function postCard(p) {
     card._fill = async () => {
       try {
         const m = await message(p.id);
-        const pic = fileOf(m, "picture.jpg"), mp3 = fileOf(m, "song.mp3"), cov = fileOf(m, "cover.jpg");
+        const pic = fileOf(m, "picture.jpg"), mp3 = songOf(m), cov = fileOf(m, "cover.jpg");
         if (img && pic) { const i = h("img", "so-img"); i.alt = p.text ? p.text.slice(0, 80) : "A picture"; i.src = pic.url; i.onclick = () => viewImage(pic.url); img.replaceWith(i); }
         if (song) { song._url = mp3 && mp3.url; if (cov) song.querySelector(".so-cover").style.backgroundImage = `url("${cov.url}")`; }
       } catch (e) {
@@ -202,17 +216,31 @@ function songBlock(p) {
 }
 async function songUrl(p, block) {
   if (block._url) return block._url;
-  const m = await message(p.id), f = fileOf(m, "song.mp3");
+  const m = await message(p.id), f = songOf(m);
   if (!f) throw new Error("no song");
   return (block._url = f.url);
+}
+/** A song's audio, downloaded once (and kept for a few songs). */
+async function songBlob(p, block) {
+  if (S.blobs && S.blobs.has(p.id)) return S.blobs.get(p.id);
+  const r = await fetch(await songUrl(p, block), { cache: "no-store" });
+  if (!r.ok) throw new Error("download");
+  const b = new Blob([unscramble(await r.arrayBuffer())], { type: "audio/mpeg" });
+  S.blobs = S.blobs || new Map();
+  S.blobs.set(p.id, b); if (S.blobs.size > 5) S.blobs.delete(S.blobs.keys().next().value);
+  return b;
 }
 async function playSong(p, block) {
   if (!S.audio) { S.audio = new Audio(); S.audio.onended = () => { S.playing = null; render(); }; }
   if (S.playing === p.id) { S.audio.pause(); S.playing = null; render(); return; }
+  const btn = block.querySelector(".so-play");
   try {
-    const url = await songUrl(p, block);
+    if (btn) btn.classList.add("busy");
+    const b = await songBlob(p, block);
     player.pause();
-    S.audio.src = url; S.playing = p.id;
+    if (S.audioUrl) URL.revokeObjectURL(S.audioUrl);
+    S.audioUrl = URL.createObjectURL(b);
+    S.audio.src = S.audioUrl; S.playing = p.id;
     await S.audio.play();
   } catch { toast("Couldn't play that song. Are you online?"); S.playing = null; }
   render();
@@ -222,11 +250,9 @@ async function addToLibrary(p, block, btn) {
   const s = p.song;
   try {
     btn.disabled = true; btn.classList.add("busy");
-    const r = await fetch(await songUrl(p, block));
-    if (!r.ok) throw new Error();
-    const audio = await r.blob();
+    const audio = await songBlob(p, block);
     let cover = null;
-    try { const m = await message(p.id), c = fileOf(m, "cover.jpg"); if (c) cover = await (await fetch(c.url)).blob(); } catch {}
+    try { const m = await message(p.id), c = fileOf(m, "cover.jpg"); if (c) cover = await (await fetch(c.url, { cache: "no-store" })).blob(); } catch {}
     const file = new File([audio], `${s.title}.mp3`.replace(/[\\/:*?"<>|]+/g, " "), { type: "audio/mpeg" });
     await library.add({ id: store.newId(), kind: "rebass", title: s.title, artist: s.artist || p.user, album: "FifTeam Social", note: s.note || `from ${p.user}`,
       duration: s.duration, size: file.size, type: file.type, fileName: file.name, added: Date.now(), hasArt: !!cover, from: "social" }, file, cover);
@@ -309,18 +335,18 @@ async function post(text, img, song, say) {
   if (img) files.push(["picture.jpg", img]);
   if (song && song.cover) { try { files.push(["cover.jpg", await squareJpeg(song.cover, 400)]); } catch {} }
   if (song) {
-    // the song as an MP3 small enough for one Discord message (192 kb/s, less for a long one)
+    // the song as an MP3 small enough for one post (192 kb/s, less for a long one)
     const room = MAX_MSG - files.reduce((a, [, b]) => a + b.size, 0) - 64 * 1024;
     const kbps = [192, 160, 128, 112, 96].find((k) => (k * 1000 / 8) * (song.duration || 0) * 1.03 < room);
     if (!kbps) throw new Error(`That song is too long to post (${fmtTime(song.duration)}). Songs up to about 12 minutes fit.`);
     say("Getting the song ready…");
     const f = await song.encode(kbps);
     if (f.size > room) throw new Error(`That song came out at ${sizeText(f.size)}; it has to fit in 10 MB.`);
-    files.push(["song.mp3", f]);
+    files.push(["song.mp4", await scramble(f)]);
   }
   say(files.length ? `Uploading (${sizeText(files.reduce((a, [, b]) => a + b.size, 0))})…` : "Posting…");
   const entry = { at: Date.now(), user: S.name, text: text.slice(0, 500), image: !!img, song: song ? { title: song.title.slice(0, 120), artist: (song.artist || "").slice(0, 80), note: (song.note || "").slice(0, 80), duration: Math.round(song.duration || 0) } : null };
-  // the post's own message (what people in the Discord channel see too)
+  // the post's own message
   const lines = [`**${S.name}**`];
   if (entry.text) lines.push(entry.text);
   if (entry.song) lines.push(`🎵 ${entry.song.title}${entry.song.artist ? " · " + entry.song.artist : ""}${entry.song.note ? " · " + entry.song.note : ""}`);

@@ -20,7 +20,7 @@ let nextId = 900000000000001000n;
 const attach = (id, name, bytes, type) => { const url = `https://cdn.discordapp.com/attachments/1/${id}/${name}?ex=abc`; cdn.set(url.split("?")[0], { bytes, type }); return { id: String(Math.random()).slice(2), filename: name, url }; };
 const tinyJpeg = Buffer.from("/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/yQALCAABAAEBAREA/8wABgAQEAX/2gAIAQEAAD8A0s8g/9k=", "base64");
 const bob = "900000000000000101", eve = "900000000000000102";
-msgs.set(bob, { id: bob, content: "**Bob**", attachments: [attach(bob, "picture.jpg", tinyJpeg, "image/jpeg"), attach(bob, "song.mp3", Buffer.alloc(4000, 0xff), "audio/mpeg")] });
+msgs.set(bob, { id: bob, content: "**Bob**", attachments: [attach(bob, "picture.jpg", tinyJpeg, "image/jpeg"), attach(bob, "song.mp4", Buffer.alloc(4000, 0xff), "video/mp4")] });
 msgs.set(eve, { id: eve, content: "**Eve**", attachments: [] });
 const seedFeed = [
   { id: bob, at: Date.now() - 3600e3, user: 'Bob <img src=x onerror="window.__pwned=1">', text: "My first rebass <script>window.__pwned=1</script>", image: true, song: { title: "Night Drive (Rebass)", artist: "Bob", note: "25–45 Hz · −3 dB", duration: 42 } },
@@ -56,7 +56,7 @@ function discord(method, url, headers, body) {
     const parts = multipart(body, headers["Content-Type"] || headers["content-type"]);
     const payload = JSON.parse(parts.payload_json.data.toString());
     const id = m ? m[1] : String(nextId++);
-    const atts = Object.entries(parts).filter(([k]) => k.startsWith("files[")).map(([, p]) => attach(id, p.filename, Buffer.from(p.data), p.filename.endsWith(".json") ? "application/json" : p.filename.endsWith(".mp3") ? "audio/mpeg" : "image/jpeg"));
+    const atts = Object.entries(parts).filter(([k]) => k.startsWith("files[")).map(([, p]) => attach(id, p.filename, Buffer.from(p.data), p.filename.endsWith(".json") ? "application/json" : p.filename.endsWith(".mp4") ? "video/mp4" : "image/jpeg"));
     msgs.set(id, { id, content: payload.content, attachments: atts });
     if (!m) posted.push({ id, payload, files: atts.map((a) => [a.filename, cdn.get(a.url.split("?")[0]).bytes]) });
     return json(msgs.get(id));
@@ -103,7 +103,7 @@ try {
 
   // someone's song: play it and keep it
   await ev(`document.querySelector('#so-body .so-song .so-play').click(), 1`); await sleep(800);
-  console.log("playing from:", await ev(`(import('./js/social.js').then(m => (m.social.state.audio && m.social.state.audio.src || '').slice(0, 60)))`));
+  console.log("playing:", await ev(`(import('./js/social.js').then(m => (m.social.state.audio && m.social.state.audio.src || '').slice(0, 20) + ' (the song downloaded)'))`));
   await ev(`document.querySelector('#so-body .so-song .so-add').click(), 1`);
   await until(`import('./js/library.js').then(m => m.library.all().some(t => t.from === 'social'))`, 10000, "the song in the library");
   console.log("kept from the feed:", await ev(`import('./js/library.js').then(m => m.library.all().filter(t => t.from === 'social').map(t => t.title + ' / ' + t.note + ' / ' + t.size + ' bytes').join(''))`));
@@ -133,9 +133,11 @@ try {
   await ev(`[...document.querySelectorAll('#sheet-panel .btn')].find(b => b.textContent === 'Post').click(), 1`);
   await until(`[...document.querySelectorAll('#so-body .so-post')].some(p => p.textContent.includes('Fresh one'))`, 30000, "the post in the feed");
   const p0 = posted[0];
-  console.log("sent to Discord:", JSON.stringify({ content: p0.payload.content, username: p0.payload.username, pings: p0.payload.allowed_mentions, files: p0.files.map(([n, b]) => `${n} ${b.length} bytes ${n.endsWith(".mp3") ? b.subarray(0, 3).toString("latin1").replace(/[^\x20-\x7e]/g, "?") : ""}`) }));
+  console.log("sent to Discord:", JSON.stringify({ content: p0.payload.content, username: p0.payload.username, pings: p0.payload.allowed_mentions, files: p0.files.map(([n, b]) => `${n} ${b.length} bytes ${n.endsWith(".mp4") ? b.subarray(0, 3).toString("latin1").replace(/[^\x20-\x7e]/g, "?") : ""}`) }));
   check(p0.payload.allowed_mentions && p0.payload.allowed_mentions.parse.length === 0, "nobody pinged");
-  check(p0.files.some(([n]) => n === "picture.jpg") && p0.files.some(([n, b]) => n === "song.mp3" && /^(ID3|\xff)/.test(b.subarray(0, 3).toString("latin1"))), "picture and MP3 sent");
+  // (the song goes up scrambled behind "FTS1"; unscrambled it is the MP3)
+  const unmix = (b) => { const u = Buffer.from(b); for (let i = 4; i < u.length; i++) u[i] ^= (0x5a + (i - 4) * 13) & 255; return u.subarray(4); };
+  check(p0.files.some(([n]) => n === "picture.jpg") && p0.files.some(([n, b]) => n === "song.mp4" && b.subarray(0, 4).toString() === "FTS1" && /^(ID3|\xff)/.test(unmix(b).subarray(0, 3).toString("latin1"))), "picture and MP3 sent (scrambled)");
   check(feedNow()[0].id === p0.id && feedNow()[0].user === "Alice", "the feed list has the new post first");
   await ev(`document.getElementById('view-social').scrollTop = 0, 1`); await sleep(300);
   await shot("d3_posted");
