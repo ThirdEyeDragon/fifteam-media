@@ -82,7 +82,7 @@ export async function makeFile(chs, sr, name, format, ctx, onProgress, meta = {}
   if (format === "mp3" && [32000, 44100, 48000].includes(sr)) {
     let pre = dbToLin(-0.9);
     for (let attempt = 0; attempt < 3; attempt++) {
-      const data = await encodeMp3(chs, sr, pre, onProgress);
+      const data = await encodeMp3(chs, sr, pre, onProgress, meta.kbps);
       const file = new File([await id3Tag(tags), data], safeName(name, "mp3"), { type: f.type });
       if (!ctx) return { file, peakDb: null };
       try {
@@ -99,7 +99,7 @@ export async function makeFile(chs, sr, name, format, ctx, onProgress, meta = {}
   return { file: new File([buf], safeName(name, "wav"), { type: "audio/wav" }), peakDb: null };
 }
 
-function encodeMp3(chs, sr, gain, onProgress) {
+function encodeMp3(chs, sr, gain, onProgress, kbps) {
   return new Promise((res, rej) => {
     const w = new Worker(new URL("./mp3-worker.js", import.meta.url));
     const L = Float32Array.from(chs[0]), R = Float32Array.from(chs[1] || chs[0]);
@@ -109,7 +109,7 @@ function encodeMp3(chs, sr, gain, onProgress) {
       if (e.data.error) rej(new Error(e.data.error)); else res(e.data.mp3);
     };
     w.onerror = (e) => { w.terminate(); rej(new Error(e.message || "The MP3 encoder failed")); };
-    w.postMessage({ L, R, sr, gain }, [L.buffer, R.buffer]);
+    w.postMessage({ L, R, sr, gain, kbps }, [L.buffer, R.buffer]);
   });
 }
 

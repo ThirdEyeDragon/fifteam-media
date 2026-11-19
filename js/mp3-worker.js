@@ -3,8 +3,8 @@
 importScripts("https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.min.js");
 onmessage = (e) => {
   try {
-    const { L, R, sr, gain } = e.data;
-    const enc = new lamejs.Mp3Encoder(2, sr, 320);
+    const { L, R, sr, gain, kbps } = e.data;
+    const enc = new lamejs.Mp3Encoder(2, sr, kbps || 320);
     const n = L.length, block = 1152 * 20, parts = [];
     const l16 = new Int16Array(block), r16 = new Int16Array(block);
     for (let i = 0; i < n; i += block) {

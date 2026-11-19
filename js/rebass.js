@@ -793,7 +793,7 @@ export function initRebass() {
     const name = $("rb-name").value.trim() || defaultName(), buf = S.outBuf, cover = coverBlob(), artist = (S.src && S.src.artist) || "";
     bus.emit("social-post", {
       title: name, artist, note: noteOf(S.params), duration: buf.duration, cover,
-      file: async () => (await makeFile([buf.getChannelData(0), buf.getChannelData(1)], buf.sampleRate, name, "mp3", getCtx(), null, { title: name, artist, album: "FifTeam Social", cover })).file,
+      encode: async (kbps) => (await makeFile([buf.getChannelData(0), buf.getChannelData(1)], buf.sampleRate, name, "mp3", getCtx(), null, { title: name, artist, album: "FifTeam Social", cover, kbps })).file,
     });
   };
   bus.on("rebass", (t) => { location.hash = "#rebass"; fromTrack(t); });
