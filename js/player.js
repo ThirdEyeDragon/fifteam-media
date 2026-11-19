@@ -156,8 +156,24 @@ export function initPlayer() {
   // the tone knobs: BASS, MIDS, HIGHS, 0 (that band off) to 10 (loudest), 5 the song as it is; hold one 3 s to mute it
   eq.attach(audio);
   const sub = describe;
+  // the lock: on, the knobs can't be moved or muted by an accidental touch (remembered)
+  let knobsLocked = false;
+  try { knobsLocked = localStorage.getItem("fifteam-knob-lock") === "1"; } catch {}
+  const lockBtn = $("np-knob-lock"), knobsBox = $("np-knobs");
+  const paintLock = () => {
+    knobsBox.classList.toggle("locked", knobsLocked);
+    lockBtn.setAttribute("aria-pressed", String(knobsLocked));
+    lockBtn.setAttribute("aria-label", knobsLocked ? "Unlock the knobs" : "Lock the knobs");
+  };
+  lockBtn.onclick = () => {
+    knobsLocked = !knobsLocked;
+    try { localStorage.setItem("fifteam-knob-lock", knobsLocked ? "1" : "0"); } catch {}
+    paintLock(); toast(knobsLocked ? "Knobs locked" : "Knobs unlocked", 1400);
+  };
+  paintLock();
+  const locked = () => knobsLocked, onLocked = () => toast("The knobs are locked. Tap the lock to change them.", 2000);
   for (const [id, band, label] of [["kn-bass", "bass", "Bass"], ["kn-mids", "mids", "Mids"], ["kn-highs", "highs", "Highs"]])
-    makeKnob($(id), { label, value: eq.values[band], muted: eq.isMuted(band), sub, onInput: (v) => eq.set(band, v), onMute: (m) => { eq.setMute(band, m); eq.engageIfNeeded(); toast(`${label} ${m ? "muted" : "on"}`, 1400); } });
+    makeKnob($(id), { label, value: eq.values[band], muted: eq.isMuted(band), sub, locked, onLocked, onInput: (v) => eq.set(band, v), onMute: (m) => { eq.setMute(band, m); eq.engageIfNeeded(); toast(`${label} ${m ? "muted" : "on"}`, 1400); } });
   audio.addEventListener("play", () => eq.engageIfNeeded());
   bus.on("art", (id) => { if (P.cur && P.cur.id === id) { artCache.id = null; render(); } });
 

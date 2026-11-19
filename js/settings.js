@@ -89,15 +89,6 @@ async function tryUnlock(e) {
 }
 
 // ---------------------------------------------------------------------------------------------------- the sheet
-function shareApp() {
-  const url = location.origin + location.pathname;
-  const data = { title: "FifTeam Media", text: "FifTeam Media: a music player, rebass studio and tone generator. Open it and add it to your home screen.", url };
-  (async () => {
-    try { if (navigator.share) { await navigator.share(data); return; } } catch (e) { if (e && e.name === "AbortError") return; }
-    try { await navigator.clipboard.writeText(url); toast("Link copied. Send it to your friends."); }
-    catch { toast(url, 8000); }
-  })();
-}
 
 function el(html) { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstElementChild; }
 
@@ -141,9 +132,6 @@ export function openSettings() {
       toast("Removed. It downloads again the next time you rebass.", 2600);
     };
 
-    const share = el('<button class="menu-item"><svg><use href="#i-share"/></svg>Share FifTeam Media with a friend</button>');
-    share.onclick = shareApp;
-    p.append(share);
     p.append(el(`<p class="set-foot">FifTeam Media ${APP_VERSION}</p>`));
   });
 }

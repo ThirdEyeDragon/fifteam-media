@@ -139,10 +139,10 @@ for (const [lo, hi, db] of [[30, 40, -3], [25, 45, 0], [20, 60, -7.5]]) {
   const { bass, peak } = renderBass(anT, plan, SR, n);
   const { out, stats } = rebassMix([T.L, T.R], bass, peak, SR, { bassDb: db, band: [lo, hi] });
   // the vocals' range untouched: compare 150 Hz - 8 kHz before and after (song level aside)
-  console.log(`rebass trap ${lo}-${hi} Hz ${db} dB: bass peak ${stats.bassActualDb.toFixed(2)} dBFS, song ${stats.songDb.toFixed(1)} dB fixed` +
-    `${stats.ridePct > 0 ? `, riding ${stats.ridePct.toFixed(1)}%` : ", no compression"}, true peak ${stats.truePeakDb.toFixed(2)} dBTP, clipped ${stats.clipped}`);
+  console.log(`rebass trap ${lo}-${hi} Hz ${db} dB: bass peak ${stats.bassActualDb.toFixed(2)} dBFS, song ${stats.songDb.toFixed(2)} dB (untouched: 0), bass held back ${stats.heldPct.toFixed(1)}%` +
+    `, true peak ${stats.truePeakDb.toFixed(2)} dBTP, clipped ${stats.clipped}`);
   if (process.env.V) console.log("   exact:", stats.truePeakDb, stats.bassActualDb, stats.peakDb);
-  check(stats.clipped === 0 && stats.truePeakDb <= -0.099 && Math.abs(stats.bassActualDb - Math.min(db, -0.1)) < 0.02, `rebass ${lo}-${hi} ${db}: clean`);
+  check(stats.clipped === 0 && stats.truePeakDb <= -0.099 && Math.abs(stats.bassActualDb - Math.min(db, -0.1)) < 0.02 && stats.songTouchedPct === 0, `rebass ${lo}-${hi} ${db}: clean, song untouched`);
 }
 
 console.log(failed ? "FAIL" : "PASS");

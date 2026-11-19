@@ -12,7 +12,7 @@ function arc(a, b, r) {
 }
 let gid = 0;
 
-export function makeKnob(host, { label, value = 5, def = 5, muted = false, sub = (v) => "", onInput, onMute }) {
+export function makeKnob(host, { label, value = 5, def = 5, muted = false, sub = (v) => "", onInput, onMute, locked = () => false, onLocked }) {
   const id = "kg" + gid++;
   host.classList.add("knob-wrap");
   host.innerHTML = `
@@ -66,6 +66,7 @@ export function makeKnob(host, { label, value = 5, def = 5, muted = false, sub =
   // drag: up or right turns it up; 180 px is the whole turn
   let start = null;
   k.addEventListener("pointerdown", (e) => {
+    if (locked()) { onLocked && onLocked(); return; }      // locked: a touch does nothing (and the page scrolls as usual)
     k.setPointerCapture(e.pointerId); start = { x: e.clientX, y: e.clientY, v, moved: false }; held = false;
     k.classList.add("on"); e.preventDefault();
     cancelHold();
@@ -87,11 +88,13 @@ export function makeKnob(host, { label, value = 5, def = 5, muted = false, sub =
   k.addEventListener("contextmenu", (e) => e.preventDefault());
   let lastTap = 0;
   k.addEventListener("pointerup", () => {
+    if (locked()) return;
     if (held) { lastTap = 0; return; }
     const t = performance.now(); if (t - lastTap < 300) { set(def); if (mute) setMute(false); } lastTap = t;
   });
-  k.addEventListener("wheel", (e) => { e.preventDefault(); set(v - Math.sign(e.deltaY) * 0.5); }, { passive: false });
+  k.addEventListener("wheel", (e) => { if (locked()) return; e.preventDefault(); set(v - Math.sign(e.deltaY) * 0.5); }, { passive: false });
   k.addEventListener("keydown", (e) => {
+    if (locked()) return;
     const d = { ArrowUp: 0.5, ArrowRight: 0.5, ArrowDown: -0.5, ArrowLeft: -0.5, PageUp: 1, PageDown: -1 }[e.key];
     if (d) { set(v + d); e.preventDefault(); } else if (e.key === "Home") set(0); else if (e.key === "End") set(10);
     else if (e.key === "m" || e.key === "M") setMute(!mute);

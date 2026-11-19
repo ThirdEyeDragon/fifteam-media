@@ -166,6 +166,12 @@ input[type="range"]::-moz-range-thumb { width: 22px; height: 22px; border: 0; bo
 
 /* knobs */
 .knobs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; width: 100%; max-width: 380px; padding: 14px 10px 10px; border-radius: var(--r-lg); background: var(--glass); border: 1px solid var(--line); }
+.knobs { position: relative; }
+.knob-lock { position: absolute; top: 6px; right: 6px; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; color: var(--dim); background: rgba(255, 255, 255, 0.04); border: 1px solid var(--line); z-index: 3; }
+.knob-lock svg { width: 16px; height: 16px; }
+.knob-lock[aria-pressed="true"] { color: #fff; background: var(--grad); border-color: transparent; box-shadow: 0 4px 14px rgba(110, 66, 255, 0.4); }
+.knobs.locked .knob { touch-action: auto; cursor: not-allowed; }
+.knobs.locked .knob-wrap { opacity: 0.55; }
 .knob-wrap { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; }
 .knob { position: relative; width: 84px; height: 84px; touch-action: none; cursor: grab; border-radius: 50%; }
 .knob.on { cursor: grabbing; }
@@ -289,7 +295,7 @@ input[type="range"]::-moz-range-thumb { width: 22px; height: 22px; border: 0; bo
 .tabs {
   position: absolute; z-index: 6; left: 0; right: 0; bottom: 0; height: calc(var(--tabs-h) + env(safe-area-inset-bottom, 0px));
   padding: 0 max(8px, env(safe-area-inset-right, 0px)) env(safe-area-inset-bottom, 0px) max(8px, env(safe-area-inset-left, 0px));
-  display: grid; grid-template-columns: repeat(4, 1fr);
+  display: grid; grid-template-columns: repeat(5, 1fr);
   background: rgba(9, 9, 30, 0.86); border-top: 1px solid var(--line); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
 }
 .tabs a { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; color: var(--dim); text-decoration: none; font-size: 11px; font-weight: 600; letter-spacing: 0.02em; transition: color 0.2s; }
@@ -381,3 +387,56 @@ input[type="range"]::-moz-range-thumb { width: 22px; height: 22px; border: 0; bo
   .mq-on .mq { animation-duration: calc(var(--mq-dur, 12s) * 2); }
   .lock-box.shake { animation: none; }
 }
+
+/* ---------------------------------------------------------------------------- social */
+.so-top { gap: 10px; }
+.so-top .btn svg, .so-profile .btn svg, .row .btn svg { width: 18px; height: 18px; }
+.so-empty { align-items: center; text-align: center; }
+.so-post { gap: 10px; padding: 14px; }
+.so-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.so-who { display: flex; align-items: center; gap: 10px; min-width: 0; text-align: left; }
+.so-av { display: inline-block; flex: none; border-radius: 50%; background: var(--grad) center / cover; border: 1px solid var(--line); }
+.so-name { display: flex; flex-direction: column; min-width: 0; }
+.so-name b, .so-pname b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.so-name small, .so-pname small { color: var(--dim); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.so-more { width: 36px; height: 36px; color: var(--dim); }
+.so-more svg { width: 20px; height: 20px; }
+.so-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
+.so-img { width: 100%; max-height: 520px; object-fit: cover; border-radius: 14px; display: block; background: rgba(255, 255, 255, 0.04); }
+.so-full { width: 100%; height: auto; border-radius: 12px; display: block; }
+.so-song { display: flex; align-items: center; gap: 10px; padding: 10px; border-radius: 14px; background: rgba(255, 255, 255, 0.04); border: 1px solid var(--line); min-width: 0; }
+.so-cover { width: 52px; height: 52px; border-radius: 10px; flex: none; background: var(--grad) center / cover; }
+.so-play { width: 40px; height: 40px; border-radius: 50%; flex: none; display: grid; place-items: center; color: #fff; background: var(--grad); box-shadow: 0 6px 16px rgba(110, 66, 255, 0.4); }
+.so-play svg { width: 18px; height: 18px; }
+.so-smeta { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.so-smeta b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.so-smeta small { color: var(--dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.so-song .btn { flex: none; }
+.so-bar { display: flex; gap: 6px; }
+.so-act { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px; border-radius: 999px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--line); font-weight: 600; font-size: 14px; color: var(--muted); }
+.so-act.on { color: #ff6b9a; border-color: rgba(255, 107, 154, 0.4); }
+.so-heart { font-size: 17px; line-height: 1; }
+.so-comments { display: flex; flex-direction: column; gap: 10px; padding-top: 4px; }
+.so-comment { display: flex; align-items: flex-start; gap: 8px; }
+.so-ctext { flex: 1; min-width: 0; font-size: 14px; overflow-wrap: anywhere; }
+.so-ctext small { color: var(--dim); }
+.so-cdel { color: var(--dim); font-size: 12px; flex: none; }
+.so-cform { display: flex; gap: 8px; }
+.so-cform .input { height: 40px; }
+.so-profile { gap: 12px; }
+.so-ptop { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.so-pname { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+.so-pname b { font: 700 20px/1.2 var(--font-head); }
+.so-back { align-self: flex-start; }
+.so-join { gap: 12px; }
+.so-join h3 { margin: 0; }
+.so-step { display: flex; gap: 12px; align-items: flex-start; }
+.so-step p { margin: 4px 0 8px; }
+.so-n { width: 28px; height: 28px; border-radius: 50%; flex: none; display: grid; place-items: center; font-weight: 700; font-size: 14px; color: #fff; background: var(--grad); }
+.so-compose { height: auto; min-height: 96px; padding: 12px 14px; resize: vertical; font: inherit; line-height: 1.4; }
+#sheet-panel .so-img { max-height: 240px; }
+a.btn { color: inherit; text-decoration: none; }
+.so-add { width: 38px; height: 38px; border-radius: 50%; flex: none; display: grid; place-items: center; color: var(--ink); background: rgba(255, 255, 255, 0.06); border: 1px solid var(--line); }
+.so-add svg { width: 18px; height: 18px; }
+.so-add.busy { opacity: 0.5; }
+.so-add.done { color: #7dffb3; border-color: rgba(125, 255, 179, 0.4); }

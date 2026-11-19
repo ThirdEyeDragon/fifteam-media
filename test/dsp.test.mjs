@@ -30,7 +30,7 @@ let seed = 3; const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; re
   // the new bass notes start where the song's do, at the slowed times
   let first = an.notes[0].on / speed, s = Math.floor((first - 0.05) * SR), onset = -1;
   for (; s < bass.length; s++) if (Math.abs(bass[s]) > 0.05 * peak) { onset = s / SR; break; }
-  console.log(`slowed 80% + reverb: ${an.notes.length} notes, first at ${first.toFixed(3)} s slowed, new bass starts ${onset.toFixed(3)} s | ${plan.describe} | bass ${stats.bassActualDb.toFixed(2)} dBFS, song ${stats.songDb.toFixed(1)} dB, true peak ${stats.truePeakDb.toFixed(2)}, clipped ${stats.clipped}`);
+  console.log(`slowed 80% + reverb: ${an.notes.length} notes, first at ${first.toFixed(3)} s slowed, new bass starts ${onset.toFixed(3)} s | ${plan.describe} | bass ${stats.bassActualDb.toFixed(2)} dBFS, song ${stats.songDb.toFixed(2)} dB, held ${stats.heldPct.toFixed(1)}%, true peak ${stats.truePeakDb.toFixed(2)}, clipped ${stats.clipped}`);
   check(Math.abs(onset - first) < 0.012 && stats.clipped === 0 && Math.abs(stats.bassActualDb + 4) < 0.02, "slowed rebass");
 }
 console.log(failed ? "FAIL" : "PASS");

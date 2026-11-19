@@ -130,7 +130,7 @@ function readParams() {
   const slow = $("rb-slow").checked;
   S.params = {
     lo: +$("rb-lo").value, hi: +$("rb-hi").value, db: +$("rb-db").value,
-    speed: slow ? +$("rb-speed").value / 100 : 1, reverb: $("rb-reverb").checked,
+    speed: slow ? +$("rb-speed").value / 100 : 1, reverb: $("rb-reverb").checked, room: $("rb-room").checked,
   };
 }
 function paintRange() {
@@ -296,9 +296,12 @@ function paintStats() {
   const items = [
     ["wide", s.mapping, "How the bass line moved"],
     ["good", "0", "Clipped"],
-    ["", `${dB(s.bassActualDb, 2)} dB`, "Bass peak"],
-    [s.ridePct > 0.05 ? "" : "good", `${dB(s.songDb)} dB`, s.ridePct > 0.05 ? `Song level · ducks ${s.ridePct.toFixed(s.ridePct < 1 ? 1 : 0)}%` : "Song level · no compression"],
-    ["", `${dB(s.truePeakDb, 2)} dBTP`, "True peak"],
+    ["", `${dB(s.bassActualDb, 2)} dB`, "Bass level"],
+    ...(s.room ? [[s.ridePct > 0.05 ? "" : "good", `${dB(s.songDb)} dB`, s.ridePct > 0.05 ? `Song turned down · ducks ${s.ridePct.toFixed(s.ridePct < 1 ? 1 : 0)}%` : "Song turned down (room for the bass)"]] : [
+      [s.songTouchedPct < 0.05 ? "good" : "", s.songTouchedPct < 0.05 ? "Untouched" : `${s.songTouchedPct.toFixed(s.songTouchedPct < 1 ? 2 : 1)}% of it`,
+        s.songTouchedPct < 0.05 ? "Song and vocals" : `Song eased at its peaks (over full scale without its old bass), at most ${dB(s.songDb)} dB`],
+      ["", `${s.heldPct.toFixed(s.heldPct < 10 ? 1 : 0)}%`, "Bass held back (no room)"]]),
+    ["", `${s.truePeakDb > 0 ? "+" + s.truePeakDb.toFixed(2) : dB(s.truePeakDb, 2)} dBTP`, s.songTruePeakDb > -0.1 ? "True peak (the song's own)" : "True peak"],
     ["", `${s.notes.toLocaleString()}`, "Bass notes"],
     [s.mode === "separated" ? "good" : "", s.mode === "separated" ? "Separated" : "Quick",
       `Old bass removed${s.mode !== "separated" ? "" : s.backend === "webgpu" ? " · graphics chip" : s.backend === "wasm" ? " · processor" : " · kept from before"}`],
@@ -689,7 +692,7 @@ function share() {
     recipe: async () => {
       if (!S.src.hash) S.src.hash = await fingerprint(S.src.blob);
       const p = S.params;
-      return { title: S.src.title, artist: S.src.artist || "", duration: S.src.duration || (S.origBuf ? S.origBuf.duration : 0), hash: S.src.hash, settings: { lo: p.lo, hi: p.hi, db: p.db, speed: p.speed, reverb: p.reverb, intro: introWanted(), name: S.nameEdited ? name() : "" } };
+      return { title: S.src.title, artist: S.src.artist || "", duration: S.src.duration || (S.origBuf ? S.origBuf.duration : 0), hash: S.src.hash, settings: { lo: p.lo, hi: p.hi, db: p.db, speed: p.speed, reverb: p.reverb, room: !!p.room, intro: introWanted(), name: S.nameEdited ? name() : "" } };
     },
   });
 }
@@ -730,6 +733,8 @@ export function initRebass() {
   $("rb-speed").addEventListener("input", () => { paintSlow(); settingsChanged(); });
   $("rb-speed-presets").addEventListener("click", (e) => { const c = e.target.closest(".chip"); if (!c) return; $("rb-speed").value = c.dataset.s; paintSlow(); settingsChanged(); });
   $("rb-reverb").onchange = settingsChanged;
+  try { $("rb-room").checked = localStorage.getItem("fifteam-room") === "1"; } catch {}
+  $("rb-room").onchange = () => { try { localStorage.setItem("fifteam-room", $("rb-room").checked ? "1" : "0"); } catch {} settingsChanged(); };
   $("rb-name").addEventListener("input", () => { S.nameEdited = true; });
   $("rb-quick").onclick = () => { $("rb-quick").hidden = true; if (S.worker) S.worker.postMessage({ type: "quick" }); };
   onSeg($("rb-ab"), setAB);
@@ -782,6 +787,15 @@ export function initRebass() {
   };
   $("rb-cover-reset").onclick = () => { S.cover = null; if (S.coverUrl) URL.revokeObjectURL(S.coverUrl); S.coverUrl = null; paintCover(); };
   $("rb-save").onclick = save; $("rb-share").onclick = share; $("rb-keep").onclick = keep;
+  // onto FifTeam Social: the rebass as it is now (with its intro, if on), as an MP3 with its cover
+  $("rb-post").onclick = () => {
+    if (!S.outBuf) return;
+    const name = $("rb-name").value.trim() || defaultName(), buf = S.outBuf, cover = coverBlob(), artist = (S.src && S.src.artist) || "";
+    bus.emit("social-post", {
+      title: name, artist, note: noteOf(S.params), duration: buf.duration, cover,
+      file: async () => (await makeFile([buf.getChannelData(0), buf.getChannelData(1)], buf.sampleRate, name, "mp3", getCtx(), null, { title: name, artist, album: "FifTeam Social", cover })).file,
+    });
+  };
   bus.on("rebass", (t) => { location.hash = "#rebass"; fromTrack(t); });
   bus.on("view", (v) => { if (v !== "rebass") stopPreview(true); else if (S.res) kickGraph(); });
   bus.on("music-playing", () => stopPreview(true));
@@ -797,6 +811,7 @@ async function applyRecipe(track, s) {
   $("rb-slow").checked = s.speed < 0.999; if (s.speed < 0.999) $("rb-speed").value = Math.round(s.speed * 100);
   $("rb-reverb").checked = !!s.reverb;
   $("rb-intro").checked = !!s.intro;
+  $("rb-room").checked = !!s.room;
   paintRange(); paintDb(); paintSlow(); readParams();
   if (s.name) { $("rb-name").value = s.name; S.nameEdited = true; } else $("rb-name").value = defaultName();
   go();

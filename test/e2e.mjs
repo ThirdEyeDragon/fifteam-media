@@ -173,6 +173,14 @@ await sleep(600);
 await until(`document.getElementById('rb-busy').hidden`, 90000, "the slowed render");
 console.log("stats slowed 75% + reverb:", await ev(`[...document.querySelectorAll('#rb-stats .stat')].map(s => s.querySelector('span').textContent + ': ' + s.querySelector('b').textContent).join(' | ')`));
 console.log("name now:", await ev(`document.getElementById('rb-name').value`), "| length:", await ev(`document.getElementById('rb-dur').textContent`));
+// "Make room for the bass": on, the song is turned down for the bass; off again, the song is untouched
+const songStat = () => ev(`[...document.querySelectorAll('#rb-stats .stat')].map(s => s.querySelector('span').textContent + ': ' + s.querySelector('b').textContent).filter(t => /Song|held back/.test(t)).join(' | ')`);
+await ev(`(() => { const i = document.getElementById('rb-room'); i.checked = true; i.dispatchEvent(new Event('change')); return 1; })()`); await sleep(600);
+await until(`document.getElementById('rb-busy').hidden && [...document.querySelectorAll('#rb-stats .stat span')].some(s => s.textContent.startsWith('Song turned down'))`, 90000, "the room render");
+console.log("make room on:", await songStat());
+await ev(`(() => { const i = document.getElementById('rb-room'); i.checked = false; i.dispatchEvent(new Event('change')); return 1; })()`); await sleep(600);
+await until(`document.getElementById('rb-busy').hidden && ![...document.querySelectorAll('#rb-stats .stat span')].some(s => s.textContent.startsWith('Song turned down'))`, 90000, "the untouched render");
+console.log("make room off:", await songStat());
 console.log("slow hint:", await ev(`document.getElementById('rb-speed-hint').textContent`));
 console.log("old bass removed:", await ev(`(() => { const s = [...document.querySelectorAll('#rb-stats .stat')].find(s => s.querySelector('span').textContent.startsWith('Old bass removed')); return s ? s.querySelector('b').textContent + ' (' + s.querySelector('span').textContent + ')' : 'none'; })()`));
 console.log("options gone (old-bass switches, keep in key / stretch, snap):", await ev(`['rb-only', 'rb-replace', 'rb-mode', 'rb-snap'].filter(id => document.getElementById(id)).join(', ') || 'all gone'`));

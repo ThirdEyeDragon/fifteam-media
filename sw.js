@@ -1,12 +1,12 @@
 // FifTeam Media's service worker: the app works offline, and audio files shared to it from other apps (Android) land in
 // its inbox. Bump VERSION whenever the app's files change.
-const VERSION = "fifteam-v8";
+const VERSION = "fifteam-v9";
 const SHELL = [
   "./", "index.html", "manifest.webmanifest", "css/app.css",
   "js/app.js", "js/ui.js", "js/store.js", "js/tags.js", "js/tilt.js", "js/player.js", "js/library.js",
   "js/rebass.js", "js/rebass-worker.js", "js/tones.js", "js/export.js", "js/dsp.js", "js/mp3-worker.js",
   "js/knob.js", "js/eq.js", "js/image.js", "js/limiter-worklet.js", "js/settings.js", "js/demo.js", "js/bassline.js", "js/share.js",
-  "js/demucs.js", "js/separator.js", "js/sep-worker.js", "js/stems.js", "vendor/ort/ort.webgpu.min.mjs", "vendor/ort/ort-wasm-simd-threaded.asyncify.mjs",
+  "js/demucs.js", "js/social.js", "social/blocked.json", "js/separator.js", "js/sep-worker.js", "js/stems.js", "vendor/ort/ort.webgpu.min.mjs", "vendor/ort/ort-wasm-simd-threaded.asyncify.mjs",
   "icons/icon-192.png", "icons/icon-512.png", "icons/maskable-512.png", "icons/apple-touch-icon.png",
 ];
 

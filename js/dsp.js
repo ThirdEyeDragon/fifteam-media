@@ -347,6 +347,93 @@ export function truePeak(chs, near = 0.5) {
 }
 
 /**
+ * Lays the new bass under the song with no clipping, and leaves the song itself alone.
+ *   The song (vocals and everything else) keeps exactly its own level: it is never turned down, ridden or compressed.
+ *   The bass plays at bassDb (dBFS, its loudest point; never above the ceiling). Where song and bass together would pass
+ *   the ceiling, only the bass is held back, only there and only as far as needed (a 15 ms look-ahead that eases in and
+ *   a 250 ms recovery, so it never distorts).
+ *   Then the waveform between the samples is checked (4x oversampled); if it would pass the ceiling, the bass is fitted
+ *   under a ceiling lowered by the overshoot, and checked again.
+ *   A song whose own waveform already goes over the ceiling between samples (many masters do) keeps doing exactly that:
+ *   the result is never over by more than the song alone was, and the bass gives way there. Only where the song's own
+ *   samples would pass full scale with no bass at all (taking the old bass out of a master that was clipped to begin with
+ *   can do that) is the song itself eased under full scale, there and nowhere else (the same 15 ms / 250 ms easing).
+ * Returns { out: [L, R], stats }.
+ */
+export function rebassMix(chs, bass, bassPeak, sr, opts) {
+  const { bassDb = -3, ceilingDb = -0.1, band = null, progress } = opts;
+  const C0 = dbToLin(ceilingDb);
+  const nCh = chs.length, n = chs[0].length;
+  const music = chs.map((c) => Float32Array.from(c));
+  // the song's own content inside the chosen range comes out; nothing outside it is touched
+  if (band) bandStop(music, sr, band[0], band[1]);
+  progress && progress(0.2);
+  const A = bassPeak > 0 ? Math.min(dbToLin(bassDb), C0) / bassPeak : 0;
+  // the song's own samples past full scale (normally none): eased under it just there
+  const h0 = Math.max(1, Math.round(0.015 * sr)), rel0 = 1 / (0.25 * sr);
+  const sNeed = new Float32Array(n).fill(1);
+  let over0 = false;
+  for (const m of music) for (let i = 0; i < n; i++) { const a = m[i] < 0 ? -m[i] : m[i]; if (a > 0.9999) { const g = 0.9999 / a; if (g < sNeed[i]) sNeed[i] = g; over0 = true; } }
+  let gSong = 1, touched = 0;
+  if (over0) {
+    const ks = boxAverage(slidingMin(sNeed, h0), h0);
+    for (let i = 1; i < n; i++) if (ks[i] > ks[i - 1] + rel0) ks[i] = ks[i - 1] + rel0;
+    for (let i = 0; i < n; i++) { const g = Math.min(ks[i], sNeed[i]); if (g < 0.999) touched++; if (g < gSong) gSong = g; for (const m of music) m[i] *= g; }
+  }
+  // between the samples: never over by more than the song alone
+  const songTp = truePeak(music, C0 * 0.7), TP = Math.max(C0, songTp);
+  const need = new Float32Array(n), out = music.map(() => new Float32Array(n));
+  const h = Math.max(1, Math.round(0.015 * sr)), rel = 1 / (0.25 * sr);
+  let C = C0, tp = 0, k = null;
+  for (let pass = 0; pass < 6; pass++) {
+    // the most of the bass each sample can take with the song as it is
+    for (let i = 0; i < n; i++) {
+      const b = bass[i] * A;
+      let g = 1;
+      if (b !== 0) for (let c = 0; c < nCh; c++) {
+        const m = music[c][i];
+        // |m + g b| <= C, with g in [0, 1]
+        const room = b > 0 ? C - m : C + m;
+        const gc = room <= 0 ? 0 : room / Math.abs(b);
+        if (gc < g) g = gc;
+      }
+      need[i] = g;
+    }
+    // eased: never more than allowed (a minimum over +-h, then an average over +-h, then a slow recovery)
+    k = boxAverage(slidingMin(need, h), h);
+    for (let i = 1; i < n; i++) if (k[i] > k[i - 1] + rel) k[i] = k[i - 1] + rel;
+    for (let i = 0; i < n; i++) { const g = Math.min(k[i], need[i]); k[i] = g; const b = bass[i] * A * g; for (let c = 0; c < nCh; c++) out[c][i] = music[c][i] + b; }
+    progress && progress(0.3 + pass * 0.1);
+    // the waveform between the samples: if it would pass, fit the bass under a lower ceiling and go again
+    tp = truePeak(out, C0 * 0.7);
+    if (tp <= TP * 1.0001) break;
+    C *= (TP / tp) * 0.999;
+  }
+  // a last sliver over: the bass out entirely where it still would be (the song alone fits, see above)
+  if (tp > TP * 1.0001) {
+    for (let i = 0; i < n; i++) { let a = 0; for (let c = 0; c < nCh; c++) a = Math.max(a, Math.abs(out[c][i])); if (a > C0 * 0.97) { k[i] = 0; for (let c = 0; c < nCh; c++) out[c][i] = music[c][i]; } }
+    tp = truePeak(out, C0 * 0.7);
+  }
+  progress && progress(0.95);
+  let peak = 0, over = 0, bassOn = 0, held = 0, bassPk = 0;
+  for (let i = 0; i < n; i++) {
+    const b = Math.abs(bass[i] * A);
+    if (b > 0.01 * A * bassPeak) { bassOn++; if (k[i] < 0.97) held++; }
+    if (b * k[i] > bassPk) bassPk = b * k[i];
+  }
+  for (const o of out) for (let i = 0; i < n; i++) { const a = Math.abs(o[i]); if (a > peak) peak = a; if (a >= 1) over++; }
+  if (nCh === 1) out.push(Float32Array.from(out[0]));
+  return {
+    out,
+    stats: {
+      peakDb: linToDb(peak), truePeakDb: linToDb(tp), clipped: over, bassGain: A, bassActualDb: linToDb(A * bassPeak), bassPlayedDb: linToDb(bassPk),
+      songDb: linToDb(gSong), songTouchedPct: (100 * touched) / n, songTruePeakDb: linToDb(songTp), heldPct: bassOn ? (100 * held) / bassOn : 0,
+    },
+  };
+}
+
+/**
+ * "Make room for the bass" (the switch): the whole song turned down so the bass can be loud, as in 1.7.
  * Lays the new bass under the song with no clipping, and with as little compression as possible.
  *   The bass plays at exactly bassDb (dBFS, its loudest point; never above the ceiling).
  *   The song is given ONE fixed level for its whole length, the highest at which song and bass together never pass the
@@ -357,7 +444,7 @@ export function truePeak(chs, near = 0.5) {
  *   bass) is fitted under a ceiling lowered by the overshoot, and checked again.
  * Returns { out: [L, R], stats }.
  */
-export function rebassMix(chs, bass, bassPeak, sr, opts) {
+export function rebassMixRoom(chs, bass, bassPeak, sr, opts) {
   const { bassDb = -3, ceilingDb = -0.1, band = null, floorDb = -12, progress } = opts;
   const C0 = dbToLin(ceilingDb);
   const nCh = chs.length, n = chs[0].length;
