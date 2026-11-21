@@ -12,7 +12,7 @@ export function toast(msg, ms = 3200) {
 
 export function openSheet(build) {
   const s = $("sheet"), p = $("sheet-panel");
-  p.innerHTML = '<div class="grabber"></div>';
+  p.className = "sheet-panel"; p.innerHTML = '<div class="grabber"></div>';
   build(p);
   s.classList.add("open");
   const close = () => s.classList.remove("open");

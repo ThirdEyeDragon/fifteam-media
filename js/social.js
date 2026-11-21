@@ -10,6 +10,7 @@ import { library } from "./library.js";
 import { player } from "./player.js";
 import { fitJpeg, squareJpeg } from "./image.js";
 import { makeFile, sizeText } from "./export.js";
+import { openPerson, myPublicKey, initDms } from "./dms.js";
 
 const NAME_KEY = "fifteam-social-name", MINE_KEY = "fifteam-social-mine", ME_KEY = "fifteam-social-me", AV_KEY = "fifteam-social-avatar";
 const MAX_MSG = 9.5 * 1024 * 1024;   // what one post may carry (10 MB), with room to spare
@@ -36,7 +37,7 @@ async function config() {
   const c = await r.json();
   if (!c.hook || !c.key || !c.index) throw new Error("setup");
   // (the key is kept reversed in the file, so robots that search code for links don't pick it up)
-  S.cfg = { base: `https://discord.com/api/v10/webhooks/${c.hook}/${atob(c.key).split("").reverse().join("")}`, index: c.index };
+  S.cfg = { base: `https://discord.com/api/v10/webhooks/${c.hook}/${atob(c.key).split("").reverse().join("")}`, index: c.index, dm: c.dm || "" };
   return S.cfg;
 }
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -91,7 +92,7 @@ function cleanProfiles(o) {
   const out = {};
   if (!o || typeof o !== "object") return out;
   for (const [k, v] of Object.entries(o).slice(0, 3000)) if (/^[a-z0-9]{6,16}$/.test(k) && v && typeof v === "object")
-    out[k] = { name: str(v.name, 24), av: ID.test(v.av) ? v.av : "", at: +v.at || 0 };
+    out[k] = { name: str(v.name, 24), av: ID.test(v.av) ? v.av : "", at: +v.at || 0, pk: typeof v.pk === "string" && /^[A-Za-z0-9_-]{40,48}\.[A-Za-z0-9_-]{40,48}$/.test(v.pk) ? v.pk : "" };
   return out;
 }
 const ID = /^\d{5,25}$/;
@@ -102,7 +103,8 @@ function clean(list) {
     const s = p.song && typeof p.song === "object" ? { title: str(p.song.title, 120) || "Rebass", artist: str(p.song.artist, 80), note: str(p.song.note, 80), duration: +p.song.duration || 0 } : null;
     const likes = Array.isArray(p.likes) ? [...new Set(p.likes.filter((x) => typeof x === "string" && /^[a-z0-9]{6,16}$/.test(x)))].slice(0, 5000) : [];
     const comments = (Array.isArray(p.comments) ? p.comments : []).slice(-MAX_COMMENTS).map((c) => (c && /^[a-z0-9]{6,20}$/.test(c.id) && str(c.text, 300).trim()
-      ? { id: c.id, by: /^[a-z0-9]{6,16}$/.test(c.by) ? c.by : "", user: str(c.user, 24) || "someone", text: str(c.text, 300), at: +c.at || 0 } : null)).filter(Boolean);
+      ? { id: c.id, by: /^[a-z0-9]{6,16}$/.test(c.by) ? c.by : "", user: str(c.user, 24) || "someone", text: str(c.text, 300), at: +c.at || 0,
+          re: /^[a-z0-9]{6,20}$/.test(c.re) ? c.re : "", likes: Array.isArray(c.likes) ? [...new Set(c.likes.filter((x) => typeof x === "string" && /^[a-z0-9]{6,16}$/.test(x)))].slice(0, 2000) : [] } : null)).filter(Boolean);
     const video = p.video === "mp4" || p.video === "webm" ? p.video : "";
     return { id: p.id, at: +p.at || 0, user: str(p.user, 24) || "someone", text: str(p.text, 500), image: !!p.image, avatar: !!p.avatar, song: s, likes, by: /^[a-z0-9]{6,16}$/.test(p.by) ? p.by : "", video, comments };
   }).filter(Boolean);
@@ -225,7 +227,8 @@ function syncProfile(force) {
     let sent = ""; try { sent = localStorage.getItem(AV_KEY + "-sent") || ""; } catch {}
     const needPic = S.avatar && (force || !pr || !pr.av || sent !== (pr && pr.av));
     const needName = S.name && pr && pr.name !== S.name;
-    if (!needPic && !needName && pr) return;
+    const pk = await myPublicKey(), needKey = pk && pr && pr.pk !== pk;
+    if (!needPic && !needName && !needKey && pr) return;
     if (!S.avatar && !S.name) return;
     let av = pr && pr.av ? pr.av : "";
     if (needPic) {
@@ -236,7 +239,7 @@ function syncProfile(force) {
       const old = av; av = m.id;
       if (old && old !== av) dc(`/messages/${old}`, { method: "DELETE" }).catch(() => {});
     }
-    const me = { name: S.name, av, at: Date.now() };
+    const me = { name: S.name, av, at: Date.now(), pk };
     await changeIndex((posts) => { posts.profiles = posts.profiles || {}; posts.profiles[S.me] = me; }, (now) => now.profiles && now.profiles[S.me] && now.profiles[S.me].av === av, true);
     try { if (av) localStorage.setItem(AV_KEY + "-sent", av); } catch {}
   })().catch(() => {}).finally(() => { S.avSync = null; });
@@ -265,6 +268,8 @@ function postCard(p) {
   const who = h("div", "so-who");
   const av = avatarEl(40, "", p.user);
   showPicture(av, p);
+  av.classList.add("tap"); av.setAttribute("role", "button"); av.setAttribute("aria-label", `${p.user}: message`);
+  av.onclick = () => openPerson({ by: p.by, user: p.user });
   const nm = h("span", "so-name"); nm.append(h("b", "", p.user), h("small", "", ago(p.at)));
   who.append(av, nm); head.append(who);
   if (S.mine.has(p.id)) { const d = h("button", "btn small so-del", "Delete"); d.onclick = () => removePost(p); head.append(d); }
@@ -282,10 +287,9 @@ function postCard(p) {
   lk.onclick = () => like(p, lk);
   const cm = h("button", "so-cbtn"); cm.dataset.id = p.id; cm.setAttribute("aria-label", "Comments");
   cm.append(icon("i-chat"), h("span", "so-count", ""));
-  cm.onclick = () => { S.open.has(p.id) ? S.open.delete(p.id) : S.open.add(p.id); paintComments(card, p); if (S.open.has(p.id)) { const i = card.querySelector(".so-cform input"); if (i) i.focus(); } };
+  cm.onclick = () => openComments(p.id);
   bar.append(lk, cm); card.append(bar);
-  const cbox = h("div", "so-comments"); card.append(cbox);
-  paintComments(card, p);
+  paintCount(card, p);
   // the pictures, video and song links, from the post's own message, once it is near the screen
   if (p.image || p.song || p.avatar || p.video) {
     card._fill = async () => {
@@ -352,61 +356,110 @@ function videoObserver() {
 }
 function pauseVideos() { document.querySelectorAll("#so-body .so-vid video").forEach((v) => v.pause()); }
 
-/** A post's comments: the count on its button, and when open, the comments and a box to add one. */
-function paintComments(card, p) {
-  const btn = card.querySelector(".so-cbtn"), box = card.querySelector(".so-comments");
-  if (!btn || !box) return;
-  btn.querySelector(".so-count").textContent = p.comments.length ? String(p.comments.length) : "";
-  btn.classList.toggle("on", S.open.has(p.id));
-  box.hidden = !S.open.has(p.id);
-  if (box.hidden) return;
-  const typed = box.querySelector(".so-cform input"), keep = typed ? typed.value : "", focused = typed && document.activeElement === typed;
-  box.replaceChildren();
-  for (const c of p.comments) {
-    const row = h("div", "so-comment" + (c.sending ? " sending" : ""));
-    const av = avatarEl(30, "", c.user);
-    showPicture(av, { by: c.by, user: c.user, id: "" });
-    const t = h("div", "so-ctext");
-    const top = h("div", "so-cname"); top.append(h("b", "", c.user), h("small", "", ago(c.at)));
-    t.append(top, h("p", "", c.text));
-    row.append(av, t);
-    if (c.by && c.by === S.me && !c.sending) { const x = h("button", "so-cdel", "Delete"); x.onclick = () => uncomment(p, c, card); row.append(x); }
-    box.append(row);
+/** The number on a post's comments button. */
+function paintCount(card, p) {
+  const btn = card.querySelector(".so-cbtn");
+  if (btn) btn.querySelector(".so-count").textContent = p.comments.length ? String(p.comments.length) : "";
+}
+const postNow = (id) => S.feed.find((x) => x.id === id);
+/** A post's comments, in a panel: each with its replies under it, likes, Reply; your own can be deleted. */
+function openComments(id) {
+  S.cs = { id, reply: null };
+  openSheet((panel) => {
+    panel.classList.add("cs-panel");
+    panel.append(h("h3", "", "Comments"));
+    panel.append(h("div", "cs-list"));
+    const f = h("form", "cs-form");
+    const to = h("div", "cs-to"); to.hidden = true;
+    const inp = h("input", "input"); inp.maxLength = 300; inp.autocomplete = "off"; inp.setAttribute("aria-label", "Comment");
+    inp.placeholder = S.name ? "Add a comment" : "Pick a username to comment";
+    const go = h("button", "btn small primary", "Send"); go.type = "submit";
+    const row = h("div", "cs-row"); row.append(inp, go);
+    f.append(to, row);
+    f.onsubmit = (e) => { e.preventDefault(); const v = inp.value.trim(); if (v) { inp.value = ""; comment(id, v, S.cs && S.cs.reply); setReply(null); } };
+    panel.append(f);
+  });
+  paintSheet();
+}
+function setReply(c) {
+  if (!S.cs) return;
+  S.cs.reply = c ? (c.re || c.id) : null;
+  const to = document.querySelector("#sheet-panel .cs-to");
+  if (!to) return;
+  to.hidden = !c;
+  to.replaceChildren();
+  if (c) {
+    const x = h("button", "cs-x", "×"); x.type = "button"; x.setAttribute("aria-label", "Not replying"); x.onclick = () => setReply(null);
+    to.append(h("span", "", `Replying to ${c.user}`), x);
+    const inp = document.querySelector("#sheet-panel .cs-form input"); if (inp) inp.focus();
   }
-  if (!p.comments.length) box.append(h("p", "status so-cnone", "No comments yet."));
-  const f = h("form", "so-cform");
-  const inp = h("input", "input"); inp.maxLength = 300; inp.placeholder = S.name ? "Add a comment" : "Pick a username to comment"; inp.setAttribute("aria-label", "Comment"); inp.autocomplete = "off"; inp.value = keep;
-  const go = h("button", "btn small primary", "Send"); go.type = "submit";
-  f.append(inp, go);
-  f.onsubmit = (e) => { e.preventDefault(); const v = inp.value.trim(); if (v) { inp.value = ""; comment(p, v, card); } };
-  box.append(f);
-  if (focused) inp.focus();
+}
+function paintSheet() {
+  const list = document.querySelector("#sheet.open #sheet-panel .cs-list");
+  if (!S.cs || !list) return;
+  const p = postNow(S.cs.id);
+  list.replaceChildren();
+  if (!p) { list.append(h("p", "status", "That post is gone.")); return; }
+  const tops = p.comments.filter((c) => !c.re || !p.comments.some((x) => x.id === c.re)).sort((a, b) => a.at - b.at);
+  if (!tops.length) list.append(h("p", "status cs-none", "No comments yet. Be the first."));
+  for (const c of tops) {
+    list.append(commentRow(p, c, false));
+    for (const r of p.comments.filter((x) => x.re === c.id).sort((a, b) => a.at - b.at)) list.append(commentRow(p, r, true));
+  }
+}
+function commentRow(p, c, reply) {
+  const row = h("div", "cs-c" + (reply ? " reply" : "") + (c.sending ? " sending" : ""));
+  const av = avatarEl(reply ? 28 : 34, "", c.user);
+  showPicture(av, { by: c.by, user: c.user, id: "" });
+  av.classList.add("tap"); av.onclick = () => openPerson({ by: c.by, user: c.user });
+  const body = h("div", "cs-body");
+  const top = h("div", "cs-name"); top.append(h("b", "", c.user), h("small", "", ago(c.at)));
+  const acts = h("div", "cs-acts");
+  const rp = h("button", "cs-act", "Reply"); rp.onclick = () => setReply(c);
+  const lk = h("button", "cs-act cs-like" + (c.likes.includes(S.me) ? " on" : ""));
+  lk.append(h("span", "", "♥"), h("span", "", c.likes.length ? " " + c.likes.length : ""));
+  lk.setAttribute("aria-label", c.likes.includes(S.me) ? "Unlike" : "Like");
+  lk.onclick = () => likeComment(p.id, c.id);
+  acts.append(rp, lk);
+  if (c.by && c.by === S.me && !c.sending) { const x = h("button", "cs-act", "Delete"); x.onclick = () => uncomment(p.id, c.id); acts.append(x); }
+  body.append(top, h("p", "", c.text), acts);
+  row.append(av, body);
+  return row;
 }
 const newCid = () => Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => "abcdefghijklmnopqrstuvwxyz0123456789"[b % 36]).join("");
-async function comment(p, text, card) {
-  if (!S.name) { toast("Pick a username first"); S.editingName = true; render(); return; }
-  const c = { id: newCid(), by: S.me, user: S.name, text: text.slice(0, 300), at: Date.now() };
-  p.comments = [...p.comments, { ...c, sending: true }];
-  paintComments(card, p);
+/** A change to one post's comments: shown at once, saved to the feed, the panel and the post's count redrawn. */
+async function changeComments(id, change, check, failMsg) {
+  const p = postNow(id);
+  if (p) { const local = { ...p, comments: p.comments.map((c) => ({ ...c, likes: [...c.likes] })) }; change(local.comments); Object.assign(p, { comments: local.comments }); paintSheet(); }
   try {
     await changeIndex((posts) => {
-      const q = posts.find((x) => x.id === p.id); if (!q) throw new Error("That post is gone.");
-      q.comments = [...(q.comments || []), c].slice(-MAX_COMMENTS);
-    }, (now) => { const q = now.find((x) => x.id === p.id); return !q || q.comments.some((x) => x.id === c.id); }, true);
-  } catch (e) { toast(e.message === "That post is gone." ? e.message : "Couldn't send that comment. Try again."); }
-  const q = S.feed.find((x) => x.id === p.id);
-  p.comments = q ? q.comments : p.comments.filter((x) => x.id !== c.id);
-  paintComments(card, p);
+      const q = posts.find((x) => x.id === id); if (!q) throw new Error("gone");
+      q.comments = q.comments || []; change(q.comments); q.comments = q.comments.slice(-MAX_COMMENTS);
+    }, (now) => { const q = now.find((x) => x.id === id); return !q || check(q.comments); }, true);
+  } catch (e) { toast(e.message === "gone" ? "That post is gone." : failMsg); }
+  paintSheet();
+  const q = postNow(id), card = document.querySelector(`#so-body .so-post[data-id="${id}"]`);
+  if (q && card) paintCount(card, q);
 }
-async function uncomment(p, c, card) {
-  p.comments = p.comments.filter((x) => x.id !== c.id);
-  paintComments(card, p);
-  try {
-    await changeIndex((posts) => { const q = posts.find((x) => x.id === p.id); if (q) q.comments = (q.comments || []).filter((x) => x.id !== c.id); },
-      (now) => { const q = now.find((x) => x.id === p.id); return !q || !q.comments.some((x) => x.id === c.id); }, true);
-  } catch { toast("Couldn't delete that comment. Try again."); }
-  const q = S.feed.find((x) => x.id === p.id);
-  if (q) { p.comments = q.comments; paintComments(card, p); }
+function comment(id, text, re) {
+  if (!S.name) { toast("Pick a username first"); closeSheet(); S.editingName = true; render(); return; }
+  const c = { id: newCid(), by: S.me, user: S.name, text: text.slice(0, 300), at: Date.now(), likes: [], ...(re ? { re } : {}) };
+  return changeComments(id, (cs) => { if (!cs.some((x) => x.id === c.id)) cs.push(c); }, (cs) => cs.some((x) => x.id === c.id), "Couldn't send that comment. Try again.");
+}
+function uncomment(id, cid) {
+  // (its replies go with it)
+  return changeComments(id, (cs) => { for (let i = cs.length - 1; i >= 0; i--) if (cs[i].id === cid || cs[i].re === cid) cs.splice(i, 1); }, (cs) => !cs.some((x) => x.id === cid), "Couldn't delete that comment. Try again.");
+}
+function likeComment(id, cid) {
+  const p = postNow(id), c = p && p.comments.find((x) => x.id === cid);
+  if (!c) return;
+  const want = !c.likes.includes(S.me);
+  return changeComments(id, (cs) => {
+    const x = cs.find((y) => y.id === cid); if (!x) return;
+    x.likes = x.likes || [];
+    const has = x.likes.includes(S.me);
+    if (want && !has) x.likes.push(S.me); else if (!want && has) x.likes = x.likes.filter((y) => y !== S.me);
+  }, (cs) => { const x = cs.find((y) => y.id === cid); return !x || (x.likes || []).includes(S.me) === want; }, "Couldn't save that like. Try again.");
 }
 
 function paintLike(btn, p) {
@@ -742,14 +795,12 @@ async function refresh({ manual = false } = {}) {
   const before = JSON.stringify(S.profiles);
   try { await S.loading; } finally { S.loading = null; }
   if (!S.error && (S.avatar || S.name)) syncProfile();
+  if (S.cs && !S.loading) paintSheet();
   if (manual || firstTime || sigIds(S.feed) !== S.ids || S.error !== S.shownError || JSON.stringify(S.profiles) !== before) render();
   else for (const p of S.feed) {
     if (!S.liking.has(p.id)) document.querySelectorAll(`#so-body .so-like[data-id="${p.id}"]`).forEach((btn) => paintLike(btn, p));
     const card = document.querySelector(`#so-body .so-post[data-id="${p.id}"]`);
-    if (card && !card.querySelector(".so-comment.sending")) {
-      const shown = card._comments || "", now = p.comments.map((c) => c.id).join(",");
-      if (shown !== now) { card._comments = now; paintComments(card, p); }
-    }
+    if (card) paintCount(card, p);
   }
 }
 const sigIds = (feed) => feed.filter((p) => !S.gone.has(p.id)).map((p) => p.id).join(",");
@@ -810,7 +861,21 @@ export function initSocial() {
   // a rebass made just now, posted from the Rebass screen
   bus.on("social-post", (song) => { location.hash = "#social"; setTimeout(() => composer({ song }), 50); });
   pullToRefresh();
+  initDms();
   // new posts and likes come in on their own while the feed is open
   setInterval(() => { if (location.hash === "#social" && document.visibilityState === "visible" && !S.loading) refresh(); }, 45000);
 }
+/** The profiles (and this phone's on them, with its key for messages), loaded if they haven't been (fresh: unless just now). */
+async function ensureProfiles(fresh) {
+  await config();
+  if (!S.loadedAt || Date.now() - S.loadedAt > (fresh ? 5000 : 60000)) { const list = await readIndex(); S.profiles = list.profiles; if (!S.loadedAt) { S.feed = keepGone(list); } S.loadedAt = Date.now(); }
+  if (S.name) syncProfile();
+}
+/** A phone by its username (older posts don't say which phone made them): the latest profile with that name. */
+function findPhone(name) {
+  let best = null;
+  for (const [k, v] of Object.entries(S.profiles || {})) if (v.name && v.name === name && (!best || v.at > best[1].at)) best = [k, v];
+  return best ? best[0] : "";
+}
+export const api = { state: S, config, dc, avatarEl, showPicture, ago, icon, findPhone, ensureProfiles };
 export const social = { state: S, prepareVideo };

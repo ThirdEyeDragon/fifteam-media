@@ -18,6 +18,12 @@ f.append("files[0]", new Blob([JSON.stringify({ v: 1, posts: [] })], { type: "ap
 const r = await fetch(base + "?wait=true", { method: "POST", body: f });
 if (!r.ok) { console.log("Couldn't post the feed message:", r.status, (await r.text()).slice(0, 200)); process.exit(1); }
 const msg = await r.json();
-const cfg = { hook, key: Buffer.from(token.split("").reverse().join("")).toString("base64"), index: msg.id };
+// and the private messages' store (encrypted on the phones; see js/social.js)
+const g = new FormData();
+g.append("payload_json", JSON.stringify({ content: "FifTeam messages (the app keeps this message up to date; please don't delete it)", username: "FifTeam", attachments: [{ id: 0, filename: "dm.json" }], allowed_mentions: { parse: [] } }));
+g.append("files[0]", new Blob([JSON.stringify({ v: 1, msgs: [] })], { type: "application/json" }), "dm.json");
+const r2 = await fetch(base + "?wait=true", { method: "POST", body: g });
+if (!r2.ok) { console.log("Couldn't post the messages' store:", r2.status); process.exit(1); }
+const cfg = { hook, key: Buffer.from(token.split("").reverse().join("")).toString("base64"), index: msg.id, dm: (await r2.json()).id };
 writeFileSync(new URL("../social/config.json", import.meta.url), JSON.stringify(cfg, null, 2) + "\n");
 console.log("feed message", msg.id, "posted; social/config.json written. Publish the app to switch Social on.");
