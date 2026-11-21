@@ -789,9 +789,10 @@ async function post(text, img, song, say, video) {
 }
 async function removePost(p) {
   if (!confirm("Delete this post?")) return;
+  // gone from the screen at once (the feed can be slow to answer when it's busy); back if it couldn't be deleted
+  S.gone.add(p.id); render();
   try {
-    await dc(`/messages/${p.id}`, { method: "DELETE" }).catch((e) => { if (e.status !== 404) throw e; });
-    S.gone.add(p.id); render();
+    await dc(`/messages/${p.id}`, { method: "DELETE" }).catch((e) => { if (e.status !== 404) { S.gone.delete(p.id); render(); throw e; } });
     await changeIndex((posts) => { const i = posts.findIndex((x) => x.id === p.id); if (i >= 0) posts.splice(i, 1); }, (now) => !now.some((x) => x.id === p.id));
     S.mine.delete(p.id); saveMine(); toast("Deleted"); render();
   } catch (e) { toast(e.message); }
