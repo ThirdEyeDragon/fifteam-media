@@ -115,6 +115,8 @@ export function openSettings() {
       <div class="set-head"><svg><use href="#i-bass"/></svg>Bass separator<span class="pill" id="set-sep-pill">…</span></div>
       <span class="status">51 MB, kept so rebassing works offline.</span>
       <button class="btn small" id="set-sep-del" hidden>Remove from this phone</button>
+      <span class="status" id="set-light" hidden>This phone uses the lighter rebass (a rebass ran out of memory here).</span>
+      <button class="btn small" id="set-light-off" hidden>Try the full rebass again</button>
     </div>`);
     p.append(sepSec);
     const paintSep = async () => {
@@ -125,6 +127,16 @@ export function openSettings() {
       $("set-sep-del").hidden = !on;
     };
     paintSep();
+    const paintLight = () => {
+      let on = false; try { on = localStorage.getItem("fifteam-rebass-light") === "1"; } catch {}
+      $("set-light").hidden = $("set-light-off").hidden = !on;
+    };
+    paintLight();
+    sepSec.querySelector("#set-light-off").onclick = () => {
+      try { localStorage.removeItem("fifteam-rebass-light"); } catch {}
+      toast("The full rebass is back on. It starts with the next song you open.", 3000);
+      paintLight();
+    };
     sepSec.querySelector("#set-sep-del").onclick = async () => {
       try { await caches.delete("fifteam-sep-1"); } catch {}
       try { indexedDB.deleteDatabase("fifteam-stems"); } catch {}

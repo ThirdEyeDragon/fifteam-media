@@ -129,7 +129,7 @@ export async function separateBass(chs, sr, run, progress = () => {}, overlap = 
   for (let o = 0; o < n; o += stride) offsets.push(o);
   const halfSeg = SEG >> 1, wMax = halfSeg;
   const weight = (i) => (i < halfSeg ? i + 1 : SEG - i) / wMax;
-  const oL = new Float32Array(n), oR = new Float32Array(n), sumW = new Float32Array(n);
+  const oL = new Float32Array(n), oR = new Float32Array(n);
   const sL = new Float32Array(SEG), sR = new Float32Array(SEG), seg = new Float32Array(2 * SEG);
   for (let s = 0; s < offsets.length; s++) {
     const off = offsets[s], len = Math.min(SEG, n - off), delta = SEG - len, start = off - (delta >> 1);
@@ -146,11 +146,17 @@ export async function separateBass(chs, sr, run, progress = () => {}, overlap = 
     const c0 = delta >> 1;
     for (let i = 0; i < len; i++) {
       const w = weight(i);
-      oL[off + i] += w * yL[c0 + i]; oR[off + i] += w * yR[c0 + i]; sumW[off + i] += w;
+      oL[off + i] += w * yL[c0 + i]; oR[off + i] += w * yR[c0 + i];
     }
     progress((s + 1) / offsets.length);
   }
-  for (let i = 0; i < n; i++) { const w = sumW[i]; oL[i] = (oL[i] / w) * std + mean; oR[i] = (oR[i] / w) * std + mean; }
+  // the weights' sum at each sample, worked out rather than kept (a sample is in at most two segments)
+  for (let i = 0; i < n; i++) {
+    const s1 = Math.min(offsets.length - 1, Math.floor(i / stride));
+    let w = 0;
+    for (let s = Math.max(0, s1 - 2); s <= s1; s++) { const d = i - offsets[s]; if (d >= 0 && d < Math.min(SEG, n - offsets[s])) w += weight(d); }
+    oL[i] = (oL[i] / w) * std + mean; oR[i] = (oR[i] / w) * std + mean;
+  }
   if (sr === SR) return [oL, oR];
   const bL = resample(oL, SR, sr), bR = resample(oR, SR, sr);
   // the same length as the song

@@ -3,9 +3,9 @@
 import { separate, separatorBackend } from "./separator.js";
 
 onmessage = async (e) => {
-  const { chs, sr } = e.data;
+  const { chs, sr, gpuOnly } = e.data;
   try {
-    const out = await separate(chs, sr, { progress: (stage, p, el) => postMessage({ type: "progress", stage, p, el }) });
+    const out = await separate(chs, sr, { gpuOnly, progress: (stage, p, el) => postMessage({ type: "progress", stage, p, el }) });
     postMessage({ type: "done", out, backend: separatorBackend() }, out.map((c) => c.buffer));
   } catch (err) {
     postMessage({ type: "error", message: String((err && err.message) || err) });

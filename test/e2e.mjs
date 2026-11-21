@@ -40,6 +40,7 @@ const chooseFile = async (sel, path) => {
   await cdp("Page.setInterceptFileChooserDialog", { enabled: false });
 };
 // the samples of a 16-bit WAV (its "data" chunk, whatever else the file carries)
+const wavRate = (b) => { let o = 12; while (o + 8 <= b.length) { const id = b.toString("ascii", o, o + 4), n = b.readUInt32LE(o + 4); if (id === "fmt ") return b.readUInt32LE(o + 12); o += 8 + n + (n & 1); } return 48000; };
 const wavData = (b) => { let o = 12; while (o + 8 <= b.length) { const id = b.toString("ascii", o, o + 4), n = b.readUInt32LE(o + 4); if (id === "data") return new Int16Array(b.buffer.slice(b.byteOffset + o + 8, b.byteOffset + o + 8 + n)); o += 8 + n + (n & 1); } return new Int16Array(0); };
 const cover = resolve(songsDir, "..", "cover.png");
 const cdp = (method, params = {}) => new Promise((res, rej) => {
@@ -208,10 +209,11 @@ if (saved) {
   const b = readFileSync(join(dl, saved));
   const data = wavData(b);
   let pk = 0, full = 0; for (const v of data) { const a = Math.abs(v); if (a > pk) pk = a; if (v >= 32767 || v <= -32768) full++; }
-  console.log(`saved WAV: ${(b.length / 1e6).toFixed(1)} MB, ${(data.length / 2 / 48000).toFixed(1)} s, peak ${(20 * Math.log10(pk / 32768)).toFixed(2)} dBFS, full-scale samples ${full}, tags ${b.includes("id3 ") ? "id3" : "-"}/${b.includes("INAM") ? "INFO" : "-"}`);
+  const wr = wavRate(b);
+  console.log(`saved WAV: ${(b.length / 1e6).toFixed(1)} MB, ${wr} Hz, ${(data.length / 2 / wr).toFixed(1)} s, peak ${(20 * Math.log10(pk / 32768)).toFixed(2)} dBFS, full-scale samples ${full}, tags ${b.includes("id3 ") ? "id3" : "-"}/${b.includes("INAM") ? "INFO" : "-"}`);
   // the intro's 5.4 s at its start, then the song
-  let a1 = 0, a2 = 0; const n1 = Math.round(5.3 * 48000) * 2, n2 = Math.round(5.6 * 48000) * 2;
-  for (let i = 0; i < n1; i++) a1 = Math.max(a1, Math.abs(data[i])); for (let i = n2; i < n2 + 96000; i++) a2 = Math.max(a2, Math.abs(data[i]));
+  let a1 = 0, a2 = 0; const n1 = Math.round(5.3 * wr) * 2, n2 = Math.round(5.6 * wr) * 2;
+  for (let i = 0; i < n1; i++) a1 = Math.max(a1, Math.abs(data[i])); for (let i = n2; i < n2 + 2 * wr; i++) a2 = Math.max(a2, Math.abs(data[i]));
   console.log(`saved WAV starts with the intro: peak of its first 5.3 s ${(20 * Math.log10(a1 / 32768)).toFixed(1)} dBFS, the song after it ${(20 * Math.log10(a2 / 32768)).toFixed(1)} dBFS`);
 }
 // the same rebass as an MP3 (encoded, decoded again and checked for clipping before it is handed over)

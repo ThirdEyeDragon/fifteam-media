@@ -12,7 +12,7 @@ const ROOT = new URL("../", import.meta.url).href;
 const CACHE = "fifteam-sep-1";
 const FILES = [
   { key: "wasm", path: "vendor/ort/ort-wasm-simd-threaded.asyncify.wasm.gz", size: 7103195 },
-  { key: "graph", path: "models/bass-sep.stages.gz", size: 152132 },
+  { key: "graph", path: "models/bass-sep.stages2.gz", size: 156817 },
   { key: "q8", path: "models/bass-sep.q8", size: 43702127 },
 ];
 export const DOWNLOAD_MB = Math.round(FILES.reduce((a, f) => a + f.size, 0) / 1e6);
@@ -77,33 +77,48 @@ for (let h = 0; h < 65536; h++) {
   H2F[h] = e === 0 ? s * m * 2 ** -24 : e === 31 ? (m ? NaN : s * Infinity) : s * (1 + m / 1024) * 2 ** (e - 15);
 }
 
-/** The compact weights back to the fp32 block the graph points at (see models/README.txt). */
-function expand(q8) {
+/** The packed weights' table: each weight by where it sits in the whole network's weights, with where its bytes start in
+ * the packed file (see models/README.txt). */
+function q8Index(q8) {
   const dv = new DataView(q8.buffer, q8.byteOffset, q8.byteLength);
   const hl = dv.getUint32(4, true);
   const hdr = JSON.parse(new TextDecoder().decode(q8.subarray(8, 8 + hl)));
-  const out = new Float32Array(hdr.bytes32 / 4);
+  const byOffset = new Map();
   let p = 8 + hl;
   for (const t of hdr.t) {
-    const o = t.o / 4, n = t.n;
-    if (t.rows) {
-      const rows = t.rows, cols = n / rows, blk = t.blk, nb = Math.ceil(cols / blk), ns = rows * nb;
-      const sc = new Float32Array(ns);
-      for (let i = 0; i < ns; i++) sc[i] = H2F[dv.getUint16(p + 2 * i, true)];
-      p += 2 * ns;
-      const q = new Int8Array(q8.buffer, q8.byteOffset + p, n);
-      p += n;
-      if (!t.sw) {
-        for (let r = 0; r < rows; r++) { const base = r * cols, sb = r * nb; for (let c = 0; c < cols; c++) out[o + base + c] = q[base + c] * sc[sb + ((c / blk) | 0)]; }
-      } else {
-        // kept output-channel first; the graph wants (in, out, ...) for these
-        const d1 = t.d1, K = n / (t.d0 * d1);
-        for (let r = 0; r < rows; r++) { const base = r * cols, sb = r * nb; for (let c = 0; c < cols; c++) { const i = (c / K) | 0; out[o + i * d1 * K + r * K + (c - i * K)] = q[base + c] * sc[sb + ((c / blk) | 0)]; } }
-      }
+    t.p = p;
+    if (t.rows) { const nb = Math.ceil(t.n / t.rows / t.blk); p += 2 * t.rows * nb + t.n; } else p += 2 * t.n;
+    byOffset.set(t.o, t);
+  }
+  return { q8, dv, byOffset };
+}
+/** One weight back to fp32, into out at float offset o. */
+function expandOne(ix, t, out, o) {
+  const { q8, dv } = ix, n = t.n;
+  let p = t.p;
+  if (t.rows) {
+    const rows = t.rows, cols = n / rows, blk = t.blk, nb = Math.ceil(cols / blk), ns = rows * nb;
+    const sc = new Float32Array(ns);
+    for (let i = 0; i < ns; i++) sc[i] = H2F[dv.getUint16(p + 2 * i, true)];
+    p += 2 * ns;
+    const q = new Int8Array(q8.buffer, q8.byteOffset + p, n);
+    if (!t.sw) {
+      for (let r = 0; r < rows; r++) { const base = r * cols, sb = r * nb; for (let c = 0; c < cols; c++) out[o + base + c] = q[base + c] * sc[sb + ((c / blk) | 0)]; }
     } else {
-      for (let i = 0; i < n; i++) out[o + i] = H2F[dv.getUint16(p + 2 * i, true)];
-      p += 2 * n;
+      // kept output-channel first; the graph wants (in, out, ...) for these
+      const d1 = t.d1, K = n / (t.d0 * d1);
+      for (let r = 0; r < rows; r++) { const base = r * cols, sb = r * nb; for (let c = 0; c < cols; c++) { const i = (c / K) | 0; out[o + i * d1 * K + r * K + (c - i * K)] = q[base + c] * sc[sb + ((c / blk) | 0)]; } }
     }
+  } else for (let i = 0; i < n; i++) out[o + i] = H2F[dv.getUint16(p + 2 * i, true)];
+}
+/** One stage's own weights, laid out the way its graph points at them (only this stage's: a few MB to 34 MB, where
+ * the whole network's are 168 MB; phones with little memory to spare, iPhones above all, need that). */
+function stageWeights(ix, st) {
+  const out = new Float32Array(Math.max(1, st.wbytes / 4));
+  for (const [whole, off, len] of st.w) {
+    const t = ix.byOffset.get(whole);
+    if (!t || t.n * 4 !== len) throw new Error("download");
+    expandOne(ix, t, out, off / 4);
   }
   return new Uint8Array(out.buffer);
 }
@@ -132,7 +147,7 @@ async function release() {
   if (plan) for (const st of plan.stages) if (st.session) { try { await st.session.release(); } catch {} st.session = null; }
 }
 
-async function start(progress, forceCpu) {
+async function start(progress, forceCpu, gpuOnly) {
   if (plan && plan.stages[0].session && (!forceCpu || backend === "wasm")) return;
   const total = FILES.reduce((a, f) => a + f.size, 0);
   const got = {}, data = {};
@@ -153,26 +168,26 @@ async function start(progress, forceCpu) {
     ort.env.logLevel = "error";
   }
   ort.env.wasm.wasmBinary = data.wasm;
-  let weights = expand(data.q8);
+  let ix = q8Index(data.q8);
   data.q8 = null;
   await release();
   plan = readStages(data.graph);
   const finals = new Set(plan.outputs);
-  // every stage takes its own weights from the one expanded block; on the graphics chip what passes between stages
+  // every stage takes only its own weights, expanded as it is made; on the graphics chip what passes between stages
   // stays there, only the network's two outputs come back. On the processor its threads wait asleep (not spinning),
   // and memory goes back after each stage rather than into a pool kept per stage.
   const make = (ep, st, gpu) => ort.InferenceSession.create(st.bytes, {
     executionProviders: [ep], graphOptimizationLevel: "all", enableCpuMemArena: false,
-    externalData: [{ path: "bass-sep.weights", data: weights }],
+    externalData: [{ path: "bass-sep.weights", data: stageWeights(ix, st) }],
     ...(gpu ? { preferredOutputLocation: Object.fromEntries(st.outputs.map((k) => [k, finals.has(k) ? "cpu" : "gpu-buffer"])) } : {}),
     extra: { session: { intra_op: { allow_spinning: "0" }, inter_op: { allow_spinning: "0" } } },
   });
   // each stage is made just before its first run (making them all at once held every stage's weights twice on the
-  // graphics chip for a moment); the expanded weights go once the last one is made
+  // graphics chip for a moment); the packed weights go once the last one is made
   const lazy = (ep, gpu) => {
     plan.make = async (st) => {
       st.session = await make(ep, st, gpu);
-      if (plan.stages.every((x) => x.session)) { weights = null; plan.make = null; }
+      if (plan.stages.every((x) => x.session)) { ix = null; plan.make = null; }
     };
   };
   backend = "";
@@ -187,6 +202,8 @@ async function start(progress, forceCpu) {
       }
     } catch { await release(); }
   }
+  // (a phone that can't spare the memory the processor's way takes, an iPhone above all: the lighter rebass instead)
+  if (!backend && gpuOnly) { await release(); throw new Error("no-gpu"); }
   if (!backend) { lazy("wasm", false); await plan.make(plan.stages[0]); backend = "wasm"; }
   progress("start", 1);
 }
@@ -218,8 +235,8 @@ async function runNet(seg, sp, cancelled) {
 }
 
 /** The song's bass: [left, right] at sr. Throws "cancelled" if cancelled() turns true. */
-export async function separate(chs, sr, { progress = () => {}, cancelled = () => false } = {}) {
-  await start(progress, false);
+export async function separate(chs, sr, { progress = () => {}, cancelled = () => false, gpuOnly = false } = {}) {
+  await start(progress, false, gpuOnly);
   for (let attempt = 0; attempt < 2; attempt++) {
     let first = true, t0 = 0;
     const run = async (seg, sp) => {
@@ -238,7 +255,7 @@ export async function separate(chs, sr, { progress = () => {}, cancelled = () =>
       return out;
     } catch (e) {
       // the graphics chip failed (wrong numbers, lost, out of memory): once more on the processor
-      if (e.message === "cancelled" || attempt || backend !== "webgpu") throw e;
+      if (e.message === "cancelled" || attempt || backend !== "webgpu" || gpuOnly) throw e;
       await start(progress, true);
     }
   }

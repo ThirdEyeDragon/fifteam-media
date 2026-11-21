@@ -1,9 +1,10 @@
 """Cut the bass separator's graph into K stages run one after another (ONNX Runtime frees a run's in-between buffers
 only when the run ends: one run per 7.8 s piece held ~2 GB on the graphics chip; K short runs hold one stage's worth).
-Every stage keeps the weights as external data in "bass-sep.weights" at the same offsets, so the app's packed weights
-(bass-sep.q8) are unchanged.
+Every stage keeps its weights as external data in "bass-sep.weights", laid out for that stage alone from offset 0 (w in
+the header lists them), so the app expands only one stage's weights at a time from the packed weights (bass-sep.q8,
+unchanged).
   python tools/stage_model.py <bass-sep.onnx> 16 bass-sep.stages   (then gzip -9 it into models/bass-sep.stages.gz)
-The container: "FTST", u32 header length, a JSON header { stages: [{ len, inputs, outputs }], outputs, last: { tensor:
+The container: "FTST", u32 header length, a JSON header { stages: [{ len, inputs, outputs, w: [[offset in the whole, offset in this stage, length]], wbytes }], outputs, last: { tensor:
 stage index of its last use } }, then the stages' ONNX bytes one after another."""
 import sys, json, struct
 import numpy as np
@@ -81,14 +82,31 @@ for s in range(K):
     for x in used:
         last_use[x] = s
     need = {x for nd in ns for x in nd.input if x in inits}
-    ginits = [inits[n] for n in inits if n in need]
+    ginits = []
+    wlist, local = [], 0
+    for n in inits:
+        if n not in need:
+            continue
+        t = onnx.TensorProto(); t.CopyFrom(inits[n])
+        if t.data_location == onnx.TensorProto.EXTERNAL:
+            kv = {e.key: e.value for e in t.external_data}
+            ln, gofs = int(kv["length"]), int(kv.get("offset", 0))
+            # this stage's own weights, one after another from 0 (the app expands just these for it)
+            for e in t.external_data:
+                if e.key == "offset":
+                    e.value = str(local)
+            if not any(e.key == "offset" for e in t.external_data):
+                e = t.external_data.add(); e.key = "offset"; e.value = str(local)
+            wlist.append([gofs, local, ln])
+            local += (ln + 63) // 64 * 64
+        ginits.append(t)
     vis = lambda names: [vinfo[n] for n in names]
     sg = helper.make_graph(ns, f"stage{s}", vis(used), vis(outs), initializer=ginits)
     sm = helper.make_model(sg, opset_imports=m.opset_import, producer_name="fifteam-stage")
     sm.ir_version = m.ir_version
     b = sm.SerializeToString()
     blobs.append(b)
-    hdr_stages.append({"len": len(b), "inputs": used, "outputs": outs})
+    hdr_stages.append({"len": len(b), "inputs": used, "outputs": outs, "w": wlist, "wbytes": local})
     print(f"stage {s}: {len(ns)} nodes, {len(used)} in, {len(outs)} out, carried in {sum(nbytes(x) for x in used) / 1e6:.0f} MB, {len(b)} bytes")
 hdr = json.dumps({"stages": hdr_stages, "outputs": gout, "last": last_use}).encode()
 with open(out, "wb") as f:

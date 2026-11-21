@@ -23,13 +23,13 @@ const S = {
 // song's level (its loudest moment at −1 dBFS), so it doesn't sound small next to a mastered rebass.
 const INTRO_KEY = "fifteam-intro";
 let introBuf = null, introLoading = null;
-function loadIntro() {
-  if (introBuf && introBuf.sampleRate === getCtx().sampleRate) return Promise.resolve(introBuf);
+function loadIntro(rate = SONG_RATE) {
+  if (introBuf && introBuf.sampleRate === rate) return Promise.resolve(introBuf);
   if (!introLoading) introLoading = (async () => {
     const ctx = getCtx();
     const res = await fetch(new URL("../media/intro.wav", import.meta.url));
     if (!res.ok) throw new Error("intro");
-    const b = await ctx.decodeAudioData(await res.arrayBuffer());
+    const b = await decodeAt(await res.arrayBuffer(), rate);
     let pk = 0;
     for (let c = 0; c < b.numberOfChannels; c++) { const x = b.getChannelData(c); for (let i = 0; i < x.length; i++) { const a = x[i] < 0 ? -x[i] : x[i]; if (a > pk) pk = a; } }
     const g = pk > 0 ? Math.pow(10, -1 / 20) / pk : 1, out = ctx.createBuffer(2, b.length, b.sampleRate);
@@ -40,6 +40,24 @@ function loadIntro() {
   return introLoading;
 }
 const introWanted = () => $("rb-intro").checked;
+const SONG_RATE = 44100;
+/** Audio decoded at `rate` (an offline context decodes at its own rate), or at the phone's if that can't be done. */
+async function decodeAt(bytes, rate) {
+  const Off = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  if (Off) { try { return await new Off(2, 1, rate).decodeAudioData(bytes.slice(0)); } catch {} }
+  return await getCtx().decodeAudioData(bytes);
+}
+
+// ---------------------------------------------------------------------------------------------------- not running out of memory
+// A rebass that took the whole page down (a phone that ran out of memory: on an iPhone, Safari's "a problem repeatedly
+// occurred") leaves its mark behind; the next time, that phone uses the lighter rebass, so it can't happen again.
+const BUSY_KEY = "fifteam-rebass-busy", LIGHT_KEY = "fifteam-rebass-light";
+let light = false;
+try {
+  if (localStorage.getItem(BUSY_KEY)) { localStorage.setItem(LIGHT_KEY, "1"); localStorage.removeItem(BUSY_KEY); }
+  light = localStorage.getItem(LIGHT_KEY) === "1";
+} catch {}
+const busyMark = (on) => { try { on ? localStorage.setItem(BUSY_KEY, String(Date.now())) : localStorage.removeItem(BUSY_KEY); } catch {} };
 /** The rebass as heard and saved: the intro (if it's on and ready) and then the song. Returns { ob, k } (k: intro samples). */
 function compose(L, R, sr) {
   const ctx = getCtx(), k = introWanted() && introBuf && introBuf.sampleRate === sr ? introBuf.length : 0;
@@ -52,7 +70,7 @@ function compose(L, R, sr) {
 async function introChanged() {
   try { localStorage.setItem(INTRO_KEY, introWanted() ? "1" : "0"); } catch {}
   if (introWanted()) {
-    try { await loadIntro(); } catch { $("rb-intro").checked = false; toast("Couldn't load the intro. Are you online?"); return; }
+    try { await loadIntro(S.origBuf ? S.origBuf.sampleRate : SONG_RATE); } catch { $("rb-intro").checked = false; toast("Couldn't load the intro. Are you online?"); return; }
   }
   if (!S.outBuf || S.busy) return;                       // (a rebass under way puts it in when it's done)
   const sr = S.outBuf.sampleRate, old = S.introN;
@@ -208,28 +226,34 @@ async function go() {
   if (introWanted()) loadIntro().catch(() => {});
   if (!S.loaded) {
     S.busy = true; $("rb-go").disabled = true; $("rb-busy").hidden = false;
+    busyMark(true);
     try {
       progress("decode", 0);
-      const ctx = getCtx();
-      const buf = await ctx.decodeAudioData(await S.src.blob.arrayBuffer());
+      getCtx();
+      // the file read once: its fingerprint (its separated bass is kept on the phone under it), then the audio
+      const bytes = await S.src.blob.arrayBuffer();
+      let key = "";
+      try { if (!S.src.hash) { const hsh = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)); S.src.hash = Array.from(hsh.slice(0, 10), (b) => b.toString(16).padStart(2, "0")).join(""); } key = S.src.hash; } catch {}
+      const buf = await decodeAt(bytes, SONG_RATE);
       if (buf.duration > 20 * 60) throw new Error("That song is over 20 minutes long. Pick a shorter one.");
       S.origBuf = buf;
       if (!S.src.duration) { S.src.duration = buf.duration; paintSlow(); }
+      if (introWanted()) loadIntro(buf.sampleRate).catch(() => {});
       progress("decode", 1);
       const chs = [buf.getChannelData(0).slice(), (buf.numberOfChannels > 1 ? buf.getChannelData(1) : buf.getChannelData(0)).slice()];
-      // the song's fingerprint: its separated bass is kept on the phone under it
-      let key = "";
-      try { key = S.src.hash || (S.src.hash = await fingerprint(S.src.blob)); } catch {}
       S.worker = new Worker(new URL("./rebass-worker.js", import.meta.url), { type: "module" });
       S.worker.onmessage = onWorker;
       S.worker.onerror = (e) => fail(e.message || "The rebass stopped unexpectedly.");
       await new Promise((res, rej) => {
         S._loaded = res; S._failed = rej;
-        S.worker.postMessage({ type: "load", chs, sr: buf.sampleRate, key }, chs.map((c) => c.buffer));
+        // (an iPhone: the separator only on its graphics chip; otherwise the lighter rebass, as the processor's way needs
+        // more memory than Safari gives a page)
+        S.worker.postMessage({ type: "load", chs, sr: buf.sampleRate, key, quick: light, gpuOnly: isIOS() }, chs.map((c) => c.buffer));
       });
       S.loaded = true;
     } catch (e) {
       S.busy = false; $("rb-go").disabled = false; $("rb-busy").hidden = true;
+      busyMark(false);
       toast(e && e.message && !/decode/i.test(e.message) ? e.message : "This phone can't read that file. Try an MP3, M4A or WAV.");
       return;
     }
@@ -244,10 +268,12 @@ function render() {
   S.busy = true; S.again = false;
   readParams();
   $("rb-go").disabled = true; $("rb-busy").hidden = false;
+  busyMark(true);
   S.worker.postMessage({ type: "render", params: S.params });
 }
 
 function fail(msg) {
+  busyMark(false);
   S.busy = false; $("rb-go").disabled = !S.src; $("rb-busy").hidden = true;
   if (S._failed) { S._failed(new Error(msg)); S._failed = null; }
   toast(msg);
@@ -259,11 +285,12 @@ function onWorker(e) {
   else if (m.type === "analysis") {
     $("rb-quick").hidden = true;
     S.mode = m.mode;
-    if (m.mode === "quick" && m.why && !/cancelled/.test(m.why)) toast("Rebassed the quick way this time.");
+    if (m.mode === "quick" && m.why && !/cancelled|no-gpu/.test(m.why)) toast("Rebassed the quick way this time.");
     if (S._loaded) { S._loaded(); S._loaded = null; }
   }
   else if (m.type === "error") fail(m.message);
   else if (m.type === "result") {
+    busyMark(false);
     const ctx = getCtx(), sr = S.origBuf.sampleRate;
     const wasPlaying = !!S.pl, frac = S.outBuf ? curTime() / S.outBuf.duration : 0;
     stopPreview();

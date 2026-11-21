@@ -8,7 +8,8 @@ Converted for the app:
                     its weights at the same places in the external data. ONNX Runtime hands a run's in-between memory
                     back only when the run ends: one run per 7.8 s piece held ~2.4 GB on the graphics chip, stage by
                     stage it holds ~0.3 GB. The stages give exactly the same numbers as the whole (checked: no
-                    difference at all on a real piece). Gzipped. (The app uses this; bass-sep.onnx.gz is kept for 1.6.)
+                    difference at all on a real piece). Gzipped. (bass-sep.stages2.gz is the same with each stage's weights laid out for that stage alone, so the app expands one
+                    stage's at a time, 34 MB at most instead of all 168 MB: the one the app uses since 2.1.1.)
   bass-sep.q8       the weights: matrices as int8 with an fp16 scale per 64 weights of each output channel, the rest
                     as fp16 (exactly the published fp16 values). The app expands it to the fp32 external data.
 Checked on the 50 MUSDB18 test clips (7 s preview set): bass SDR median 9.12 dB with these weights through the app's own

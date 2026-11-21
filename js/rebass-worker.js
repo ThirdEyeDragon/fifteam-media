@@ -11,7 +11,7 @@ import { rebassMix, slowDown, freeverb, mixMono, cleanLowEnd } from "./dsp.js";
 import { analyzeBassLine, planMapping, renderBass, makeFreqAt, st2hz } from "./bassline.js";
 import { getStem, putStem, pack, unpack } from "./stems.js";
 
-let base = null, sr = 0, key = "", job = 0, sepWorker = null, sepStop = null;
+let base = null, sr = 0, key = "", job = 0, sepWorker = null, sepStop = null, gpuOnly = false;
 let an0 = null, song0 = null, mode = "", backend = "", prep = null, refPrep = null, refSent = "";
 const post = (stage, p, extra) => postMessage({ type: "progress", stage, p, ...extra });
 
@@ -41,7 +41,8 @@ async function separated(myJob) {
       else if (m.type === "error") { w.terminate(); rej(new Error(m.message)); }
     };
     w.onerror = (e) => { w.terminate(); rej(new Error(e.message || "separator")); };
-    w.postMessage({ chs: base.map((c) => c.slice()), sr });
+    const copy = base.map((c) => c.slice());            // (handed over, not cloned: one copy of the song, not two)
+    w.postMessage({ chs: copy, sr, gpuOnly }, copy.map((c) => c.buffer));
   }).finally(() => { sepWorker = null; sepStop = null; });
   if (myJob !== job) throw new Error("cancelled");
   const packed = pack(b, sr);
@@ -51,6 +52,7 @@ async function separated(myJob) {
 }
 
 async function load(m) {
+  gpuOnly = !!m.gpuOnly;
   const myJob = ++job;
   base = m.chs; sr = m.sr; key = m.key || ""; an0 = song0 = prep = refPrep = null; refSent = ""; backend = "";
   let stem = null, why = "";

@@ -287,27 +287,33 @@ export function freeverb(chs, sr, { room = 0.86, damp = 0.32, wet = 0.32, width 
 // ---------------------------------------------------------------------------------------------------- mixing without clipping
 /** Sliding minimum over the centred window [i-h, i+h] (a monotonic queue, O(n)). */
 export function slidingMin(x, h) {
-  const n = x.length, out = new Float32Array(n), dq = new Int32Array(n);
+  // (a queue of positions in a ring the size of the window, not the length of the song)
+  const n = x.length, out = new Float32Array(n);
+  let cap = 1; while (cap < 2 * h + 2) cap <<= 1;
+  const dq = new Int32Array(cap), M = cap - 1;
   let head = 0, tail = 0, r = 0;
   for (let i = 0; i < n; i++) {
     const last = Math.min(n - 1, i + h);
     while (r <= last) {
-      while (tail > head && x[dq[tail - 1]] >= x[r]) tail--;
-      dq[tail++] = r++;
+      while (tail > head && x[dq[(tail - 1) & M]] >= x[r]) tail--;
+      dq[tail++ & M] = r++;
     }
-    while (dq[head] < i - h) head++;
-    out[i] = x[dq[head]];
+    while (dq[head & M] < i - h) head++;
+    out[i] = x[dq[head & M]];
   }
   return out;
 }
 
-/** Centred moving average over 2h+1 (prefix sums in doubles). */
-function boxAverage(x, h) {
-  const n = x.length, out = new Float32Array(n), cs = new Float64Array(n + 1);
-  for (let i = 0; i < n; i++) cs[i + 1] = cs[i] + x[i];
+/** Centred moving average over 2h+1 (a running sum in doubles; inPlace: written back into x). */
+function boxAverage(x, h, inPlace = false) {
+  const n = x.length, out = inPlace ? x : new Float32Array(n), W = 2 * h + 1, ring = new Float32Array(W);
+  let sum = 0, cnt = 0;
+  for (let j = 0; j <= Math.min(h, n - 1); j++) { sum += x[j]; cnt++; ring[j % W] = x[j]; }
   for (let i = 0; i < n; i++) {
-    const a = Math.max(0, i - h), b = Math.min(n, i + h + 1);
-    out[i] = (cs[b] - cs[a]) / (b - a);
+    out[i] = sum / cnt;
+    const drop = i - h, add = i + h + 1;
+    if (drop >= 0) { sum -= ring[drop % W]; cnt--; }
+    if (add < n) { sum += x[add]; cnt++; ring[add % W] = x[add]; }
   }
   return out;
 }
@@ -378,7 +384,7 @@ export function rebassMix(chs, bass, bassPeak, sr, opts) {
   for (const m of music) for (let i = 0; i < n; i++) { const a = m[i] < 0 ? -m[i] : m[i]; if (a > 0.9999) { const g = 0.9999 / a; if (g < sNeed[i]) sNeed[i] = g; over0 = true; } }
   let gSong = 1, touched = 0;
   if (over0) {
-    const ks = boxAverage(slidingMin(sNeed, h0), h0);
+    const ks = boxAverage(slidingMin(sNeed, h0), h0, true);
     for (let i = 1; i < n; i++) if (ks[i] > ks[i - 1] + rel0) ks[i] = ks[i - 1] + rel0;
     for (let i = 0; i < n; i++) { const g = Math.min(ks[i], sNeed[i]); if (g < 0.999) touched++; if (g < gSong) gSong = g; for (const m of music) m[i] *= g; }
   }
@@ -402,7 +408,7 @@ export function rebassMix(chs, bass, bassPeak, sr, opts) {
       need[i] = g;
     }
     // eased: never more than allowed (a minimum over +-h, then an average over +-h, then a slow recovery)
-    k = boxAverage(slidingMin(need, h), h);
+    k = boxAverage(slidingMin(need, h), h, true);
     for (let i = 1; i < n; i++) if (k[i] > k[i - 1] + rel) k[i] = k[i - 1] + rel;
     for (let i = 0; i < n; i++) { const g = Math.min(k[i], need[i]); k[i] = g; const b = bass[i] * A * g; for (let c = 0; c < nCh; c++) out[c][i] = music[c][i] + b; }
     progress && progress(0.3 + pass * 0.1);
