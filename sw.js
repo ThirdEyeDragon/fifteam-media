@@ -1,6 +1,6 @@
 // FifTeam Media's service worker: the app works offline, and audio files shared to it from other apps (Android) land in
 // its inbox. Bump VERSION whenever the app's files change.
-const VERSION = "fifteam-v14";
+const VERSION = "fifteam-v15";
 const SHELL = [
   "./", "index.html", "manifest.webmanifest", "css/app.css",
   "js/app.js", "js/ui.js", "js/store.js", "js/tags.js", "js/tilt.js", "js/player.js", "js/library.js",
