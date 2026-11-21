@@ -12,7 +12,7 @@ import { pickImage } from "./image.js";
 
 const S = {
   src: null, worker: null, loaded: false, origBuf: null, refBuf: null, refKey: "", outBuf: null, res: null, version: 0,
-  busy: false, again: false, params: { lo: 25, hi: 45, db: -3, speed: 1, reverb: false },
+  busy: false, again: false, params: { lo: 25, hi: 45, db: -5, speed: 1, reverb: false },
   pl: null, ab: "rebass", an: null, spec: null, raf: 0, nameEdited: false, file: null, fileKey: "",
   cover: null, coverUrl: null, segs: [], ovImg: null, disp: null, pk: null, glow: [], lastT: 0, lastRead: 0, drag: null,
   introN: 0, scrubT: null, bg: {},
@@ -147,19 +147,21 @@ function pickFile() {
 function readParams() {
   const slow = $("rb-slow").checked;
   S.params = {
-    lo: +$("rb-lo").value, hi: +$("rb-hi").value, db: +$("rb-db").value,
+    // either handle can be the higher one, and both can sit on the same frequency (the whole bass on one note)
+    ...range(), db: +$("rb-db").value,
     speed: slow ? +$("rb-speed").value / 100 : 1, reverb: $("rb-reverb").checked,
   };
 }
+/** The range the two handles mark: the lower of the two to the higher. */
+function range() { const a = +$("rb-lo").value, b = +$("rb-hi").value; return { lo: Math.min(a, b), hi: Math.max(a, b) }; }
+export const hzText = (lo, hi) => (lo === hi ? `${lo}` : `${lo}–${hi}`);
 function paintRange() {
-  const lo = $("rb-lo"), hi = $("rb-hi");
-  const min = +lo.min, max = +lo.max;
-  const a = ((+lo.value - min) / (max - min)) * 100, b = ((+hi.value - min) / (max - min)) * 100;
+  const r = range(), min = +$("rb-lo").min, max = +$("rb-lo").max;
+  const a = ((r.lo - min) / (max - min)) * 100, b = ((r.hi - min) / (max - min)) * 100;
   $("rb-fill").style.left = `calc(${a}% + ${11 - a * 0.22}px)`;
   $("rb-fill").style.width = `calc(${b - a}% - ${(b - a) * 0.22}px)`;
-  $("rb-range-val").innerHTML = `${lo.value}–${hi.value}<small>Hz</small>`;
-  document.querySelectorAll("#rb-presets .chip").forEach((c) => c.classList.toggle("on", c.dataset.r === `${lo.value},${hi.value}`));
-  const oct = +hi.value / +lo.value;
+  $("rb-range-val").innerHTML = `${hzText(r.lo, r.hi)}<small>Hz</small>`;
+  document.querySelectorAll("#rb-presets .chip").forEach((c) => c.classList.toggle("on", c.dataset.r === `${r.lo},${r.hi}`));
 }
 function paintDb() {
   const r = $("rb-db"); fill(r);
@@ -180,7 +182,7 @@ function defaultName() {
   if (!S.src) return "";
   const p = S.params, db = p.db === 0 ? "0" : `-${Math.abs(p.db)}`;
   const slow = p.speed < 1 ? `Slowed ${Math.round(p.speed * 100)}%${p.reverb ? " + Reverb" : ""}, ` : (p.reverb ? "Reverb, " : "");
-  return `${S.src.title} (${slow}Rebass ${p.lo}-${p.hi}Hz ${db}dB)`;
+  return `${S.src.title} (${slow}Rebass ${p.lo === p.hi ? p.lo : `${p.lo}-${p.hi}`}Hz ${db}dB)`;
 }
 let reT = 0;
 function settingsChanged() {
@@ -448,7 +450,7 @@ function drawSpec(dt) {
     for (const db of [-20, -40, -60, -80]) { const y = yOf(db); b.strokeStyle = "rgba(190,196,255,0.05)"; b.beginPath(); b.moveTo(0, y); b.lineTo(w, y); b.stroke(); b.fillStyle = "rgba(190,196,255,0.32)"; b.fillText(`${db}`, 4, y - 3); }
     const xa = xOf(p.lo, w), xb = xOf(p.hi, w);
     const band = b.createLinearGradient(0, 8, 0, h - 20); band.addColorStop(0, "rgba(178,92,255,0.10)"); band.addColorStop(1, "rgba(61,123,255,0.04)");
-    b.fillStyle = band; b.fillRect(xa, 8, xb - xa, h - 28);
+    b.fillStyle = band; b.fillRect(Math.min(xa, (xa + xb) / 2 - 1.5), 8, Math.max(3, xb - xa), h - 28);   // (one frequency: a thin line)
   }), 0, 0, w, h);
   const playing = !!S.pl;
   let moving = playing;
@@ -548,7 +550,7 @@ function drawRoll() {
       if (named && pxPerSemi * 3 > 10 && y > top + 6 && y < bot - 4) { b.fillStyle = "rgba(190,196,255,0.42)"; b.fillText(noteName(f).split(" ")[0], 4, y - 6); }
     }
     const ra = yOf(S.params.hi), rb = yOf(S.params.lo);
-    b.fillStyle = "rgba(255,255,255,0.035)"; b.fillRect(0, ra, w, rb - ra);
+    b.fillStyle = "rgba(255,255,255,0.035)"; b.fillRect(0, Math.min(ra, (ra + rb) / 2 - 1.5), w, Math.max(3, rb - ra));
   }), 0, 0, w, h);
   // seconds along the bottom
   g.font = "600 10px Inter, system-ui, sans-serif"; g.textBaseline = "middle";
@@ -692,7 +694,7 @@ async function save() {
     else if (r === "downloaded") toast(`Saved to your Downloads as ${file.name}`, 5000);
   } catch (e) { toast("Couldn't save the file. " + (e.message || "")); }
 }
-const noteOf = (p) => `${p.speed < 1 ? Math.round(p.speed * 100) + "% · " : ""}${p.lo}–${p.hi} Hz · ${p.db === 0 ? "0" : "−" + Math.abs(p.db)} dB`;
+const noteOf = (p) => `${p.speed < 1 ? Math.round(p.speed * 100) + "% · " : ""}${hzText(p.lo, p.hi)} Hz · ${p.db === 0 ? "0" : "−" + Math.abs(p.db)} dB`;
 function share() {
   if (!S.outBuf) return;
   const name = () => $("rb-name").value.trim() || defaultName();
@@ -729,11 +731,7 @@ export function initRebass() {
   $("rb-pick-lib").onclick = pickFromLibrary;
   $("rb-pick-file").onclick = pickFile;
   $("rb-go").onclick = () => (S.loaded ? render() : go());
-  for (const id of ["rb-lo", "rb-hi"]) $(id).addEventListener("input", (e) => {
-    const lo = $("rb-lo"), hi = $("rb-hi");
-    if (+hi.value - +lo.value < 3) { if (e.target === lo) lo.value = +hi.value - 3; else hi.value = +lo.value + 3; }
-    paintRange(); settingsChanged();
-  });
+  for (const id of ["rb-lo", "rb-hi"]) $(id).addEventListener("input", () => { paintRange(); settingsChanged(); });
   $("rb-presets").addEventListener("click", (e) => {
     const c = e.target.closest(".chip"); if (!c) return;
     const [a, b] = c.dataset.r.split(","); $("rb-lo").value = a; $("rb-hi").value = b; paintRange(); settingsChanged();

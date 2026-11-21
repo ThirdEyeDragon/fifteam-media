@@ -89,6 +89,12 @@ for (const [lo, hi] of [[30, 40], [23, 30], [25, 45], [20, 60], [20, 35], [30, 5
     check(shape === 0 && tiny === 0 && out === 0, `${name} ${lo}-${hi}: clean mapping`);
   }
 }
+// both handles on one frequency: every note on exactly that frequency
+for (const f of [20, 30, 35, 41, 55, 90]) for (const [name, an] of [["trap", anT], ["rock", anK]]) {
+  const plan = planMapping(an, f, f), hz = [...new Set(lineOf(an, plan).map((v) => st2hz(v).toFixed(2)))];
+  if (f === 35 || f === 41) console.log(`${name} ${f} Hz alone: ${plan.describe} | pitches ${hz.join(" ")}`);
+  check(hz.length === 1 && Math.abs(+hz[0] - f) < 0.01, `${name}: everything on ${f} Hz`);
+}
 {
   const p = planMapping(anK, 20, 60);
   check(p.kind === "move" && p.shift % 12 === 0, "rock 20-60: an octave move (the same notes)");

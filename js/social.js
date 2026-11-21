@@ -11,6 +11,7 @@ import { player } from "./player.js";
 import { fitJpeg, squareJpeg } from "./image.js";
 import { makeFile, sizeText } from "./export.js";
 import { openPerson, myPublicKey, initDms } from "./dms.js";
+import { activityChanged, initActivity } from "./activity.js";
 
 const NAME_KEY = "fifteam-social-name", MINE_KEY = "fifteam-social-mine", ME_KEY = "fifteam-social-me", AV_KEY = "fifteam-social-avatar";
 const MAX_MSG = 9.5 * 1024 * 1024;   // what one post may carry (10 MB), with room to spare
@@ -816,6 +817,7 @@ async function refresh({ manual = false } = {}) {
   try { await S.loading; } finally { S.loading = null; }
   if (!S.error && (S.avatar || S.name)) syncProfile();
   if (S.cs && !S.loading) paintSheet();
+  if (!S.error) activityChanged();
   if (manual || firstTime || sigIds(S.feed) !== S.ids || S.error !== S.shownError || JSON.stringify(S.profiles) !== before) render();
   else for (const p of S.feed) {
     if (!S.liking.has(p.id)) document.querySelectorAll(`#so-body .so-like[data-id="${p.id}"]`).forEach((btn) => paintLike(btn, p));
@@ -882,13 +884,18 @@ export function initSocial() {
   bus.on("social-post", (song) => { location.hash = "#social"; setTimeout(() => composer({ song }), 50); });
   pullToRefresh();
   initDms();
+  initActivity();
   // new posts and likes come in on their own while the feed is open
   setInterval(() => { if (location.hash === "#social" && document.visibilityState === "visible" && !S.loading) refresh(); }, 45000);
 }
 /** The profiles (and this phone's on them, with its key for messages), loaded if they haven't been (fresh: unless just now). */
 async function ensureProfiles(fresh) {
   await config();
-  if (!S.loadedAt || Date.now() - S.loadedAt > (fresh ? 5000 : 60000)) { const list = await readIndex(); S.profiles = list.profiles; if (!S.loadedAt) { S.feed = keepGone(list); } S.loadedAt = Date.now(); }
+  if (!S.loadedAt || Date.now() - S.loadedAt > (fresh ? 5000 : 40000)) {
+    // (the feed too: the bell's activity comes from it; the Social screen redraws from it the next time it refreshes)
+    const list = await readIndex(); S.profiles = list.profiles; S.feed = keepGone(list); S.loadedAt = Date.now();
+    activityChanged();
+  }
   if (S.name) syncProfile();
 }
 /** A phone by its username (older posts don't say which phone made them): the latest profile with that name. */
@@ -897,5 +904,5 @@ function findPhone(name) {
   for (const [k, v] of Object.entries(S.profiles || {})) if (v.name && v.name === name && (!best || v.at > best[1].at)) best = [k, v];
   return best ? best[0] : "";
 }
-export const api = { state: S, config, dc, avatarEl, showPicture, ago, icon, findPhone, ensureProfiles };
+export const api = { state: S, config, dc, avatarEl, showPicture, ago, icon, findPhone, ensureProfiles, openComments };
 export const social = { state: S, prepareVideo };

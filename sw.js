@@ -1,12 +1,12 @@
 // FifTeam Media's service worker: the app works offline, and audio files shared to it from other apps (Android) land in
 // its inbox. Bump VERSION whenever the app's files change.
-const VERSION = "fifteam-v21";
+const VERSION = "fifteam-v22";
 const SHELL = [
   "./", "index.html", "manifest.webmanifest", "css/app.css",
   "js/app.js", "js/ui.js", "js/store.js", "js/tags.js", "js/tilt.js", "js/player.js", "js/library.js",
   "js/rebass.js", "js/rebass-worker.js", "js/tones.js", "js/export.js", "js/dsp.js", "js/mp3-worker.js",
   "js/knob.js", "js/eq.js", "js/image.js", "js/limiter-worklet.js", "js/settings.js", "js/demo.js", "js/bassline.js", "js/share.js",
-  "js/demucs.js", "js/social.js", "js/dms.js", "js/separator.js", "js/sep-worker.js", "js/stems.js", "vendor/ort/ort.webgpu.min.mjs", "vendor/ort/ort-wasm-simd-threaded.asyncify.mjs",
+  "js/demucs.js", "js/social.js", "js/dms.js", "js/activity.js", "js/separator.js", "js/sep-worker.js", "js/stems.js", "vendor/ort/ort.webgpu.min.mjs", "vendor/ort/ort-wasm-simd-threaded.asyncify.mjs",
   "icons/icon-192.png", "icons/icon-512.png", "icons/maskable-512.png", "icons/apple-touch-icon.png",
 ];
 
@@ -41,6 +41,18 @@ function isolated(r) {
   h.set("Cross-Origin-Opener-Policy", "same-origin");
   return new Response(r.body, { status: r.status, statusText: r.statusText, headers: h });
 }
+
+// a tap on a message notification: the app, at that conversation
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  const dm = e.notification.data && e.notification.data.dm;
+  e.waitUntil((async () => {
+    const wins = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    const w = wins.find((c) => c.url.startsWith(self.registration.scope)) || wins[0];
+    if (w) { try { await w.focus(); } catch {} w.postMessage({ type: "open-dm", dm }); return; }
+    await self.clients.openWindow(self.registration.scope + (dm ? "?dm=" + encodeURIComponent(dm) : "") + "#social");
+  })());
+});
 
 self.addEventListener("fetch", (e) => {
   const req = e.request, url = new URL(req.url);

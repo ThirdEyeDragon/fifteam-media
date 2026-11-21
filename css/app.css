@@ -517,3 +517,16 @@ a.btn { color: inherit; text-decoration: none; }
 .cs-to { display: flex; align-items: center; justify-content: space-between; font-size: 13px; color: var(--muted); padding: 0 4px; }
 .cs-to[hidden] { display: none; }
 .cs-x { color: var(--dim); font-size: 18px; padding: 0 6px; }
+
+/* activity (the bell) */
+.act-row .dm-mid { white-space: normal; }
+.act-what { display: block; font-size: 14px; line-height: 1.35; color: var(--ink); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.act-what b { font-weight: 700; }
+.so-post.flash { animation: so-flash 1.6s ease-out; }
+@keyframes so-flash { 0%, 30% { box-shadow: 0 0 0 2px var(--purple), 0 0 28px rgba(150, 90, 255, 0.45); } 100% { box-shadow: 0 0 0 0 rgba(150, 90, 255, 0); } }
+/* four buttons up top: Install shrinks to its icon on narrow phones */
+@media (max-width: 440px) { #btn-install .inst-txt { display: none; } #btn-install { padding-left: 12px; padding-right: 12px; } #btn-install svg { margin: 0; } }
+.act-what b { white-space: normal; overflow: visible; }
+.act-row.unread .dm-mid b::after { content: none; }
+.act-row.unread { background: rgba(150, 90, 255, 0.10); }
+.act-row.unread .dm-time::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: #ff4f87; vertical-align: 1px; }

@@ -236,16 +236,51 @@ export function openPerson({ by, user }) {
   });
 }
 
-/** The unread count on the messages button, kept up to date while the app is open. */
+// ---------------------------------------------------------------------------------------------------- notifications
+// New messages to this phone, when switched on in Settings: a notification while the app is in the background, a
+// banner while it's open (unless that conversation is the one open). With no server, the app has to be running to
+// look for them: open, or in the background before the phone puts it to sleep.
+const NOTIFY = "fifteam-dm-notify", TOLD = "fifteam-dm-told";
+export const canNotify = () => "Notification" in window;
+export const notifyOn = () => { try { return localStorage.getItem(NOTIFY) === "1" && canNotify() && Notification.permission === "granted"; } catch { return false; } };
+export function setNotify(on) { try { localStorage.setItem(NOTIFY, on ? "1" : "0"); } catch {} }
+export const notifyWanted = () => { try { return localStorage.getItem(NOTIFY) === "1"; } catch { return false; } };
+async function tellNew() {
+  const me = api.state.me, incoming = mineOnly().filter((m) => m.t === me && m.f !== me);
+  let told = null; try { told = JSON.parse(localStorage.getItem(TOLD) || "null"); } catch {}
+  const first = !Array.isArray(told);
+  const known = new Set(first ? [] : told), fresh = first ? [] : incoming.filter((m) => !known.has(m.id));
+  try { localStorage.setItem(TOLD, JSON.stringify(incoming.map((m) => m.id).slice(-300))); } catch {}
+  if (!fresh.length || !notifyOn()) return;
+  const r = lastRead();
+  for (const m of fresh.slice(-4)) {
+    if (m.at <= (r[m.f] || 0)) continue;
+    const text = (await open(m)) || "New message", who = nameOf(m.f);
+    if (document.visibilityState === "visible") { if (D.chat !== m.f) toast(`${who}: ${text}`.slice(0, 90), 3000); continue; }
+    const opts = { body: text.slice(0, 160), tag: "fifteam-dm-" + m.f, renotify: true, icon: "icons/icon-192.png", badge: "icons/icon-192.png", data: { dm: m.f } };
+    try { const reg = await navigator.serviceWorker.ready; await reg.showNotification(who, opts); }
+    catch { try { const n = new Notification(who, opts); n.onclick = () => { window.focus(); openChat(m.f); n.close(); }; } catch {} }
+  }
+}
+
+/** The unread count on the messages button, kept up to date while the app is open (and with notifications on, while
+ * it's in the background too, as long as the phone lets it run). */
 export function initDms() {
   const btn = $("btn-dms");
   if (btn) btn.onclick = () => openInbox();
-  const tick = async () => {
-    if (document.visibilityState !== "visible" || !api.state.me) return;
-    try { await api.ensureProfiles(); await load(); paintBadge(); } catch {}
+  const tick = D.check = async () => {
+    if ((document.visibilityState !== "visible" && !notifyOn()) || !api.state.me) return;
+    try { await api.ensureProfiles(); await load(); paintBadge(); await tellNew(); } catch {}
   };
   setTimeout(tick, 2500);
   setInterval(tick, 45000);
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") tick(); });
+  // a tap on a message notification: that conversation
+  if ("serviceWorker" in navigator) navigator.serviceWorker.addEventListener("message", (e) => { if (e.data && e.data.type === "open-dm" && PHONE.test(e.data.dm)) { location.hash = "#social"; openChat(e.data.dm); } });
+  const want = new URLSearchParams(location.search).get("dm");
+  if (want && PHONE.test(want)) {
+    history.replaceState(null, "", location.pathname + "#social");
+    setTimeout(async () => { try { await api.ensureProfiles(); } catch {} openChat(want); }, 1200);
+  }
 }
 export const dms = { state: D, open, myPublicKey };

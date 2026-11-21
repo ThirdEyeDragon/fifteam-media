@@ -247,6 +247,13 @@ try {
     for (let i = 0; i < 40; i++) { seenPic = await other.ev(`(() => { const p = [...document.querySelectorAll('#so-body .so-post')].find(p => p.textContent.includes('Fresh one')); return p ? p.querySelector('.so-av').style.backgroundImage : ''; })()`); if (/avatar\.jpg/.test(seenPic)) break; await sleep(250); }
     console.log("another phone sees Alice's picture:", /avatar\.jpg/.test(seenPic));
     check(/avatar\.jpg/.test(seenPic), "another phone shows the poster's picture");
+    // Alice switches message notifications on, in Settings
+    await send("Browser.grantPermissions", { permissions: ["notifications"], origin: `http://127.0.0.1:${port}` });
+    await ev(`document.getElementById('btn-settings').click(), 1`); await sleep(400);
+    await ev(`document.getElementById('set-nt').click(), 1`); await sleep(600);
+    console.log("notifications setting:", await ev(`document.getElementById('set-nt-pill').textContent + ' | ' + document.getElementById('set-nt-why').textContent`));
+    check((await ev(`document.getElementById('set-nt').checked && localStorage.getItem('fifteam-dm-notify') === '1'`)), "message notifications switched on");
+    await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
     // a private message: from the other phone to Alice, by tapping her picture
     await other.ev(`localStorage.setItem('fifteam-social-name', 'Ben'), 1`); await other.open(`http://127.0.0.1:${port}/?again#social`, 3500);
     await other.ev(`new Promise(r => { const t = Date.now(); (function w() { [...document.querySelectorAll('#so-body .so-post')].some(p => p.textContent.includes('Fresh one')) || Date.now() - t > 15000 ? r(1) : setTimeout(w, 200); })(); })`);
@@ -263,6 +270,9 @@ try {
     // Alice: the badge, the inbox, the conversation, an answer
     await ev(`(async () => { const { api } = await import('./js/social.js'); await api.ensureProfiles(); return 1; })()`);
     for (let i = 0; i < 60; i++) { const n = await ev(`document.getElementById('dm-badge').hidden ? 0 : +document.getElementById('dm-badge').textContent`); if (n) break; await ev(`document.dispatchEvent(new Event('visibilitychange')), 1`); await sleep(500); }
+    const banner = await ev(`document.getElementById('toast').textContent`);
+    console.log("Alice's banner:", banner);
+    check(banner.includes("Ben: hey Alice, sick rebass"), "a banner for the new message (notifications on, app open)");
     console.log("Alice's messages badge:", await ev(`document.getElementById('dm-badge').hidden ? 'none' : document.getElementById('dm-badge').textContent`));
     await ev(`document.getElementById('btn-dms').click(), 1`);
     await until(`!!document.querySelector('#sheet-panel .dm-row')`, 10000, "Alice's inbox");
@@ -279,6 +289,53 @@ try {
     for (let i = 0; i < 40 && !benSees; i++) { benSees = await other.ev(`[...document.querySelectorAll('#sheet-panel .dm-bubble')].some(b => b.textContent.includes('thanks Ben'))`); await sleep(500); }
     console.log("Ben sees the answer:", benSees);
     check(benSees && dmNow().length === 2 && !/thanks Ben/.test(JSON.stringify(dmNow())), "messages both ways, sealed");
+    await other.send("Browser.grantPermissions", { permissions: ["notifications"], origin: `http://127.0.0.1:${port}` });
+    await other.ev(`(() => { localStorage.setItem('fifteam-dm-notify', '1'); document.getElementById('sheet').classList.remove('open');
+      window.__notes = []; ServiceWorkerRegistration.prototype.showNotification = function (t, o) { window.__notes.push({ t, body: o.body, tag: o.tag, dm: o.data && o.data.dm }); return Promise.resolve(); };
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' }); return 1; })()`);
+    await ev(`(() => { const f = document.querySelector('#sheet-panel .dm-form'); f.querySelector('input').value = 'you there?'; f.requestSubmit(); return 1; })()`);
+    for (let i = 0; i < 40 && dmNow().length < 3; i++) await sleep(250);
+    await sleep(500);
+    await other.ev(`import('./js/dms.js').then((m) => m.dms.state.check()).then(() => 1)`);
+    const notes = await other.ev(`JSON.stringify(window.__notes)`);
+    console.log("Ben's notification (app in the background):", notes);
+    const alice = Object.entries(profilesNow()).find(([, v]) => v.name === "Alice")[0];
+    const n0 = JSON.parse(notes);
+    check(n0.length === 1 && n0[0].t === "Alice" && n0[0].body === "you there?" && n0[0].dm === alice, "a notification for a message while the app is in the background");
+    // switched off: nothing
+    await other.ev(`(localStorage.setItem('fifteam-dm-notify', '0'), window.__notes = [], 1)`);
+    await ev(`(() => { const f = document.querySelector('#sheet-panel .dm-form'); f.querySelector('input').value = 'hello?'; f.requestSubmit(); return 1; })()`);
+    for (let i = 0; i < 40 && dmNow().length < 4; i++) await sleep(250);
+    await sleep(500);
+    await other.ev(`(() => { Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' }); return 1; })()`);
+    await other.ev(`import('./js/dms.js').then((m) => m.dms.state.check()).then(() => 1)`);
+    check((await other.ev(`window.__notes.length`)) === 0 && !(await other.ev(`document.getElementById('toast').textContent.includes('hello?')`)), "notifications off: none");
+    await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
+    // activity: Ben likes Alice's post and comments on it, replies to her comment on Eve's post and likes that comment
+    const ben = Object.entries(profilesNow()).find(([, v]) => v.name === "Ben")[0];
+    const editFeed = (fn) => { const k = msgs.get(INDEX).attachments[0].url.split("?")[0]; const d = JSON.parse(cdn.get(k).bytes.toString()); fn(d); msgs.set(INDEX, { id: INDEX, content: "FifTeam Social feed", attachments: [attach(INDEX, "feed.json", Buffer.from(JSON.stringify(d)), "application/json")] }); };
+    editFeed((d) => {
+      const mine = d.posts.find((x) => x.text && x.text.startsWith("Fresh one")), ev2 = d.posts.find((x) => x.id === eve), nice = ev2.comments.find((c) => c.text === "Nice one");
+      mine.likes = [...(mine.likes || []), ben];
+      mine.comments = [...(mine.comments || []), { id: "bencomment01", by: ben, user: "Ben", text: "Love this", at: Date.now(), likes: [] }];
+      ev2.comments.push({ id: "benreply0001", by: ben, user: "Ben", text: "agreed!", at: Date.now() + 1, re: nice.id, likes: [] });
+      nice.likes = [...(nice.likes || []), ben];
+    });
+    await sleep(5200);
+    await ev(`import('./js/social.js').then((m) => m.api.ensureProfiles(true)).then(() => 1)`);
+    await sleep(300);
+    console.log("Alice's bell:", await ev(`document.getElementById('act-badge').hidden ? 'none' : document.getElementById('act-badge').textContent`));
+    check((await ev(`document.getElementById('act-badge').textContent`)) === "4" && !(await ev(`document.getElementById('act-badge').hidden`)), "the bell counts 4 new");
+    await ev(`document.getElementById('btn-activity').click(), 1`); await sleep(500);
+    const acts = await ev(`[...document.querySelectorAll('#sheet-panel .act-row')].map(r => (r.classList.contains('unread') ? '* ' : '') + r.querySelector('.act-what').textContent + ' / ' + r.querySelector('small').textContent).join(' | ')`);
+    console.log("Alice's activity:", acts);
+    const want = ["Ben liked your post", "Ben commented: \u201cLove this\u201d", "Ben replied to your comment: \u201cagreed!\u201d", "Ben liked your comment \u201cNice one\u201d"];
+    check(want.every((t) => acts.includes(t)) && acts.split("* ").length - 1 === 4, "activity lists the likes, the comment and the reply, all new");
+    check((await ev(`document.getElementById('act-badge').hidden`)), "the bell's count cleared once looked at");
+    await shot("d9_activity");
+    await ev(`[...document.querySelectorAll('#sheet-panel .act-row')].find(r => r.textContent.includes('replied')).click(), 1`); await sleep(500);
+    console.log("tapping the reply:", await ev(`document.querySelector('#sheet-panel').className + ' | ' + [...document.querySelectorAll('#sheet-panel .cs-c p')].map(p => p.textContent).join(', ')`));
+    check((await ev(`document.querySelector('#sheet-panel').classList.contains('cs-panel') && [...document.querySelectorAll('#sheet-panel .cs-c p')].some(p => p.textContent === 'agreed!')`)), "tapping it opens that post's comments");
     await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
     other.close();
   }

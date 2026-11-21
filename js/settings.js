@@ -6,6 +6,8 @@
 import { $, toast, openSheet, closeSheet } from "./ui.js";
 import { demo } from "./demo.js";
 import { APP_VERSION } from "./app.js";
+import { canNotify, notifyWanted, setNotify } from "./dms.js";
+import { isIOS } from "./export.js";
 
 const K_PW = "fifteam-lock", K_LOCKED = "fifteam-locked", K_AUTO = "fifteam-autolock", K_WAIT = "fifteam-lock-wait", K_FAILS = "fifteam-lock-fails";
 const ls = {
@@ -108,6 +110,33 @@ export function openSettings() {
       demo.set(e.target.checked);
       const pill = $("set-demo-pill"); pill.textContent = demo.on ? "On" : "Off"; pill.classList.toggle("on", demo.on);
       if (demo.on) { closeSheet(); location.hash = "#player"; toast("Demo mode on. Play a song.", 2200); }
+    };
+
+    // notifications for new messages
+    const ntSec = el(`<div class="set-sec">
+      <div class="set-head"><svg><use href="#i-bell"/></svg>Notifications<span class="pill" id="set-nt-pill"></span></div>
+      <label class="switch"><span class="txt">New messages</span><input type="checkbox" id="set-nt"></label>
+      <span class="status" id="set-nt-why"></span>
+    </div>`);
+    p.append(ntSec);
+    const paintNt = () => {
+      const perm = canNotify() ? Notification.permission : "none", on = notifyWanted() && perm === "granted";
+      $("set-nt").checked = on;
+      const pill = $("set-nt-pill"); pill.textContent = on ? "On" : "Off"; pill.classList.toggle("on", on);
+      $("set-nt-why").textContent = perm === "none"
+        ? (isIOS() ? "On iPhone, add FifTeam Media to your Home Screen first (Share, then Add to Home Screen), then turn this on from there." : "This browser can't show notifications.")
+        : perm === "denied" ? "Notifications are blocked for FifTeam Media. Allow them in your phone's settings, then turn this on."
+        : on ? "You'll get a notification when someone messages you while FifTeam Media is open or in the background." : "";
+    };
+    paintNt();
+    $("set-nt").onchange = async (e) => {
+      if (!e.target.checked) { setNotify(false); paintNt(); return; }
+      if (!canNotify()) { paintNt(); return; }
+      let perm = Notification.permission;
+      if (perm === "default") { try { perm = await Notification.requestPermission(); } catch { perm = "denied"; } }
+      setNotify(perm === "granted");
+      paintNt();
+      if (perm === "granted") toast("Message notifications on");
     };
 
     // the bass separator: downloaded on the first rebass and kept (with the last few songs' separated basses)

@@ -279,7 +279,7 @@ export function openCodeSheet({ prefill = "", onRecipe, onLockedFile }) {
 /** What a received rebass code describes, for the sheet that says what's needed. */
 export function describeRecipe(r) {
   const s = r.settings || {};
-  const parts = [`${s.lo}–${s.hi} Hz`, `${s.db === 0 ? "0" : "−" + Math.abs(s.db)} dB`];
+  const parts = [`${s.lo === s.hi ? s.lo : `${s.lo}–${s.hi}`} Hz`, `${s.db === 0 ? "0" : "−" + Math.abs(s.db)} dB`];
   if (s.speed && s.speed < 1) parts.push(`slowed ${Math.round(s.speed * 100)}%`);
   if (s.reverb) parts.push("reverb");
   return `${r.title}${r.artist ? " · " + r.artist : ""} (${fmtTime(r.duration)}) · ${parts.join(", ")}`;
