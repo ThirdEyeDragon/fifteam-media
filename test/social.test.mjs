@@ -50,6 +50,8 @@ function multipart(body, ctype) {
   return parts;
 }
 const json = (o, status = 200) => ({ status, type: "application/json", body: Buffer.from(JSON.stringify(o)) });
+// another phone's write landing just after this phone checked its own: armed, the next feed write is undone right after it's read back
+let clobber = null;
 function discord(method, url, headers, body) {
   const u = new URL(url);
   if (u.host === "cdn.discordapp.com") { const f = cdn.get(url.split("?")[0]); return f ? { status: 200, type: f.type, body: f.bytes } : { status: 404, type: "text/plain", body: Buffer.from("no") }; }
@@ -57,12 +59,17 @@ function discord(method, url, headers, body) {
   const base = `/api/v10/webhooks/${HOOK}/${TOKEN}`;
   if (!u.pathname.startsWith(base)) return json({ message: "Unknown Webhook", code: 10015 }, 404);
   const rest = u.pathname.slice(base.length), m = /^\/messages\/(\d+)$/.exec(rest);
-  if (method === "GET" && m) return msgs.has(m[1]) ? json(msgs.get(m[1])) : json({ message: "Unknown Message" }, 404);
+  if (method === "GET" && m) {
+    const r = msgs.has(m[1]) ? json(msgs.get(m[1])) : json({ message: "Unknown Message" }, 404);
+    if (clobber && clobber.state === "written" && m[1] === INDEX) { msgs.set(INDEX, clobber.before); cdn.set(...clobber.bytes); clobber.state = "done"; }
+    return r;
+  }
   if (method === "DELETE" && m) { if (!msgs.has(m[1])) return json({ message: "Unknown Message" }, 404); msgs.delete(m[1]); return { status: 204, type: "text/plain", body: Buffer.alloc(0) }; }
   if ((method === "POST" && rest === "") || (method === "PATCH" && m)) {
     const parts = multipart(body, headers["Content-Type"] || headers["content-type"]);
     const payload = JSON.parse(parts.payload_json.data.toString());
     const id = m ? m[1] : String(nextId++);
+    if (clobber && clobber.state === "armed" && id === INDEX) { const k = msgs.get(INDEX).attachments[0].url.split("?")[0]; clobber.before = msgs.get(INDEX); clobber.bytes = [k, cdn.get(k)]; clobber.state = "written"; }
     const atts = Object.entries(parts).filter(([k]) => k.startsWith("files[")).map(([, p]) => attach(id, p.filename, Buffer.from(p.data), p.filename.endsWith(".json") ? "application/json" : p.filename.endsWith(".mp4") ? "video/mp4" : p.filename.endsWith(".webm") ? "video/webm" : "image/jpeg"));
     msgs.set(id, { id, content: payload.content, attachments: atts });
     if (!m) posted.push({ id, payload, files: atts.map((a) => [a.filename, cdn.get(a.url.split("?")[0]).bytes]) });
@@ -169,6 +176,15 @@ try {
   check(eveComments().length === 0, "own comment deleted (its reply with it)");
   await say("Nice one");
   for (let i = 0; i < 40 && !eveComments().length; i++) await sleep(200);
+  // another phone's older copy of the feed lands right after this one was saved: the comment is put back by itself
+  clobber = { state: "armed" };
+  await say("Second thought");
+  for (let i = 0; i < 40 && clobber.state !== "done"; i++) await sleep(100);
+  const lost = !eveComments().some((c) => c.text === "Second thought");
+  for (let i = 0; i < 60 && !eveComments().some((c) => c.text === "Second thought"); i++) await sleep(200);
+  console.log("overwritten by another phone:", lost, "| put back:", eveComments().some((c) => c.text === "Second thought"));
+  check(lost && eveComments().some((c) => c.text === "Second thought") && eveComments().some((c) => c.text === "Nice one"), "a comment written over by another phone comes back");
+  clobber = null;
   await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
   console.log("count on the post:", await ev(`${eveCard}.querySelector('.so-cbtn').textContent`));
 

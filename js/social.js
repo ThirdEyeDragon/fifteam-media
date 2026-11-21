@@ -76,8 +76,24 @@ async function writeIndex(posts) {
   await dc(`/messages/${S.cfg.index}`, { method: "PATCH", form: f });
 }
 const keepGone = (list) => { const out = list.filter((p) => !S.gone.has(p.id)); out.profiles = list.profiles || {}; return out; };
-/** Change the feed list: read it fresh, change it, write it, check it took (someone posting at the same moment). */
-async function changeIndex(change, check, quiet) {
+/** Change the feed list: read it fresh, change it, write it, check it took (someone posting at the same moment).
+ *  This phone's changes go one at a time (a profile update and a comment sent together would otherwise write over
+ *  each other), and each is looked at again a moment later: another phone that read the list just before this write
+ *  can land its own copy on top of it, and then the change is made again (unless a newer one from here followed it). */
+let indexQueue = Promise.resolve(), indexSeq = 0;
+function changeIndex(change, check) {
+  const seq = ++indexSeq;
+  const run = indexQueue.then(() => changeIndexNow(change, check));
+  indexQueue = run.catch(() => {});
+  run.then(() => setTimeout(() => {
+    indexQueue = indexQueue.then(async () => {
+      if (indexSeq !== seq) return;
+      if (!check(await readIndex())) await changeIndexNow(change, check);
+    }).catch(() => {});
+  }, 3000), () => {});
+  return run;
+}
+async function changeIndexNow(change, check) {
   for (let attempt = 0; attempt < 3; attempt++) {
     const posts = keepGone(await readIndex());
     change(posts);

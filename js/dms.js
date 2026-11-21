@@ -8,7 +8,7 @@ import { $, toast, openSheet, closeSheet } from "./ui.js";
 import { api } from "./social.js";
 
 const KEY = "fifteam-dm-key", READ = "fifteam-dm-read", MAX = 2000;
-const D = { msgs: [], loadedAt: 0, loading: null, keys: new Map(), plain: new Map(), chat: null, poll: 0 };
+const D = { msgs: [], loadedAt: 0, loading: null, keys: new Map(), plain: new Map(), chat: null, poll: 0, queue: Promise.resolve() };
 const b64u = (u8) => btoa(String.fromCharCode(...u8)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const unb64u = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
 const PHONE = /^[a-z0-9]{6,16}$/;
@@ -203,17 +203,22 @@ async function send(other, text) {
   D.plain.set(m.id, text.slice(0, 500));
   D.msgs = [...D.msgs, { ...m, sending: true }];
   paintChat();
-  try {
+  const put = async () => {
     for (let attempt = 0; attempt < 3; attempt++) {
       const now = await readStore();
       if (!now.some((x) => x.id === m.id)) { now.push(m); await writeStore(now); }
       const after = await readStore();
-      if (after.some((x) => x.id === m.id)) { D.msgs = after; break; }
+      if (after.some((x) => x.id === m.id)) { D.msgs = after; return; }
       if (attempt === 2) throw new Error("busy");
       await new Promise((r) => setTimeout(r, 400 + Math.random() * 800));
     }
-  } catch { D.msgs = D.msgs.filter((x) => x.id !== m.id); toast("Couldn't send that message. Try again."); }
+  };
+  // one at a time from this phone; and looked at again a moment later, in case another phone's copy landed on top of it
+  const run = D.queue.then(put);
+  D.queue = run.catch(() => {});
+  try { await run; } catch { D.msgs = D.msgs.filter((x) => x.id !== m.id); toast("Couldn't send that message. Try again."); paintChat(); return; }
   paintChat();
+  setTimeout(() => { D.queue = D.queue.then(async () => { if (!(await readStore()).some((x) => x.id === m.id)) { await put(); paintChat(); } }).catch(() => {}); }, 3000);
 }
 
 /** Who someone is (from a tap on their picture): their picture and name, and Message. */
