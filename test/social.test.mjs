@@ -60,7 +60,7 @@ function discord(method, url, headers, body) {
     const parts = multipart(body, headers["Content-Type"] || headers["content-type"]);
     const payload = JSON.parse(parts.payload_json.data.toString());
     const id = m ? m[1] : String(nextId++);
-    const atts = Object.entries(parts).filter(([k]) => k.startsWith("files[")).map(([, p]) => attach(id, p.filename, Buffer.from(p.data), p.filename.endsWith(".json") ? "application/json" : p.filename.endsWith(".mp4") ? "video/mp4" : "image/jpeg"));
+    const atts = Object.entries(parts).filter(([k]) => k.startsWith("files[")).map(([, p]) => attach(id, p.filename, Buffer.from(p.data), p.filename.endsWith(".json") ? "application/json" : p.filename.endsWith(".mp4") ? "video/mp4" : p.filename.endsWith(".webm") ? "video/webm" : "image/jpeg"));
     msgs.set(id, { id, content: payload.content, attachments: atts });
     if (!m) posted.push({ id, payload, files: atts.map((a) => [a.filename, cdn.get(a.url.split("?")[0]).bytes]) });
     return json(msgs.get(id));
@@ -137,6 +137,22 @@ try {
   check(eveLikes().length === 0 && (await ev(`document.querySelector('#so-body .so-like[data-id="${eve}"]').textContent`)) === "♥", "unliked");
   await ev(`document.querySelector('#so-body .so-like[data-id="${eve}"]').click(), 1`);
   for (let i = 0; i < 40 && !eveLikes().length; i++) await sleep(200);
+
+  // a comment on Eve's post: shown at once, saved to the feed under this phone; then deleted
+  const eveComments = () => (feedNow().find((x) => x.id === eve) || {}).comments || [];
+  const eveCard = `document.querySelector('#so-body .so-post[data-id="${eve}"]')`;
+  await ev(`${eveCard}.querySelector('.so-cbtn').click(), 1`); await sleep(200);
+  await ev(`(() => { const f = ${eveCard}.querySelector('.so-cform'); f.querySelector('input').value = 'Hard!'; f.requestSubmit(); return 1; })()`);
+  for (let i = 0; i < 40 && !eveComments().length; i++) await sleep(200);
+  await sleep(300);
+  console.log("comment saved:", JSON.stringify(eveComments().map((c) => ({ user: c.user, text: c.text, by: c.by === me }))), "| shown:", await ev(`[...${eveCard}.querySelectorAll('.so-comment')].map(c => c.textContent).join(' | ')`), "| count:", await ev(`${eveCard}.querySelector('.so-cbtn').textContent`));
+  check(eveComments().length === 1 && eveComments()[0].text === "Hard!" && eveComments()[0].by === me, "the comment is on the feed");
+  await shot("d5_comments");
+  await ev(`${eveCard}.querySelector('.so-cdel').click(), 1`);
+  for (let i = 0; i < 40 && eveComments().length; i++) await sleep(200);
+  check(eveComments().length === 0, "own comment deleted");
+  await ev(`(() => { const f = ${eveCard}.querySelector('.so-cform'); f.querySelector('input').value = 'Nice one'; f.requestSubmit(); return 1; })()`);
+  for (let i = 0; i < 40 && !eveComments().length; i++) await sleep(200);
 
   // someone's song: play it and keep it
   await ev(`document.querySelector('#so-body .so-song .so-play').click(), 1`); await sleep(800);
@@ -224,6 +240,61 @@ try {
   check(JSON.parse(pulled).ready && spinning, "pull to refresh");
   await until(`![...document.querySelectorAll('#so-body .so-post')].some(p => p.textContent.includes('My first rebass'))`, 10000, "bob's post to go");
   console.log("after Bob's message was deleted in Discord:", await text("#so-body .so-post .so-name b"));
+
+  // a video: made here (2 s, canvas), posted as it is (it's small), shown in the feed playing without sound
+  const vidB64 = await ev(`(async () => {
+    const c = document.createElement('canvas'); c.width = 320; c.height = 240; const g = c.getContext('2d');
+    const st = c.captureStream(30), type = ['video/webm;codecs=vp8', 'video/webm'].find(t => MediaRecorder.isTypeSupported(t));
+    const rec = new MediaRecorder(st, { mimeType: type }), parts = []; rec.ondataavailable = e => parts.push(e.data);
+    const done = new Promise(r => rec.onstop = r); rec.start(200);
+    const t0 = performance.now(); await new Promise(res => { const f = () => { const t = (performance.now() - t0) / 1000; g.fillStyle = 'hsl(' + (t * 120) + ',80%,50%)'; g.fillRect(0, 0, 320, 240); g.fillStyle = '#fff'; g.fillRect(40 + t * 100, 100, 40, 40); if (t < 2) requestAnimationFrame(f); else res(); }; f(); });
+    rec.stop(); await done;
+    const b = new Blob(parts, { type: 'video/webm' }); const u8 = new Uint8Array(await b.arrayBuffer()); let s = ''; for (const x of u8) s += String.fromCharCode(x); return btoa(s); })()`);
+  const vidFile = join(mkdtempSync(join(tmpdir(), "ft-vid-")), "clip.webm");
+  writeFileSync(vidFile, Buffer.from(vidB64, "base64"));
+  console.log("a test video:", Buffer.from(vidB64, "base64").length, "bytes");
+  await ev(`document.getElementById('view-social').scrollTop = 0, 1`); await sleep(200);
+  await ev(`document.querySelector('#so-body .so-new').click(), 1`); await sleep(400);
+  await ev(`(() => { document.querySelector('#sheet-panel textarea').value = 'Video time'; return 1; })()`);
+  await send("Page.setInterceptFileChooserDialog", { enabled: true });
+  const vChooser = new Promise((res) => b.on((m) => { if (m.method === "Page.fileChooserOpened") res(m.params); }));
+  await ev(`[...document.querySelectorAll('#sheet-panel .btn')].find(b => b.textContent.includes('Video')).click(), 1`);
+  const vfc = await vChooser;
+  await send("DOM.setFileInputFiles", { backendNodeId: vfc.backendNodeId, files: [vidFile] });
+  await send("Page.setInterceptFileChooserDialog", { enabled: false });
+  await until(`!!document.querySelector('#sheet-panel video')`, 8000, "the video in the new post");
+  const before = posted.length;
+  await ev(`[...document.querySelectorAll('#sheet-panel .btn')].find(b => b.textContent === 'Post').click(), 1`);
+  await until(`[...document.querySelectorAll('#so-body .so-post')].some(p => p.textContent.includes('Video time'))`, 30000, "the video post");
+  const pv = posted.slice(before).find((x) => x.payload.content);
+  console.log("video post sent:", pv ? pv.files.map(([n, b2]) => `${n} ${b2.length} bytes`).join(", ") : "nothing", "| on the feed:", JSON.stringify((feedNow()[0] || {}).video));
+  check(pv && pv.files.some(([n]) => n === "video.webm") && pv.files.some(([n]) => n === "poster.jpg") && feedNow()[0].video === "webm", "video posted with its still");
+  const vcard = `[...document.querySelectorAll('#so-body .so-post')].find(p => p.textContent.includes('Video time'))`;
+  await until(`(() => { const v = ${vcard}.querySelector('video'); return v && /cdn\.discordapp\.com/.test(v.src) && !v.paused; })()`, 10000, "the video playing in the feed");
+  console.log("in the feed:", await ev(`(() => { const v = ${vcard}.querySelector('video'); return 'playing ' + !v.paused + ', muted ' + v.muted + ', still ' + /poster\.jpg/.test(v.poster); })()`));
+  await shot("d6_video");
+  await ev(`${vcard}.querySelector('.so-mute').click(), 1`); await sleep(300);
+  const unmuted = await ev(`(() => { const v = ${vcard}.querySelector('video'); return !v.muted && ${vcard}.querySelector('.so-mute use').getAttribute('href') === '#i-vol'; })()`);
+  await ev(`${vcard}.querySelector('.so-mute').click(), 1`); await sleep(200);
+  const muted = await ev(`${vcard}.querySelector('video').muted`);
+  console.log("mute button: sound on", unmuted, "| off again", muted);
+  check(unmuted && muted, "the mute button");
+  // a video too big to post as it is: played through and recorded again smaller
+  const small = JSON.parse(await ev(`(async () => {
+    const { social } = await import('./js/social.js');
+    // a 4 s video at a high bitrate, called a .mov (so it can't go as it is)
+    const c = document.createElement('canvas'); c.width = 640; c.height = 480; const g = c.getContext('2d'), img = g.createImageData(640, 480);
+    const st = c.captureStream(30), type = ['video/webm;codecs=vp8', 'video/webm'].find(t => MediaRecorder.isTypeSupported(t));
+    const rec = new MediaRecorder(st, { mimeType: type, videoBitsPerSecond: 4000000 }), parts = []; rec.ondataavailable = e => parts.push(e.data);
+    const done = new Promise(r => rec.onstop = r); rec.start(200);
+    const t0 = performance.now(); await new Promise(res => { const f = () => { const t = (performance.now() - t0) / 1000; const gr = g.createLinearGradient(0, 0, 640, 480); gr.addColorStop(0, 'hsl(' + (t * 60) + ',80%,50%)'); gr.addColorStop(1, 'hsl(' + (t * 60 + 120) + ',80%,40%)'); g.fillStyle = gr; g.fillRect(0, 0, 640, 480); for (let k = 0; k < 12; k++) { g.fillStyle = 'hsl(' + (k * 30) + ',90%,60%)'; g.beginPath(); g.arc(320 + 220 * Math.sin(t * 1.3 + k), 240 + 160 * Math.cos(t * 0.9 + k * 2), 30, 0, 7); g.fill(); } if (t < 4) requestAnimationFrame(f); else res(); }; f(); });
+    rec.stop(); await done;
+    const f = new File(parts, 'big.mov', { type: 'video/quicktime' });
+    const budget = 220000;
+    const out = await social.prepareVideo(f, budget, () => {});
+    return JSON.stringify({ was: f.size, budget, now: out.blob.size, ext: out.ext, still: !!out.poster }); })()`));
+  console.log("made smaller:", JSON.stringify(small));
+  check(small.now <= small.budget && small.now > 1000 && small.still, "a big video made smaller to fit");
 
   // the knob lock
   await ev(`location.hash = '#player'`); await sleep(500);

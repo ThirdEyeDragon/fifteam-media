@@ -13,11 +13,12 @@ import { makeFile, sizeText } from "./export.js";
 
 const NAME_KEY = "fifteam-social-name", MINE_KEY = "fifteam-social-mine", ME_KEY = "fifteam-social-me", AV_KEY = "fifteam-social-avatar";
 const MAX_MSG = 9.5 * 1024 * 1024;   // what one post may carry (10 MB), with room to spare
-const MAX_FEED = 300;
+const MAX_FEED = 300, MAX_VIDEO_SEC = 180, MAX_COMMENTS = 200;
 const S = {
   cfg: null, name: "", editingName: false, mine: new Set(), feed: [], loadedAt: 0, loading: null, error: "", shown: 30,
   msgs: new Map(), gone: new Set(), queue: [], busy: 0, audio: null, playing: null,
   me: "", avatar: null, avatarUrl: "", liking: new Map(), sig: "", profiles: {}, avSync: null,
+  muted: true, open: new Set(), vids: null,
 };
 // this phone, for likes (one like per phone and post): a random id, nothing else
 try { S.me = localStorage.getItem(ME_KEY) || ""; if (!/^[a-z0-9]{10}$/.test(S.me)) { S.me = Array.from(crypto.getRandomValues(new Uint8Array(10)), (b) => "abcdefghijklmnopqrstuvwxyz0123456789"[b % 36]).join(""); localStorage.setItem(ME_KEY, S.me); } } catch {}
@@ -100,7 +101,10 @@ function clean(list) {
     if (!p || !ID.test(p.id)) return null;
     const s = p.song && typeof p.song === "object" ? { title: str(p.song.title, 120) || "Rebass", artist: str(p.song.artist, 80), note: str(p.song.note, 80), duration: +p.song.duration || 0 } : null;
     const likes = Array.isArray(p.likes) ? [...new Set(p.likes.filter((x) => typeof x === "string" && /^[a-z0-9]{6,16}$/.test(x)))].slice(0, 5000) : [];
-    return { id: p.id, at: +p.at || 0, user: str(p.user, 24) || "someone", text: str(p.text, 500), image: !!p.image, avatar: !!p.avatar, song: s, likes, by: /^[a-z0-9]{6,16}$/.test(p.by) ? p.by : "" };
+    const comments = (Array.isArray(p.comments) ? p.comments : []).slice(-MAX_COMMENTS).map((c) => (c && /^[a-z0-9]{6,20}$/.test(c.id) && str(c.text, 300).trim()
+      ? { id: c.id, by: /^[a-z0-9]{6,16}$/.test(c.by) ? c.by : "", user: str(c.user, 24) || "someone", text: str(c.text, 300), at: +c.at || 0 } : null)).filter(Boolean);
+    const video = p.video === "mp4" || p.video === "webm" ? p.video : "";
+    return { id: p.id, at: +p.at || 0, user: str(p.user, 24) || "someone", text: str(p.text, 500), image: !!p.image, avatar: !!p.avatar, song: s, likes, by: /^[a-z0-9]{6,16}$/.test(p.by) ? p.by : "", video, comments };
   }).filter(Boolean);
 }
 /** A post's message (for its picture and song links), fetched once per load, a couple at a time. */
@@ -266,18 +270,24 @@ function postCard(p) {
   if (S.mine.has(p.id)) { const d = h("button", "btn small so-del", "Delete"); d.onclick = () => removePost(p); head.append(d); }
   card.append(head);
   if (p.text) card.append(h("p", "so-text", p.text));
-  let img = null, song = null;
+  let img = null, song = null, vid = null;
   if (p.image) { img = h("div", "so-img so-wait"); card.append(img); }
+  if (p.video) { vid = videoBlock(p); card.append(vid); }
   if (p.song) { song = songBlock(p); card.append(song); }
-  // the like
+  // the like and the comments
   const bar = h("div", "so-bar");
   const lk = h("button", "so-like"); lk.dataset.id = p.id;
   lk.append(h("span", "so-heart", "♥"), h("span", "so-count", ""));
   paintLike(lk, p);
   lk.onclick = () => like(p, lk);
-  bar.append(lk); card.append(bar);
-  // the pictures and song links, from the post's own message, once it is near the screen
-  if (p.image || p.song || p.avatar) {
+  const cm = h("button", "so-cbtn"); cm.dataset.id = p.id; cm.setAttribute("aria-label", "Comments");
+  cm.append(icon("i-chat"), h("span", "so-count", ""));
+  cm.onclick = () => { S.open.has(p.id) ? S.open.delete(p.id) : S.open.add(p.id); paintComments(card, p); if (S.open.has(p.id)) { const i = card.querySelector(".so-cform input"); if (i) i.focus(); } };
+  bar.append(lk, cm); card.append(bar);
+  const cbox = h("div", "so-comments"); card.append(cbox);
+  paintComments(card, p);
+  // the pictures, video and song links, from the post's own message, once it is near the screen
+  if (p.image || p.song || p.avatar || p.video) {
     card._fill = async () => {
       try {
         const m = await message(p.id);
@@ -285,6 +295,7 @@ function postCard(p) {
         if (face && !pictureFor(p) && !(mineAs(p) && S.avatarUrl)) av.style.backgroundImage = `url("${face.url}")`;
         if (img && pic) { const i = h("img", "so-img"); i.alt = p.text ? p.text.slice(0, 80) : "A picture"; i.decoding = "async"; i.src = pic.url; i.onclick = () => viewImage(pic.url); img.replaceWith(i); }
         if (song) { song._url = mp3 && mp3.url; if (cov) song.querySelector(".so-cover").style.backgroundImage = `url("${cov.url}")`; }
+        if (vid) { const f = fileOf(m, "video." + p.video), po = fileOf(m, "poster.jpg"); vid._attach(f && f.url, po && po.url); }
       } catch (e) {
         if (e.status === 404) { S.gone.add(p.id); card.remove(); }
         else if (img) img.textContent = "Couldn't load the picture";
@@ -294,6 +305,110 @@ function postCard(p) {
   }
   return card;
 }
+/** A post's video: plays by itself, without sound, while it's on screen (looping); tap it to pause; the speaker
+ * button turns the sound on or off for every video (and stops the music player while a video has sound). */
+function videoBlock(p) {
+  const box = h("div", "so-vid so-wait");
+  const v = document.createElement("video");
+  v.playsInline = true; v.loop = true; v.muted = S.muted; v.preload = "none"; v.setAttribute("playsinline", ""); v.setAttribute("disablepictureinpicture", "");
+  const mute = h("button", "so-mute"); mute.setAttribute("aria-label", S.muted ? "Sound on" : "Sound off"); mute.append(icon(S.muted ? "i-mute" : "i-vol"));
+  const big = h("span", "so-vplay"); big.append(icon("i-play"));
+  box.append(v, big, mute);
+  box._attach = (url, poster) => {
+    if (poster) v.poster = poster;
+    if (!url) { box.textContent = "Couldn't load the video"; return; }
+    v.src = url; box.classList.remove("so-wait"); box.classList.add("ready");
+    videoObserver().observe(box);
+  };
+  v.onplay = () => box.classList.add("playing");
+  v.onpause = () => box.classList.remove("playing");
+  v.onclick = () => { if (v.paused) { box._user = false; v.play().catch(() => {}); } else { box._user = true; v.pause(); } };
+  big.onclick = v.onclick;
+  mute.onclick = (e) => { e.stopPropagation(); setMuted(!S.muted, v); };
+  return box;
+}
+function setMuted(m, playing) {
+  S.muted = m;
+  document.querySelectorAll("#so-body .so-vid").forEach((b) => {
+    const v = b.querySelector("video"), btn = b.querySelector(".so-mute");
+    v.muted = m;
+    btn.querySelector("use").setAttribute("href", m ? "#i-mute" : "#i-vol");
+    btn.setAttribute("aria-label", m ? "Sound on" : "Sound off");
+  });
+  if (!m) { player.pause(); stopSong(); if (playing && playing.paused) playing.play().catch(() => {}); }
+}
+// videos play while mostly on screen, and stop when scrolled away
+function videoObserver() {
+  if (S.vids) return S.vids;
+  S.vids = new IntersectionObserver((es) => {
+    for (const x of es) {
+      const v = x.target.querySelector("video");
+      if (!v || !v.src) continue;
+      if (x.isIntersecting && x.intersectionRatio >= 0.6 && !x.target._user) v.play().catch(() => {});
+      else if (!x.isIntersecting || x.intersectionRatio < 0.6) v.pause();
+    }
+  }, { threshold: [0, 0.6] });
+  return S.vids;
+}
+function pauseVideos() { document.querySelectorAll("#so-body .so-vid video").forEach((v) => v.pause()); }
+
+/** A post's comments: the count on its button, and when open, the comments and a box to add one. */
+function paintComments(card, p) {
+  const btn = card.querySelector(".so-cbtn"), box = card.querySelector(".so-comments");
+  if (!btn || !box) return;
+  btn.querySelector(".so-count").textContent = p.comments.length ? String(p.comments.length) : "";
+  btn.classList.toggle("on", S.open.has(p.id));
+  box.hidden = !S.open.has(p.id);
+  if (box.hidden) return;
+  const typed = box.querySelector(".so-cform input"), keep = typed ? typed.value : "", focused = typed && document.activeElement === typed;
+  box.replaceChildren();
+  for (const c of p.comments) {
+    const row = h("div", "so-comment" + (c.sending ? " sending" : ""));
+    const av = avatarEl(30, "", c.user);
+    showPicture(av, { by: c.by, user: c.user, id: "" });
+    const t = h("div", "so-ctext");
+    const top = h("div", "so-cname"); top.append(h("b", "", c.user), h("small", "", ago(c.at)));
+    t.append(top, h("p", "", c.text));
+    row.append(av, t);
+    if (c.by && c.by === S.me && !c.sending) { const x = h("button", "so-cdel", "Delete"); x.onclick = () => uncomment(p, c, card); row.append(x); }
+    box.append(row);
+  }
+  if (!p.comments.length) box.append(h("p", "status so-cnone", "No comments yet."));
+  const f = h("form", "so-cform");
+  const inp = h("input", "input"); inp.maxLength = 300; inp.placeholder = S.name ? "Add a comment" : "Pick a username to comment"; inp.setAttribute("aria-label", "Comment"); inp.autocomplete = "off"; inp.value = keep;
+  const go = h("button", "btn small primary", "Send"); go.type = "submit";
+  f.append(inp, go);
+  f.onsubmit = (e) => { e.preventDefault(); const v = inp.value.trim(); if (v) { inp.value = ""; comment(p, v, card); } };
+  box.append(f);
+  if (focused) inp.focus();
+}
+const newCid = () => Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => "abcdefghijklmnopqrstuvwxyz0123456789"[b % 36]).join("");
+async function comment(p, text, card) {
+  if (!S.name) { toast("Pick a username first"); S.editingName = true; render(); return; }
+  const c = { id: newCid(), by: S.me, user: S.name, text: text.slice(0, 300), at: Date.now() };
+  p.comments = [...p.comments, { ...c, sending: true }];
+  paintComments(card, p);
+  try {
+    await changeIndex((posts) => {
+      const q = posts.find((x) => x.id === p.id); if (!q) throw new Error("That post is gone.");
+      q.comments = [...(q.comments || []), c].slice(-MAX_COMMENTS);
+    }, (now) => { const q = now.find((x) => x.id === p.id); return !q || q.comments.some((x) => x.id === c.id); }, true);
+  } catch (e) { toast(e.message === "That post is gone." ? e.message : "Couldn't send that comment. Try again."); }
+  const q = S.feed.find((x) => x.id === p.id);
+  p.comments = q ? q.comments : p.comments.filter((x) => x.id !== c.id);
+  paintComments(card, p);
+}
+async function uncomment(p, c, card) {
+  p.comments = p.comments.filter((x) => x.id !== c.id);
+  paintComments(card, p);
+  try {
+    await changeIndex((posts) => { const q = posts.find((x) => x.id === p.id); if (q) q.comments = (q.comments || []).filter((x) => x.id !== c.id); },
+      (now) => { const q = now.find((x) => x.id === p.id); return !q || !q.comments.some((x) => x.id === c.id); }, true);
+  } catch { toast("Couldn't delete that comment. Try again."); }
+  const q = S.feed.find((x) => x.id === p.id);
+  if (q) { p.comments = q.comments; paintComments(card, p); }
+}
+
 function paintLike(btn, p) {
   const mine = p.likes.includes(S.me), n = p.likes.length;
   btn.classList.toggle("on", mine);
@@ -392,11 +507,99 @@ async function addToLibrary(p, block, btn) {
 }
 function viewImage(src) { openSheet((p) => { const i = h("img", "so-full"); i.src = src; i.alt = "Picture"; p.append(i); }); }
 
+// ---------------------------------------------------------------------------------------------------- videos
+/** A video's length, worked out by seeking to its end when the file doesn't say (videos recorded in a browser). */
+async function lengthOf(v) {
+  if (isFinite(v.duration) && v.duration > 0) return v.duration;
+  await new Promise((ok) => { const done = () => { if (isFinite(v.duration)) { v.removeEventListener("durationchange", done); ok(); } }; v.addEventListener("durationchange", done); v.currentTime = 1e7; setTimeout(ok, 4000); });
+  const d = v.duration;
+  v.currentTime = 0;
+  return isFinite(d) && d > 0 ? d : 0;
+}
+/** A video's length (and that this phone can play it). */
+function videoInfo(file) {
+  return new Promise((ok, bad) => {
+    const v = document.createElement("video"), u = URL.createObjectURL(file);
+    v.preload = "metadata"; v.muted = true; v.playsInline = true;
+    v.onloadedmetadata = async () => { const d = await lengthOf(v); URL.revokeObjectURL(u); if (d > 0) ok({ duration: d, w: v.videoWidth, h: v.videoHeight }); else bad(new Error("video")); };
+    v.onerror = () => { URL.revokeObjectURL(u); bad(new Error("video")); };
+    v.src = u;
+  });
+}
+const recType = () => ["video/mp4;codecs=avc1.42E01E,mp4a.40.2", "video/mp4", "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"].find((t) => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || "";
+/**
+ * A video ready to post (at most `budget` bytes) with a still from it for before it plays: { blob, ext, poster }.
+ * An MP4 or WebM that already fits goes as it is; anything else is played through once, at normal speed, and recorded
+ * again smaller (at most 960 px, its bitrate chosen to fit), so it takes as long as the video.
+ */
+async function prepareVideo(file, budget, say) {
+  const u = URL.createObjectURL(file);
+  const v = document.createElement("video");
+  v.src = u; v.playsInline = true; v.muted = true; v.preload = "auto"; v.crossOrigin = "anonymous";
+  try {
+    await new Promise((ok, bad) => { v.onloadeddata = ok; v.onerror = () => bad(new Error("This phone can't play that video.")); });
+    const dur = await lengthOf(v);
+    if (!(dur > 0) || dur > MAX_VIDEO_SEC + 1) throw new Error(`Videos up to ${MAX_VIDEO_SEC / 60} minutes`);
+    // the still: a moment in
+    await new Promise((ok) => { v.onseeked = ok; v.currentTime = Math.min(0.5, dur / 3); setTimeout(ok, 1500); });
+    let poster = null;
+    try {
+      const k = Math.min(1, 720 / Math.max(v.videoWidth, v.videoHeight)), c = document.createElement("canvas");
+      c.width = Math.max(2, Math.round(v.videoWidth * k)); c.height = Math.max(2, Math.round(v.videoHeight * k));
+      c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
+      poster = await new Promise((ok) => c.toBlob(ok, "image/jpeg", 0.8));
+    } catch {}
+    const ext0 = /webm/.test(file.type) || /\.webm$/i.test(file.name) ? "webm" : /mp4/.test(file.type) || /\.(mp4|m4v)$/i.test(file.name) ? "mp4" : "";
+    if (ext0 && file.size <= budget) return { blob: new Blob([file], { type: "video/" + ext0 }), ext: ext0, poster };
+    // recorded again, smaller
+    const type = recType();
+    if (!type || !HTMLCanvasElement.prototype.captureStream) throw new Error(`That video is ${sizeText(file.size)}; this phone can't make it smaller. Videos up to ${sizeText(budget)} post as they are.`);
+    // (encoders overshoot a low bitrate, a lot on some phones: aim at 60% of the room, then correct by what came out)
+    let vbps = 0, abps = 96000, side = 960;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (!attempt) { abps = (budget * 8 * 0.6) / dur < 500000 ? 64000 : 96000; vbps = Math.min(2500000, (budget * 8 * 0.6) / dur - abps); }
+      side = vbps > 1200000 ? 960 : vbps > 600000 ? 720 : vbps > 280000 ? 540 : 360;
+      if (vbps < 90000) throw new Error("That video is too long to post at a watchable quality. Try a shorter one.");
+      const k = Math.min(1, side / Math.max(v.videoWidth, v.videoHeight));
+      const c = document.createElement("canvas");
+      c.width = Math.max(2, Math.round((v.videoWidth * k) / 2) * 2); c.height = Math.max(2, Math.round((v.videoHeight * k) / 2) * 2);
+      const g = c.getContext("2d");
+      const stream = c.captureStream(30);
+      // its sound, taken from the video into the recording only (not to the speakers)
+      try {
+        const ctx = getCtx(), src = v._src || (v._src = ctx.createMediaElementSource(v)), dest = ctx.createMediaStreamDestination();
+        src.disconnect(); src.connect(dest);
+        dest.stream.getAudioTracks().forEach((t) => stream.addTrack(t));
+        v.muted = false;
+      } catch {}
+      const rec = new MediaRecorder(stream, { mimeType: type, videoBitsPerSecond: Math.round(vbps), audioBitsPerSecond: abps });
+      const parts = [];
+      rec.ondataavailable = (e) => { if (e.data && e.data.size) parts.push(e.data); };
+      const done = new Promise((ok) => { rec.onstop = ok; });
+      v.currentTime = 0;
+      await new Promise((ok) => { v.onseeked = ok; setTimeout(ok, 1000); });
+      let raf = 0;
+      const draw = () => { g.drawImage(v, 0, 0, c.width, c.height); say(`Getting the video ready… ${Math.min(99, Math.round((v.currentTime / dur) * 100))}%`); raf = v.requestVideoFrameCallback ? v.requestVideoFrameCallback(draw) : requestAnimationFrame(draw); };
+      draw();
+      rec.start(1000);
+      try { await v.play(); } catch { v.muted = true; await v.play(); }      // (a phone that won't play it with sound here)
+      await new Promise((ok) => { v.onended = ok; });
+      if (v.cancelVideoFrameCallback) v.cancelVideoFrameCallback(raf); else cancelAnimationFrame(raf);
+      rec.stop(); await done;
+      stream.getTracks().forEach((t) => t.stop());
+      const blob = new Blob(parts, { type: type.split(";")[0] });
+      if (blob.size <= budget) return { blob, ext: /mp4/.test(type) ? "mp4" : "webm", poster };
+      vbps = vbps * (budget / blob.size) * 0.85;          // what came out over: the next go aims that much lower
+    }
+    throw new Error("That video wouldn't fit. Try a shorter one.");
+  } finally { v.pause(); v.removeAttribute("src"); v.load(); URL.revokeObjectURL(u); }
+}
+
 // ---------------------------------------------------------------------------------------------------- posting
 /** The new-post sheet. preset: { text, img, song: { title, artist, note, duration, cover (Blob), encode(kbps) -> File } } */
 function composer(preset) {
   if (!S.name) { toast("Pick a username first"); S.editingName = true; render(); setTimeout(() => { const i = document.querySelector("#so-body .so-nameform input"); if (i) i.focus(); }, 100); return; }
-  let img = preset.img || null, song = preset.song || null;
+  let img = preset.img || null, song = preset.song || null, video = preset.video || null;
   openSheet((p) => {
     p.append(h("h3", "", "New post"));
     const text = h("textarea", "input so-compose"); text.rows = 3; text.maxLength = 500; text.placeholder = "Say something"; text.setAttribute("aria-label", "Your post");
@@ -405,6 +608,11 @@ function composer(preset) {
     const paint = () => {
       prev.replaceChildren();
       if (img) { const i = h("img", "so-img"); i.src = URL.createObjectURL(img); const x = h("button", "btn small", "Remove picture"); x.onclick = () => { img = null; paint(); }; prev.append(i, x); }
+      if (video) {
+        const v = document.createElement("video"); v.className = "so-img"; v.src = URL.createObjectURL(video.file); v.muted = true; v.playsInline = true; v.controls = true;
+        const x = h("button", "btn small", "Remove video"); x.onclick = () => { video = null; paint(); };
+        prev.append(v, h("p", "status", `${fmtTime(video.duration)}${video.file.size > MAX_MSG ? " · it'll be made smaller to post" : ""}`), x);
+      }
       if (song) {
         const s = h("div", "so-song"), c = h("span", "so-cover"); c.style.backgroundImage = `url("${song.cover ? URL.createObjectURL(song.cover) : placeholderArt(song.title, "rebass")}")`;
         const m = h("div", "so-smeta"); m.append(h("b", "", song.title), h("small", "", [song.artist, song.note, song.duration ? fmtTime(song.duration) : ""].filter(Boolean).join(" · ")));
@@ -413,16 +621,25 @@ function composer(preset) {
     };
     const addRow = h("div", "row wrap");
     const ai = h("button", "btn small"); ai.append(icon("i-image"), "Picture");
-    ai.onclick = async () => { const f = await pickAny(); if (f) { try { img = await fitJpeg(f, 1600); paint(); } catch { toast("Couldn't read that picture"); } } };
+    ai.onclick = async () => { const f = await pickAny(); if (f) { try { img = await fitJpeg(f, 1600); video = null; paint(); } catch { toast("Couldn't read that picture"); } } };
+    const av = h("button", "btn small"); av.append(icon("i-video"), "Video");
+    av.onclick = async () => {
+      const f = await pickAny("video/*"); if (!f) return;
+      try {
+        const d = await videoInfo(f);
+        if (d.duration > MAX_VIDEO_SEC) { toast(`Videos up to ${MAX_VIDEO_SEC / 60} minutes`); return; }
+        video = { file: f, duration: d.duration }; img = null; song = null; paint();
+      } catch { toast("This phone can't play that video."); }
+    };
     const as = h("button", "btn small"); as.append(icon("i-bass"), "Rebassed song");
-    as.onclick = () => pickRebass((s) => composer({ song: s, text: text.value, img }));
-    addRow.append(ai, as);
+    as.onclick = () => { if (video) { toast("A post can have a video or a song"); return; } pickRebass((s) => composer({ song: s, text: text.value, img })); };
+    addRow.append(ai, av, as);
     const err = h("p", "set-err"), go = h("button", "btn primary block", "Post");
     go.onclick = async () => {
-      if (!img && !song && !text.value.trim()) { err.textContent = "Write something, or add a picture or a song."; return; }
+      if (!img && !song && !video && !text.value.trim()) { err.textContent = "Write something, or add a picture, a video or a song."; return; }
       go.disabled = true; err.textContent = "";
       try {
-        await post(text.value.trim(), img, song, (msg) => { go.textContent = msg; });
+        await post(text.value.trim(), img, song, (msg) => { go.textContent = msg; }, video);
         closeSheet(); toast("Posted"); render(); $("view-social").scrollTop = 0;
       } catch (e) { err.textContent = e.message === "setup" ? "FifTeam Social isn't switched on yet." : e.message || "Couldn't post."; go.disabled = false; go.textContent = "Post"; }
     };
@@ -430,8 +647,8 @@ function composer(preset) {
     paint();
   });
 }
-function pickAny() {
-  return new Promise((res) => { const i = document.createElement("input"); i.type = "file"; i.accept = "image/*"; i.onchange = () => res(i.files && i.files[0]); i.addEventListener("cancel", () => res(null)); i.click(); });
+function pickAny(accept = "image/*") {
+  return new Promise((res) => { const i = document.createElement("input"); i.type = "file"; i.accept = accept; i.onchange = () => res(i.files && i.files[0]); i.addEventListener("cancel", () => res(null)); i.click(); });
 }
 /** One of the rebasses in the library. */
 function pickRebass(done) {
@@ -460,10 +677,17 @@ async function libraryMp3(t, kbps) {
   const chs = [buf.getChannelData(0), buf.numberOfChannels > 1 ? buf.getChannelData(1) : buf.getChannelData(0)];
   return (await makeFile(chs, buf.sampleRate, t.title, "mp3", ctx, null, { title: t.title, artist: t.artist || "", album: "FifTeam Social", kbps })).file;
 }
-async function post(text, img, song, say) {
+async function post(text, img, song, say, video) {
   await config();
   const files = [];
   if (img) files.push(["picture.jpg", img]);
+  let vtype = "";
+  if (video) {
+    const v = await prepareVideo(video.file, MAX_MSG - 160 * 1024, say);
+    vtype = v.ext;
+    files.push(["video." + v.ext, v.blob]);
+    if (v.poster) files.push(["poster.jpg", v.poster]);
+  }
   if (song && song.cover) { try { files.push(["cover.jpg", await squareJpeg(song.cover, 400)]); } catch {} }
   if (song) {
     // the song as an MP3 small enough for one post (192 kb/s, less for a long one)
@@ -476,7 +700,7 @@ async function post(text, img, song, say) {
     files.push(["song.mp4", await scramble(f)]);
   }
   say(files.length ? `Uploading (${sizeText(files.reduce((a, [, b]) => a + b.size, 0))})…` : "Posting…");
-  const entry = { at: Date.now(), user: S.name, text: text.slice(0, 500), image: !!img, avatar: false, by: S.me, likes: [], song: song ? { title: song.title.slice(0, 120), artist: (song.artist || "").slice(0, 80), note: (song.note || "").slice(0, 80), duration: Math.round(song.duration || 0) } : null };
+  const entry = { at: Date.now(), user: S.name, text: text.slice(0, 500), image: !!img, video: vtype, comments: [], avatar: false, by: S.me, likes: [], song: song ? { title: song.title.slice(0, 120), artist: (song.artist || "").slice(0, 80), note: (song.note || "").slice(0, 80), duration: Math.round(song.duration || 0) } : null };
   // the post's own message
   const lines = [`**${S.name}**`];
   if (entry.text) lines.push(entry.text);
@@ -519,7 +743,14 @@ async function refresh({ manual = false } = {}) {
   try { await S.loading; } finally { S.loading = null; }
   if (!S.error && (S.avatar || S.name)) syncProfile();
   if (manual || firstTime || sigIds(S.feed) !== S.ids || S.error !== S.shownError || JSON.stringify(S.profiles) !== before) render();
-  else for (const p of S.feed) if (!S.liking.has(p.id)) document.querySelectorAll(`#so-body .so-like[data-id="${p.id}"]`).forEach((btn) => paintLike(btn, p));
+  else for (const p of S.feed) {
+    if (!S.liking.has(p.id)) document.querySelectorAll(`#so-body .so-like[data-id="${p.id}"]`).forEach((btn) => paintLike(btn, p));
+    const card = document.querySelector(`#so-body .so-post[data-id="${p.id}"]`);
+    if (card && !card.querySelector(".so-comment.sending")) {
+      const shown = card._comments || "", now = p.comments.map((c) => c.id).join(",");
+      if (shown !== now) { card._comments = now; paintComments(card, p); }
+    }
+  }
 }
 const sigIds = (feed) => feed.filter((p) => !S.gone.has(p.id)).map((p) => p.id).join(",");
 
@@ -574,12 +805,12 @@ function pullToRefresh() {
 }
 
 export function initSocial() {
-  bus.on("view", (v) => { if (v === "social") refresh(); else stopSong(); });
-  bus.on("music-playing", stopSong);
+  bus.on("view", (v) => { if (v === "social") refresh(); else { stopSong(); pauseVideos(); } });
+  bus.on("music-playing", () => { stopSong(); if (!S.muted) setMuted(true); });
   // a rebass made just now, posted from the Rebass screen
   bus.on("social-post", (song) => { location.hash = "#social"; setTimeout(() => composer({ song }), 50); });
   pullToRefresh();
   // new posts and likes come in on their own while the feed is open
   setInterval(() => { if (location.hash === "#social" && document.visibilityState === "visible" && !S.loading) refresh(); }, 45000);
 }
-export const social = { state: S };
+export const social = { state: S, prepareVideo };
