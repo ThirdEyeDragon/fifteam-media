@@ -85,12 +85,13 @@ function changeIndex(change, check) {
   const seq = ++indexSeq;
   const run = indexQueue.then(() => changeIndexNow(change, check));
   indexQueue = run.catch(() => {});
-  run.then(() => setTimeout(() => {
+  // (twice: the feed can answer with a copy a second or two old just after a write)
+  run.then(() => { for (const ms of [3000, 10000]) setTimeout(() => {
     indexQueue = indexQueue.then(async () => {
       if (indexSeq !== seq) return;
       if (!check(await readIndex())) await changeIndexNow(change, check);
     }).catch(() => {});
-  }, 3000), () => {});
+  }, ms); }, () => {});
   return run;
 }
 async function changeIndexNow(change, check) {
@@ -396,6 +397,8 @@ function openComments(id) {
     panel.append(f);
   });
   paintSheet();
+  // the latest comments too (the panel follows once they're in)
+  if (!S.loading && Date.now() - S.loadedAt > 4000) refresh();
 }
 function setReply(c) {
   if (!S.cs) return;

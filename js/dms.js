@@ -218,7 +218,7 @@ async function send(other, text) {
   D.queue = run.catch(() => {});
   try { await run; } catch { D.msgs = D.msgs.filter((x) => x.id !== m.id); toast("Couldn't send that message. Try again."); paintChat(); return; }
   paintChat();
-  setTimeout(() => { D.queue = D.queue.then(async () => { if (!(await readStore()).some((x) => x.id === m.id)) { await put(); paintChat(); } }).catch(() => {}); }, 3000);
+  for (const ms of [3000, 10000]) setTimeout(() => { D.queue = D.queue.then(async () => { if (!(await readStore()).some((x) => x.id === m.id)) { await put(); paintChat(); } }).catch(() => {}); }, ms);
 }
 
 /** Who someone is (from a tap on their picture): their picture and name, and Message. */
