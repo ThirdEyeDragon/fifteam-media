@@ -17,7 +17,7 @@ const MAX_FEED = 300;
 const S = {
   cfg: null, name: "", editingName: false, mine: new Set(), feed: [], loadedAt: 0, loading: null, error: "", shown: 30,
   msgs: new Map(), gone: new Set(), queue: [], busy: 0, audio: null, playing: null,
-  me: "", avatar: null, avatarUrl: "", liking: new Map(), sig: "",
+  me: "", avatar: null, avatarUrl: "", liking: new Map(), sig: "", profiles: {}, avSync: null,
 };
 // this phone, for likes (one like per phone and post): a random id, nothing else
 try { S.me = localStorage.getItem(ME_KEY) || ""; if (!/^[a-z0-9]{10}$/.test(S.me)) { S.me = Array.from(crypto.getRandomValues(new Uint8Array(10)), (b) => "abcdefghijklmnopqrstuvwxyz0123456789"[b % 36]).join(""); localStorage.setItem(ME_KEY, S.me); } } catch {}
@@ -55,32 +55,43 @@ async function dc(path, { method = "GET", form, json } = {}) {
   }
   throw new Error("The feed is busy. Try again in a moment.");
 }
-/** The feed list, fresh: [{ id, at, user, text, image, song }] newest first. */
+/** The feed list, fresh: [{ id, at, user, text, image, song, by }] newest first, with .profiles: { phone id: { name,
+ * av (the message holding their picture), at } }. */
 async function readIndex() {
   const m = await dc(`/messages/${S.cfg.index}`);
   const a = (m.attachments || []).find((x) => x.filename === "feed.json");
-  if (!a) return [];
+  if (!a) { const e = []; e.profiles = {}; return e; }
   const r = await fetch(a.url, { cache: "no-store" });
   const d = await r.json();
-  return clean(d && d.posts);
+  const posts = clean(d && d.posts);
+  posts.profiles = cleanProfiles(d && d.profiles);
+  return posts;
 }
 async function writeIndex(posts) {
   const f = new FormData();
   f.append("payload_json", JSON.stringify({ content: "FifTeam Social feed (the app keeps this message up to date; please don't delete it)", attachments: [{ id: 0, filename: "feed.json" }], allowed_mentions: { parse: [] } }));
-  f.append("files[0]", new Blob([JSON.stringify({ v: 1, posts: posts.slice(0, MAX_FEED) })], { type: "application/json" }), "feed.json");
+  f.append("files[0]", new Blob([JSON.stringify({ v: 1, posts: posts.slice(0, MAX_FEED), profiles: posts.profiles || {} })], { type: "application/json" }), "feed.json");
   await dc(`/messages/${S.cfg.index}`, { method: "PATCH", form: f });
 }
+const keepGone = (list) => { const out = list.filter((p) => !S.gone.has(p.id)); out.profiles = list.profiles || {}; return out; };
 /** Change the feed list: read it fresh, change it, write it, check it took (someone posting at the same moment). */
 async function changeIndex(change, check, quiet) {
   for (let attempt = 0; attempt < 3; attempt++) {
-    const posts = (await readIndex()).filter((p) => !S.gone.has(p.id));
+    const posts = keepGone(await readIndex());
     change(posts);
     await writeIndex(posts);
     const now = await readIndex();
-    if (check(now)) { S.feed = now.filter((p) => !S.gone.has(p.id)); return; }
+    if (check(now)) { S.feed = keepGone(now); S.profiles = now.profiles; return; }
     await wait(400 + Math.random() * 800);
   }
   throw new Error("The feed was busy. Try again.");
+}
+function cleanProfiles(o) {
+  const out = {};
+  if (!o || typeof o !== "object") return out;
+  for (const [k, v] of Object.entries(o).slice(0, 3000)) if (/^[a-z0-9]{6,16}$/.test(k) && v && typeof v === "object")
+    out[k] = { name: str(v.name, 24), av: ID.test(v.av) ? v.av : "", at: +v.at || 0 };
+  return out;
 }
 const ID = /^\d{5,25}$/;
 const str = (v, n) => (typeof v === "string" ? v.slice(0, n) : "");
@@ -89,7 +100,7 @@ function clean(list) {
     if (!p || !ID.test(p.id)) return null;
     const s = p.song && typeof p.song === "object" ? { title: str(p.song.title, 120) || "Rebass", artist: str(p.song.artist, 80), note: str(p.song.note, 80), duration: +p.song.duration || 0 } : null;
     const likes = Array.isArray(p.likes) ? [...new Set(p.likes.filter((x) => typeof x === "string" && /^[a-z0-9]{6,16}$/.test(x)))].slice(0, 5000) : [];
-    return { id: p.id, at: +p.at || 0, user: str(p.user, 24) || "someone", text: str(p.text, 500), image: !!p.image, avatar: !!p.avatar, song: s, likes };
+    return { id: p.id, at: +p.at || 0, user: str(p.user, 24) || "someone", text: str(p.text, 500), image: !!p.image, avatar: !!p.avatar, song: s, likes, by: /^[a-z0-9]{6,16}$/.test(p.by) ? p.by : "" };
   }).filter(Boolean);
 }
 /** A post's message (for its picture and song links), fetched once per load, a couple at a time. */
@@ -166,6 +177,7 @@ function render() {
       S.name = v; S.editingName = false;
       try { localStorage.setItem(NAME_KEY, v); } catch {}
       render();
+      syncProfile();
     };
   }
   body.append(you);
@@ -184,7 +196,8 @@ function render() {
   for (const p of posts.slice(0, S.shown)) body.append(postCard(p));
   if (posts.length > S.shown) { const m = h("button", "btn block", "Show more"); m.onclick = () => { S.shown += 30; render(); }; body.append(m); }
 }
-/** A choice of profile picture: cropped square, small, kept on the phone; it goes with each post. */
+/** A choice of profile picture: cropped square, small, kept on the phone and put on the feed, where it shows on every
+ * post this phone has made or will make, for everyone. */
 async function pickAvatar() {
   const f = await pickAny();
   if (!f) return;
@@ -192,17 +205,62 @@ async function pickAvatar() {
     const b = await squareJpeg(f, 160);
     const d = await new Promise((ok) => { const r = new FileReader(); r.onload = () => ok(r.result); r.readAsDataURL(b); });
     S.avatar = b; S.avatarUrl = d;
-    try { localStorage.setItem(AV_KEY, d); } catch {}
-    render(); toast("Profile picture set");
-  } catch { toast("Couldn't read that picture"); }
+    try { localStorage.setItem(AV_KEY, d); localStorage.removeItem(AV_KEY + "-sent"); } catch {}
+    render();
+    if (S.avSync) await S.avSync;                        // (one being sent already: this one goes after it)
+    await syncProfile(true);
+    toast("Profile picture set");
+  } catch { toast("Couldn't set that picture. Try again."); }
+}
+/** This phone's picture and name on the feed's profiles (once per change; again later if it couldn't be sent). */
+function syncProfile(force) {
+  if (S.avSync) return S.avSync;
+  S.avSync = (async () => {
+    await config();
+    const pr = S.profiles[S.me];
+    let sent = ""; try { sent = localStorage.getItem(AV_KEY + "-sent") || ""; } catch {}
+    const needPic = S.avatar && (force || !pr || !pr.av || sent !== (pr && pr.av));
+    const needName = S.name && pr && pr.name !== S.name;
+    if (!needPic && !needName && pr) return;
+    if (!S.avatar && !S.name) return;
+    let av = pr && pr.av ? pr.av : "";
+    if (needPic) {
+      const f = new FormData();
+      f.append("payload_json", JSON.stringify({ content: "", username: `${S.name || "FifTeam"} · FifTeam`.replace(/discord|clyde/gi, "").slice(0, 80), allowed_mentions: { parse: [] }, attachments: [{ id: 0, filename: "avatar.jpg" }] }));
+      f.append("files[0]", S.avatar, "avatar.jpg");
+      const m = await dc("?wait=true", { method: "POST", form: f });
+      const old = av; av = m.id;
+      if (old && old !== av) dc(`/messages/${old}`, { method: "DELETE" }).catch(() => {});
+    }
+    const me = { name: S.name, av, at: Date.now() };
+    await changeIndex((posts) => { posts.profiles = posts.profiles || {}; posts.profiles[S.me] = me; }, (now) => now.profiles && now.profiles[S.me] && now.profiles[S.me].av === av, true);
+    try { if (av) localStorage.setItem(AV_KEY + "-sent", av); } catch {}
+  })().catch(() => {}).finally(() => { S.avSync = null; });
+  return S.avSync;
 }
 
+/** The message holding a post's poster's picture ("" if none): their profile, found by their phone or (older posts) by name. */
+function pictureFor(p) {
+  const pr = S.profiles || {};
+  if (p.by && pr[p.by] && pr[p.by].av) return pr[p.by].av;
+  let best = null;
+  for (const v of Object.values(pr)) if (v.av && v.name && v.name === p.user && (!best || v.at > best.at)) best = v;
+  return best ? best.av : "";
+}
+const mineAs = (p) => p.by === S.me || S.mine.has(p.id);
+async function showPicture(av, p) {
+  if (mineAs(p) && S.avatarUrl) { av.style.backgroundImage = `url("${S.avatarUrl}")`; return; }
+  const id = pictureFor(p);
+  if (!id) return;
+  try { const m = await message(id), f = fileOf(m, "avatar.jpg"); if (f) av.style.backgroundImage = `url("${f.url}")`; } catch {}
+}
 function postCard(p) {
   const card = h("article", "card so-post");
   card.dataset.id = p.id;
   const head = h("div", "so-head");
   const who = h("div", "so-who");
   const av = avatarEl(40, "", p.user);
+  showPicture(av, p);
   const nm = h("span", "so-name"); nm.append(h("b", "", p.user), h("small", "", ago(p.at)));
   who.append(av, nm); head.append(who);
   if (S.mine.has(p.id)) { const d = h("button", "btn small so-del", "Delete"); d.onclick = () => removePost(p); head.append(d); }
@@ -224,7 +282,7 @@ function postCard(p) {
       try {
         const m = await message(p.id);
         const pic = fileOf(m, "picture.jpg"), mp3 = songOf(m), cov = fileOf(m, "cover.jpg"), face = fileOf(m, "avatar.jpg");
-        if (face) av.style.backgroundImage = `url("${face.url}")`;
+        if (face && !pictureFor(p) && !(mineAs(p) && S.avatarUrl)) av.style.backgroundImage = `url("${face.url}")`;
         if (img && pic) { const i = h("img", "so-img"); i.alt = p.text ? p.text.slice(0, 80) : "A picture"; i.decoding = "async"; i.src = pic.url; i.onclick = () => viewImage(pic.url); img.replaceWith(i); }
         if (song) { song._url = mp3 && mp3.url; if (cov) song.querySelector(".so-cover").style.backgroundImage = `url("${cov.url}")`; }
       } catch (e) {
@@ -405,7 +463,6 @@ async function libraryMp3(t, kbps) {
 async function post(text, img, song, say) {
   await config();
   const files = [];
-  if (S.avatar) files.push(["avatar.jpg", S.avatar]);
   if (img) files.push(["picture.jpg", img]);
   if (song && song.cover) { try { files.push(["cover.jpg", await squareJpeg(song.cover, 400)]); } catch {} }
   if (song) {
@@ -419,7 +476,7 @@ async function post(text, img, song, say) {
     files.push(["song.mp4", await scramble(f)]);
   }
   say(files.length ? `Uploading (${sizeText(files.reduce((a, [, b]) => a + b.size, 0))})…` : "Posting…");
-  const entry = { at: Date.now(), user: S.name, text: text.slice(0, 500), image: !!img, avatar: !!S.avatar, likes: [], song: song ? { title: song.title.slice(0, 120), artist: (song.artist || "").slice(0, 80), note: (song.note || "").slice(0, 80), duration: Math.round(song.duration || 0) } : null };
+  const entry = { at: Date.now(), user: S.name, text: text.slice(0, 500), image: !!img, avatar: false, by: S.me, likes: [], song: song ? { title: song.title.slice(0, 120), artist: (song.artist || "").slice(0, 80), note: (song.note || "").slice(0, 80), duration: Math.round(song.duration || 0) } : null };
   // the post's own message
   const lines = [`**${S.name}**`];
   if (entry.text) lines.push(entry.text);
@@ -454,12 +511,14 @@ async function refresh({ manual = false } = {}) {
   const firstTime = !S.loadedAt;
   S.loading = (async () => {
     S.error = "";
-    try { await config(); if (manual) S.msgs.clear(); S.feed = await readIndex(); S.loadedAt = Date.now(); }
+    try { await config(); if (manual) S.msgs.clear(); const list = await readIndex(); S.profiles = list.profiles; S.feed = keepGone(list); S.loadedAt = Date.now(); }
     catch (e) { S.error = e.message === "setup" || e instanceof SyntaxError ? "Social isn't available yet." : e.message; }
   })();
   if (firstTime) render();
+  const before = JSON.stringify(S.profiles);
   try { await S.loading; } finally { S.loading = null; }
-  if (manual || firstTime || sigIds(S.feed) !== S.ids || S.error !== S.shownError) render();
+  if (!S.error && (S.avatar || S.name)) syncProfile();
+  if (manual || firstTime || sigIds(S.feed) !== S.ids || S.error !== S.shownError || JSON.stringify(S.profiles) !== before) render();
   else for (const p of S.feed) if (!S.liking.has(p.id)) document.querySelectorAll(`#so-body .so-like[data-id="${p.id}"]`).forEach((btn) => paintLike(btn, p));
 }
 const sigIds = (feed) => feed.filter((p) => !S.gone.has(p.id)).map((p) => p.id).join(",");

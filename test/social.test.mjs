@@ -27,8 +27,12 @@ const seedFeed = [
   { id: eve, at: Date.now() - 7200e3, user: "Eve", text: "hello all", image: false, song: null },
   { id: "not-a-number", at: 0, user: "x", text: "bad id" },
 ];
-msgs.set(INDEX, { id: INDEX, content: "FifTeam Social feed", attachments: [attach(INDEX, "feed.json", Buffer.from(JSON.stringify({ v: 1, posts: seedFeed })), "application/json")] });
+const bobPic = "900000000000000201";
+msgs.set(bobPic, { id: bobPic, content: "", attachments: [attach(bobPic, "avatar.jpg", tinyJpeg, "image/jpeg")] });
+const seedProfiles = { bobphone001: { name: seedFeed[0].user, av: bobPic, at: Date.now() - 86400e3 } };
+msgs.set(INDEX, { id: INDEX, content: "FifTeam Social feed", attachments: [attach(INDEX, "feed.json", Buffer.from(JSON.stringify({ v: 1, posts: seedFeed, profiles: seedProfiles })), "application/json")] });
 const feedNow = () => JSON.parse(cdn.get(msgs.get(INDEX).attachments[0].url.split("?")[0]).bytes.toString()).posts;
+const profilesNow = () => JSON.parse(cdn.get(msgs.get(INDEX).attachments[0].url.split("?")[0]).bytes.toString()).profiles || {};
 
 function multipart(body, ctype) {
   const bnd = /boundary=(.+)$/.exec(ctype)[1], parts = {}, sep = Buffer.from("--" + bnd);
@@ -92,6 +96,8 @@ try {
   check(!(await ev(`!!window.__pwned`)) && !(await ev(`!!document.querySelector('#so-body img[src="x"], #so-body script')`)), "markup in a post stays text");
   await until(`!!document.querySelector('#so-body img.so-img') && document.querySelector('#so-body img.so-img').naturalWidth > 0`, 8000, "the picture");
   await shot("d1_feed");
+  await until(`/cdn\.discordapp\.com.*avatar\.jpg/.test(document.querySelector('#so-body .so-post .so-av').style.backgroundImage)`, 8000, "Bob's picture on his post (from his profile)");
+  console.log("Bob's picture on his older post:", await ev(`/avatar\.jpg/.test(document.querySelector('#so-body .so-post .so-av').style.backgroundImage)`));
 
   // the username
   const setName = (v) => ev(`(() => { const f = document.querySelector('#so-body .so-nameform'); f.querySelector('input').value = ${JSON.stringify(v)}; f.requestSubmit(); return 1; })()`);
@@ -112,6 +118,11 @@ try {
   await send("Page.setInterceptFileChooserDialog", { enabled: false });
   await until(`(localStorage.getItem('fifteam-social-avatar') || '').startsWith('data:image/jpeg')`, 8000, "the profile picture");
   console.log("profile picture kept on the phone:", await ev(`localStorage.getItem('fifteam-social-avatar').length + ' characters'`));
+  const meId = await ev(`localStorage.getItem('fifteam-social-me')`);
+  for (let i = 0; i < 40 && !(profilesNow()[meId] && profilesNow()[meId].av); i++) await sleep(200);
+  const myPr = profilesNow()[meId] || {};
+  console.log("profile on the feed:", JSON.stringify(myPr), "| its picture:", myPr.av && msgs.has(myPr.av) ? msgs.get(myPr.av).attachments.map((a) => a.filename).join(",") : "missing");
+  check(myPr.name === "Alice" && myPr.av && msgs.get(myPr.av).attachments.some((a) => a.filename === "avatar.jpg"), "the picture is on the feed's profiles at once");
 
   // a like on Eve's post: shown at once, saved to the feed list under this phone; again: gone
   const eveLikes = () => (feedNow().find((x) => x.id === eve) || {}).likes || [];
@@ -158,15 +169,33 @@ try {
   console.log("new post before sending:", await ev(`document.querySelector('#sheet-panel textarea').value + ' | picture ' + !!document.querySelector('#sheet-panel .so-img') + ' | song ' + (document.querySelector('#sheet-panel .so-song b') || {}).textContent`));
   await ev(`[...document.querySelectorAll('#sheet-panel .btn')].find(b => b.textContent === 'Post').click(), 1`);
   await until(`[...document.querySelectorAll('#so-body .so-post')].some(p => p.textContent.includes('Fresh one'))`, 30000, "the post in the feed");
-  const p0 = posted[0];
+  const p0 = posted.find((x) => x.payload.content);
   console.log("sent to Discord:", JSON.stringify({ content: p0.payload.content, username: p0.payload.username, pings: p0.payload.allowed_mentions, files: p0.files.map(([n, b]) => `${n} ${b.length} bytes ${n.endsWith(".mp4") ? b.subarray(0, 3).toString("latin1").replace(/[^\x20-\x7e]/g, "?") : ""}`) }));
   check(p0.payload.allowed_mentions && p0.payload.allowed_mentions.parse.length === 0, "nobody pinged");
   // (the song goes up scrambled behind "FTS1"; unscrambled it is the MP3)
   const unmix = (b) => { const u = Buffer.from(b); for (let i = 4; i < u.length; i++) u[i] ^= (0x5a + (i - 4) * 13) & 255; return u.subarray(4); };
   check(p0.files.some(([n]) => n === "picture.jpg") && p0.files.some(([n, b]) => n === "song.mp4" && b.subarray(0, 4).toString() === "FTS1" && /^(ID3|\xff)/.test(unmix(b).subarray(0, 3).toString("latin1"))), "picture and MP3 sent (scrambled)");
   check(feedNow()[0].id === p0.id && feedNow()[0].user === "Alice", "the feed list has the new post first");
-  check(p0.files.some(([n]) => n === "avatar.jpg") && feedNow()[0].avatar === true, "the profile picture went with the post");
-  await until(`/cdn\.discordapp\.com.*avatar\.jpg/.test(document.querySelector('#so-body .so-post .so-av').style.backgroundImage)`, 8000, "the picture on the post");
+  check(feedNow()[0].by === meId && !p0.files.some(([n]) => n === "avatar.jpg"), "the post says whose it is (the picture comes from the profile)");
+  await until(`document.querySelector('#so-body .so-post .so-av').style.backgroundImage.startsWith('url("data:image/jpeg')`, 8000, "my picture on my post");
+  // another phone sees Alice's picture on her post, from her profile
+  {
+    const other = await browser();
+    await other.send("Fetch.enable", { patterns: [{ urlPattern: "https://discord.com/*" }, { urlPattern: "https://cdn.discordapp.com/*" }, { urlPattern: "*social/config.json*" }] });
+    other.on(async (m) => {
+      if (m.method !== "Fetch.requestPaused") return;
+      const { requestId, request } = m.params;
+      if (request.method === "OPTIONS") { await other.send("Fetch.fulfillRequest", { requestId, responseCode: 204, responseHeaders: CORS }, m.sessionId); return; }
+      const r = discord(request.method, request.url, request.headers, Buffer.alloc(0));
+      await other.send("Fetch.fulfillRequest", { requestId, responseCode: r.status, responseHeaders: [...CORS, { name: "Content-Type", value: r.type }], body: r.body.toString("base64") }, m.sessionId);
+    });
+    await other.open(`http://127.0.0.1:${port}/#social`, 3500);
+    let seenPic = "";
+    for (let i = 0; i < 40; i++) { seenPic = await other.ev(`(() => { const p = [...document.querySelectorAll('#so-body .so-post')].find(p => p.textContent.includes('Fresh one')); return p ? p.querySelector('.so-av').style.backgroundImage : ''; })()`); if (/avatar\.jpg/.test(seenPic)) break; await sleep(250); }
+    console.log("another phone sees Alice's picture:", /avatar\.jpg/.test(seenPic));
+    check(/avatar\.jpg/.test(seenPic), "another phone shows the poster's picture");
+    other.close();
+  }
   check(eveLikes().length === 1, "the earlier like survived the new post");
   await ev(`document.getElementById('view-social').scrollTop = 0, 1`); await sleep(300);
   await shot("d3_posted");
