@@ -132,7 +132,7 @@ export function openSettings() {
       toast("Removed. It downloads again the next time you rebass.", 2600);
     };
 
-    p.append(el(`<p class="set-foot">FifTeam Media ${APP_VERSION}</p>`));
+    p.append(el(`<p class="set-foot">FifTeam Media ${APP_VERSION}<br>Developed by Levi Newman</p>`));
   });
 }
 

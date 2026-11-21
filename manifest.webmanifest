@@ -1,7 +1,7 @@
 {
   "name": "FifTeam Media",
   "short_name": "FifTeam",
-  "description": "Your music, a rebass studio and a tone generator, in one app.",
+  "description": "Rebass any song. Clean, loud bass in your pocket.",
   "id": "./",
   "start_url": "./",
   "scope": "./",
@@ -9,16 +9,74 @@
   "orientation": "portrait",
   "background_color": "#070818",
   "theme_color": "#0b0a24",
-  "categories": ["music", "entertainment", "utilities"],
+  "categories": [
+    "music",
+    "entertainment",
+    "utilities"
+  ],
   "icons": [
-    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
   ],
   "share_target": {
     "action": "./share-target",
     "method": "POST",
     "enctype": "multipart/form-data",
-    "params": { "files": [{ "name": "audio", "accept": ["audio/*", ".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus"] }] }
-  }
+    "params": {
+      "files": [
+        {
+          "name": "audio",
+          "accept": [
+            "audio/*",
+            ".mp3",
+            ".m4a",
+            ".aac",
+            ".wav",
+            ".flac",
+            ".ogg",
+            ".opus"
+          ]
+        }
+      ]
+    }
+  },
+  "screenshots": [
+    {
+      "src": "get/shots/rebass.jpg",
+      "sizes": "780x1688",
+      "type": "image/jpeg",
+      "form_factor": "narrow",
+      "label": "Rebass any song"
+    },
+    {
+      "src": "get/shots/player.jpg",
+      "sizes": "780x1688",
+      "type": "image/jpeg",
+      "form_factor": "narrow",
+      "label": "Your music"
+    },
+    {
+      "src": "get/shots/social.jpg",
+      "sizes": "780x1688",
+      "type": "image/jpeg",
+      "form_factor": "narrow",
+      "label": "Social"
+    }
+  ]
 }

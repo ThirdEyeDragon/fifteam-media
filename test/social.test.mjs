@@ -99,7 +99,33 @@ try {
   console.log("too short a name:", await text("#so-body .so-you .set-err"));
   await setName("Alice"); await sleep(300);
   console.log("name set:", await text("#so-body .so-you"), "| kept:", await ev(`localStorage.getItem('fifteam-social-name')`));
-  check(/Posting as Alice/.test(await text("#so-body .so-you")), "username set");
+  check((await text("#so-body .so-yourname")) === "Alice", "username set");
+
+  // a profile picture (goes with each post)
+  await send("Page.setInterceptFileChooserDialog", { enabled: true });
+  const avChooser = new Promise((res) => b.on((m) => { if (m.method === "Page.fileChooserOpened") res(m.params); }));
+  await ev(`document.querySelector('#so-body .so-avbtn').click(), 1`);
+  const avFc = await avChooser;
+  const avPng = join(mkdtempSync(join(tmpdir(), "ft-av-")), "me.png");
+  writeFileSync(avPng, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGP4z8DAwMDAxMDAwMDAAAANHQEDK+mmyAAAAABJRU5ErkJggg==", "base64"));
+  await send("DOM.setFileInputFiles", { backendNodeId: avFc.backendNodeId, files: [avPng] });
+  await send("Page.setInterceptFileChooserDialog", { enabled: false });
+  await until(`(localStorage.getItem('fifteam-social-avatar') || '').startsWith('data:image/jpeg')`, 8000, "the profile picture");
+  console.log("profile picture kept on the phone:", await ev(`localStorage.getItem('fifteam-social-avatar').length + ' characters'`));
+
+  // a like on Eve's post: shown at once, saved to the feed list under this phone; again: gone
+  const eveLikes = () => (feedNow().find((x) => x.id === eve) || {}).likes || [];
+  await ev(`document.querySelector('#so-body .so-like[data-id="${eve}"]').click(), 1`);
+  console.log("like shown at once:", await ev(`document.querySelector('#so-body .so-like[data-id="${eve}"]').textContent`));
+  for (let i = 0; i < 40 && !eveLikes().length; i++) await sleep(200);
+  const me = await ev(`localStorage.getItem('fifteam-social-me')`);
+  console.log("like saved:", JSON.stringify(eveLikes()), "| this phone:", me);
+  check(eveLikes().length === 1 && eveLikes()[0] === me, "the like is in the feed list");
+  await ev(`document.querySelector('#so-body .so-like[data-id="${eve}"]').click(), 1`);
+  for (let i = 0; i < 40 && eveLikes().length; i++) await sleep(200);
+  check(eveLikes().length === 0 && (await ev(`document.querySelector('#so-body .so-like[data-id="${eve}"]').textContent`)) === "♥", "unliked");
+  await ev(`document.querySelector('#so-body .so-like[data-id="${eve}"]').click(), 1`);
+  for (let i = 0; i < 40 && !eveLikes().length; i++) await sleep(200);
 
   // someone's song: play it and keep it
   await ev(`document.querySelector('#so-body .so-song .so-play').click(), 1`); await sleep(800);
@@ -115,7 +141,7 @@ try {
     const f = new File([encodeWav([x, x], 48000, 16)], 'Test Rebass.wav', { type: 'audio/wav' });
     await lib.library.add({ id: store.newId(), kind: 'rebass', title: 'Test Rebass', artist: 'Alice', note: '25–45 Hz · −3 dB', duration: 3, size: f.size, type: f.type, fileName: f.name, added: Date.now(), hasArt: false }, f, null);
     return 1; })()`);
-  await ev(`document.querySelector('#so-body .so-top .btn.primary').click(), 1`); await sleep(400);
+  await ev(`document.querySelector('#so-body .so-new').click(), 1`); await sleep(400);
   await ev(`(() => { document.querySelector('#sheet-panel textarea').value = 'Fresh one @everyone'; return 1; })()`);
   await send("Page.setInterceptFileChooserDialog", { enabled: true });
   const chooser = new Promise((res) => b.on((m) => { if (m.method === "Page.fileChooserOpened") res(m.params); }));
@@ -139,6 +165,9 @@ try {
   const unmix = (b) => { const u = Buffer.from(b); for (let i = 4; i < u.length; i++) u[i] ^= (0x5a + (i - 4) * 13) & 255; return u.subarray(4); };
   check(p0.files.some(([n]) => n === "picture.jpg") && p0.files.some(([n, b]) => n === "song.mp4" && b.subarray(0, 4).toString() === "FTS1" && /^(ID3|\xff)/.test(unmix(b).subarray(0, 3).toString("latin1"))), "picture and MP3 sent (scrambled)");
   check(feedNow()[0].id === p0.id && feedNow()[0].user === "Alice", "the feed list has the new post first");
+  check(p0.files.some(([n]) => n === "avatar.jpg") && feedNow()[0].avatar === true, "the profile picture went with the post");
+  await until(`/cdn\.discordapp\.com.*avatar\.jpg/.test(document.querySelector('#so-body .so-post .so-av').style.backgroundImage)`, 8000, "the picture on the post");
+  check(eveLikes().length === 1, "the earlier like survived the new post");
   await ev(`document.getElementById('view-social').scrollTop = 0, 1`); await sleep(300);
   await shot("d3_posted");
 
@@ -151,7 +180,19 @@ try {
 
   // a post deleted in Discord by the owner: gone from the feed
   msgs.delete(bob);
-  await ev(`[...document.querySelectorAll('#so-body .so-top .btn')].find(b => /Refresh/.test(b.textContent)).click(), 1`);
+  // pulled down from the top: the ring comes, spins, the feed comes back fresh
+  await ev(`document.getElementById('view-social').scrollTop = 0, 1`); await sleep(200);
+  const T = (type, y) => send("Input.dispatchTouchEvent", { type, touchPoints: type === "touchEnd" ? [] : [{ x: 195, y }] });
+  await T("touchStart", 300);
+  for (let y = 300; y <= 560; y += 20) { await T("touchMove", y); await sleep(16); }
+  const pulled = await ev(`JSON.stringify({ ring: getComputedStyle(document.getElementById('so-ptr')).opacity, ready: document.getElementById('so-ptr').classList.contains('ready'), list: document.querySelector('#view-social .view-inner').style.transform })`);
+  await shot("d4_pulling");
+  await ev(`(() => { window.__spun = false; const r = document.getElementById('so-ptr'); new MutationObserver(() => { if (r.classList.contains('spin')) window.__spun = true; }).observe(r, { attributes: true }); return 1; })()`);
+  await T("touchEnd");
+  await sleep(600);
+  const spinning = await ev(`window.__spun`);
+  console.log("pulling:", pulled, "| spinning after letting go:", spinning);
+  check(JSON.parse(pulled).ready && spinning, "pull to refresh");
   await until(`![...document.querySelectorAll('#so-body .so-post')].some(p => p.textContent.includes('My first rebass'))`, 10000, "bob's post to go");
   console.log("after Bob's message was deleted in Discord:", await text("#so-body .so-post .so-name b"));
 

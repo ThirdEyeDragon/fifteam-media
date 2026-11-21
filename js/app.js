@@ -2,7 +2,7 @@
 import { $, bus, toast } from "./ui.js";
 import { player } from "./player.js";
 
-export const APP_VERSION = "1.9.1";
+export const APP_VERSION = "2.0";
 import * as store from "./store.js";
 import { initPlayer } from "./player.js";
 import { initLibrary, library, importFiles, openCode } from "./library.js";
@@ -25,6 +25,9 @@ function route() {
 }
 
 async function boot() {
+  // (the download page offers "Open" rather than "Download" on a phone that has the app)
+  try { if (matchMedia("(display-mode: standalone)").matches || navigator.standalone) localStorage.setItem("fifteam-installed", "1"); } catch {}
+  addEventListener("appinstalled", () => { try { localStorage.setItem("fifteam-installed", "1"); } catch {} });
   initPlayer();
   initLibrary();
   initRebass();

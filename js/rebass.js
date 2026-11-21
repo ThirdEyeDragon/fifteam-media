@@ -130,7 +130,7 @@ function readParams() {
   const slow = $("rb-slow").checked;
   S.params = {
     lo: +$("rb-lo").value, hi: +$("rb-hi").value, db: +$("rb-db").value,
-    speed: slow ? +$("rb-speed").value / 100 : 1, reverb: $("rb-reverb").checked, room: $("rb-room").checked,
+    speed: slow ? +$("rb-speed").value / 100 : 1, reverb: $("rb-reverb").checked,
   };
 }
 function paintRange() {
@@ -174,11 +174,11 @@ function settingsChanged() {
 
 // ---------------------------------------------------------------------------------------------------- the work
 const STAGES = {
-  decode: ["Reading the song", 0, 0.03], model: ["Getting the bass separator (once, 51 MB)", 0.03, 0.25],
-  start: ["Starting the bass separator", 0.25, 0.3], separate: ["Separating the bass", 0.3, 0.8],
-  find: ["Finding the bass notes", 0.8, 0.85], clean: ["Taking the old bass out", 0.85, 0.88],
+  decode: ["Reading the song", 0, 0.03], model: ["Getting ready (first time only)", 0.03, 0.25],
+  start: ["Getting ready", 0.25, 0.3], separate: ["Rebassing", 0.3, 0.8],
+  find: ["Rebassing", 0.8, 0.85], clean: ["Rebassing", 0.85, 0.88],
   slow: ["Slowing it down", 0.88, 0.92], verb: ["Adding reverb", 0.92, 0.94],
-  build: ["Building the new bass", 0.94, 0.97], master: ["Mastering with zero clipping", 0.97, 1],
+  build: ["Rebassing", 0.94, 0.97], master: ["Finishing", 0.97, 1],
 };
 // (painted at most once a frame, and only what changed: the bar moves on the compositor, no layout)
 let progQ = null, progRaf = 0;
@@ -259,7 +259,7 @@ function onWorker(e) {
   else if (m.type === "analysis") {
     $("rb-quick").hidden = true;
     S.mode = m.mode;
-    if (m.mode === "quick" && m.why && !/cancelled/.test(m.why)) toast(/download|fetch|network/i.test(m.why) ? "Couldn't get the bass separator (are you online?). Used the quick way this time." : "The bass separator can't run on this phone. Used the quick way.");
+    if (m.mode === "quick" && m.why && !/cancelled/.test(m.why)) toast("Rebassed the quick way this time.");
     if (S._loaded) { S._loaded(); S._loaded = null; }
   }
   else if (m.type === "error") fail(m.message);
@@ -290,26 +290,9 @@ function onWorker(e) {
 }
 
 function paintStats() {
-  const s = S.res.stats, p = S.params;
+  const s = S.res.stats;
   const f1 = (v) => (v >= 100 ? v.toFixed(0) : v.toFixed(1));
-  const dB = (v, d = 1) => (v > -0.005 ? (0).toFixed(d) : v.toFixed(d).replace("-", "−"));
-  const items = [
-    ["wide", s.mapping, "How the bass line moved"],
-    ["good", "0", "Clipped"],
-    ["", `${dB(s.bassActualDb, 2)} dB`, "Bass level"],
-    ...(s.room ? [[s.ridePct > 0.05 ? "" : "good", `${dB(s.songDb)} dB`, s.ridePct > 0.05 ? `Song turned down · ducks ${s.ridePct.toFixed(s.ridePct < 1 ? 1 : 0)}%` : "Song turned down (room for the bass)"]] : [
-      [s.songTouchedPct < 0.05 ? "good" : "", s.songTouchedPct < 0.05 ? "Untouched" : `${s.songTouchedPct.toFixed(s.songTouchedPct < 1 ? 2 : 1)}% of it`,
-        s.songTouchedPct < 0.05 ? "Song and vocals" : `Song eased at its peaks (over full scale without its old bass), at most ${dB(s.songDb)} dB`],
-      ["", `${s.heldPct.toFixed(s.heldPct < 10 ? 1 : 0)}%`, "Bass held back (no room)"]]),
-    ["", `${s.truePeakDb > 0 ? "+" + s.truePeakDb.toFixed(2) : dB(s.truePeakDb, 2)} dBTP`, s.songTruePeakDb > -0.1 ? "True peak (the song's own)" : "True peak"],
-    ["", `${s.notes.toLocaleString()}`, "Bass notes"],
-    [s.mode === "separated" ? "good" : "", s.mode === "separated" ? "Separated" : "Quick",
-      `Old bass removed${s.mode !== "separated" ? "" : s.backend === "webgpu" ? " · graphics chip" : s.backend === "wasm" ? " · processor" : " · kept from before"}`],
-    ["", `${f1(s.songLo)}–${f1(s.songHi)} Hz`, "Old bass"],
-    ["", `${f1(s.newLo)}–${f1(s.newHi)} Hz`, "New bass"],
-  ];
-  if (s.speed < 1 || s.reverb) items.push(["", s.speed < 1 ? `${Math.round(s.speed * 100)}%${s.reverb ? " + verb" : ""}` : "Reverb", s.speed < 1 ? "Speed" : "Effect"]);
-  if (s.clipped) items[0] = ["", String(s.clipped), "Clipped"];
+  const items = [["", s.notes.toLocaleString(), "Bass notes"], ["", `${f1(s.songLo)}–${f1(s.songHi)} Hz`, "Old bass"]];
   $("rb-stats").innerHTML = items.map(([c, b, t]) => `<div class="stat ${c}"><b>${b}</b><span>${t}</span></div>`).join("");
 }
 
@@ -692,7 +675,7 @@ function share() {
     recipe: async () => {
       if (!S.src.hash) S.src.hash = await fingerprint(S.src.blob);
       const p = S.params;
-      return { title: S.src.title, artist: S.src.artist || "", duration: S.src.duration || (S.origBuf ? S.origBuf.duration : 0), hash: S.src.hash, settings: { lo: p.lo, hi: p.hi, db: p.db, speed: p.speed, reverb: p.reverb, room: !!p.room, intro: introWanted(), name: S.nameEdited ? name() : "" } };
+      return { title: S.src.title, artist: S.src.artist || "", duration: S.src.duration || (S.origBuf ? S.origBuf.duration : 0), hash: S.src.hash, settings: { lo: p.lo, hi: p.hi, db: p.db, speed: p.speed, reverb: p.reverb, intro: introWanted(), name: S.nameEdited ? name() : "" } };
     },
   });
 }
@@ -733,8 +716,6 @@ export function initRebass() {
   $("rb-speed").addEventListener("input", () => { paintSlow(); settingsChanged(); });
   $("rb-speed-presets").addEventListener("click", (e) => { const c = e.target.closest(".chip"); if (!c) return; $("rb-speed").value = c.dataset.s; paintSlow(); settingsChanged(); });
   $("rb-reverb").onchange = settingsChanged;
-  try { $("rb-room").checked = localStorage.getItem("fifteam-room") === "1"; } catch {}
-  $("rb-room").onchange = () => { try { localStorage.setItem("fifteam-room", $("rb-room").checked ? "1" : "0"); } catch {} settingsChanged(); };
   $("rb-name").addEventListener("input", () => { S.nameEdited = true; });
   $("rb-quick").onclick = () => { $("rb-quick").hidden = true; if (S.worker) S.worker.postMessage({ type: "quick" }); };
   onSeg($("rb-ab"), setAB);
@@ -811,7 +792,6 @@ async function applyRecipe(track, s) {
   $("rb-slow").checked = s.speed < 0.999; if (s.speed < 0.999) $("rb-speed").value = Math.round(s.speed * 100);
   $("rb-reverb").checked = !!s.reverb;
   $("rb-intro").checked = !!s.intro;
-  $("rb-room").checked = !!s.room;
   paintRange(); paintDb(); paintSlow(); readParams();
   if (s.name) { $("rb-name").value = s.name; S.nameEdited = true; } else $("rb-name").value = defaultName();
   go();

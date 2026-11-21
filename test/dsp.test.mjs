@@ -33,5 +33,20 @@ let seed = 3; const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; re
   console.log(`slowed 80% + reverb: ${an.notes.length} notes, first at ${first.toFixed(3)} s slowed, new bass starts ${onset.toFixed(3)} s | ${plan.describe} | bass ${stats.bassActualDb.toFixed(2)} dBFS, song ${stats.songDb.toFixed(2)} dB, held ${stats.heldPct.toFixed(1)}%, true peak ${stats.truePeakDb.toFixed(2)}, clipped ${stats.clipped}`);
   check(Math.abs(onset - first) < 0.012 && stats.clipped === 0 && Math.abs(stats.bassActualDb + 4) < 0.02, "slowed rebass");
 }
+// the song itself is left as it was: a voice at 220 Hz and 1 kHz keeps exactly its level, the song's own sub (50 Hz,
+// below the top of a 25-45 Hz range) gives way to the new bass, which is the loudest thing in the song
+{
+  const sr = 48000, n = sr * 6, L = new Float32Array(n), R = new Float32Array(n), bass = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const t = i / sr;
+    L[i] = R[i] = 0.25 * Math.sin(2 * Math.PI * 220 * t) + 0.15 * Math.sin(2 * Math.PI * 1000 * t) + 0.2 * Math.sin(2 * Math.PI * 50 * t);
+    bass[i] = Math.sin(2 * Math.PI * 35 * t);
+  }
+  const { out, stats } = rebassMix([L, R], bass, 1, sr, { bassDb: -3, band: [25, 45] });
+  const lvl = (x, f) => { let re = 0, im = 0; for (let i = sr; i < n - sr; i++) { re += x[i] * Math.cos(2 * Math.PI * f * i / sr); im += x[i] * Math.sin(2 * Math.PI * f * i / sr); } return 2 * Math.hypot(re, im) / (n - 2 * sr); };
+  const d = (f) => 20 * Math.log10(lvl(out[0], f) / lvl(L, f));
+  console.log(`the song kept: 220 Hz ${d(220).toFixed(3)} dB, 1 kHz ${d(1000).toFixed(3)} dB | its own 50 Hz sub ${d(50).toFixed(1)} dB | the new bass at 35 Hz ${(20 * Math.log10(lvl(out[0], 35))).toFixed(1)} dBFS (set −3) | song touched ${stats.songTouchedPct.toFixed(2)}%, clipped ${stats.clipped}`);
+  check(Math.abs(d(220)) < 0.01 && Math.abs(d(1000)) < 0.01 && d(50) < -25 && stats.songTouchedPct === 0 && stats.clipped === 0, "the song (vocals) untouched, the chosen range the new bass's");
+}
 console.log(failed ? "FAIL" : "PASS");
 process.exit(failed ? 1 : 0);

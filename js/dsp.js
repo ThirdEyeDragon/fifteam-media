@@ -365,8 +365,10 @@ export function rebassMix(chs, bass, bassPeak, sr, opts) {
   const C0 = dbToLin(ceilingDb);
   const nCh = chs.length, n = chs[0].length;
   const music = chs.map((c) => Float32Array.from(c));
-  // the song's own content inside the chosen range comes out; nothing outside it is touched
-  if (band) bandStop(music, sr, band[0], band[1]);
+  // the chosen range belongs to the new bass alone: the song's content below the top of the range comes out (a little
+  // above it too, up to 90 Hz at most, below any voice), so the new notes are what that part of the song is made of.
+  // Nothing higher is touched.
+  if (band) bandStop(music, sr, 1, Math.max(band[1], Math.min(band[1] * 1.25, 90)));
   progress && progress(0.2);
   const A = bassPeak > 0 ? Math.min(dbToLin(bassDb), C0) / bassPeak : 0;
   // the song's own samples past full scale (normally none): eased under it just there
@@ -415,11 +417,12 @@ export function rebassMix(chs, bass, bassPeak, sr, opts) {
     tp = truePeak(out, C0 * 0.7);
   }
   progress && progress(0.95);
-  let peak = 0, over = 0, bassOn = 0, held = 0, bassPk = 0;
+  let peak = 0, over = 0, bassOn = 0, held = 0, bassPk = 0, eSet = 0, eGot = 0;
   for (let i = 0; i < n; i++) {
     const b = Math.abs(bass[i] * A);
     if (b > 0.01 * A * bassPeak) { bassOn++; if (k[i] < 0.97) held++; }
     if (b * k[i] > bassPk) bassPk = b * k[i];
+    eSet += b * b; eGot += b * b * k[i] * k[i];
   }
   for (const o of out) for (let i = 0; i < n; i++) { const a = Math.abs(o[i]); if (a > peak) peak = a; if (a >= 1) over++; }
   if (nCh === 1) out.push(Float32Array.from(out[0]));
@@ -427,93 +430,7 @@ export function rebassMix(chs, bass, bassPeak, sr, opts) {
     out,
     stats: {
       peakDb: linToDb(peak), truePeakDb: linToDb(tp), clipped: over, bassGain: A, bassActualDb: linToDb(A * bassPeak), bassPlayedDb: linToDb(bassPk),
-      songDb: linToDb(gSong), songTouchedPct: (100 * touched) / n, songTruePeakDb: linToDb(songTp), heldPct: bassOn ? (100 * held) / bassOn : 0,
-    },
-  };
-}
-
-/**
- * "Make room for the bass" (the switch): the whole song turned down so the bass can be loud, as in 1.7.
- * Lays the new bass under the song with no clipping, and with as little compression as possible.
- *   The bass plays at exactly bassDb (dBFS, its loudest point; never above the ceiling).
- *   The song is given ONE fixed level for its whole length, the highest at which song and bass together never pass the
- *   ceiling: no compression at all, the song's own dynamics untouched. Only if that fixed level would have to drop below
- *   floorDb (an extreme bass setting on a loud master) does the song sit at floorDb and ride down gently (a 15 ms
- *   look-ahead, 250 ms recovery) where, and only as far as, the two would still clip.
- *   Then the waveform between the samples is checked (4x oversampled); if it would pass the ceiling, the song (not the
- *   bass) is fitted under a ceiling lowered by the overshoot, and checked again.
- * Returns { out: [L, R], stats }.
- */
-export function rebassMixRoom(chs, bass, bassPeak, sr, opts) {
-  const { bassDb = -3, ceilingDb = -0.1, band = null, floorDb = -12, progress } = opts;
-  const C0 = dbToLin(ceilingDb);
-  const nCh = chs.length, n = chs[0].length;
-  const music = chs.map((c) => Float32Array.from(c));
-  // the song's own content inside the chosen range comes out; nothing outside it is touched
-  if (band) bandStop(music, sr, band[0], band[1]);
-  progress && progress(0.2);
-  let A = bassPeak > 0 ? Math.min(dbToLin(bassDb), C0) / bassPeak : 0;
-  const floor = dbToLin(floorDb);
-  const lim = new Float32Array(n);
-  const out = music.map(() => new Float32Array(n));
-  let C = C0, tp = 0, gStatic = 1, rideMin = 1, rideFrac = 0;
-  for (let pass = 0; pass < 4; pass++) {
-    // the most the song may be kept at, sample by sample, with the bass under it
-    gStatic = 1;
-    for (let i = 0; i < n; i++) {
-      const b = bass[i] * A;
-      let g = 1;
-      for (let c = 0; c < nCh; c++) {
-        const m = music[c][i];
-        const am = m < 0 ? -m : m;
-        if (am < 1e-9) continue;
-        const room = (m >= 0) === (b >= 0) ? C - Math.abs(b) : C + Math.abs(b);
-        const gc = room / am;
-        if (gc < g) g = gc;
-      }
-      lim[i] = g < 0 ? 0 : g;
-      if (lim[i] < gStatic) gStatic = lim[i];
-    }
-    progress && progress(0.3 + pass * 0.15);
-    rideMin = 1; rideFrac = 0;
-    if (gStatic >= floor) {
-      // one fixed level: no compression
-      for (let i = 0; i < n; i++) { const b = bass[i] * A; for (let c = 0; c < nCh; c++) out[c][i] = music[c][i] * gStatic + b; }
-    } else {
-      // the floor, and a gentle ride below it only where needed (never exceeding the limit: a minimum over +-h, then an
-      // average over +-h, then a slow recovery)
-      gStatic = floor;
-      for (let i = 0; i < n; i++) lim[i] = Math.min(1, lim[i] / floor);
-      const h = Math.max(1, Math.round(0.015 * sr));
-      const r = boxAverage(slidingMin(lim, h), h);
-      const rel = 1 / (0.25 * sr);
-      for (let i = 1; i < n; i++) if (r[i] > r[i - 1] + rel) r[i] = r[i - 1] + rel;
-      let ridden = 0;
-      for (let i = 0; i < n; i++) {
-        const g = Math.min(r[i], lim[i]);
-        if (g < rideMin) rideMin = g;
-        if (g < 0.99) ridden++;
-        const b = bass[i] * A, gg = floor * g;
-        for (let c = 0; c < nCh; c++) out[c][i] = music[c][i] * gg + b;
-      }
-      rideFrac = ridden / n;
-    }
-    // the waveform between the samples: if it would pass, fit the song under a lower ceiling and go again
-    tp = truePeak(out, C0 * 0.7);
-    if (tp <= C0 * 1.0001) break;
-    C *= (C0 / tp) * 0.999;
-  }
-  // a last sliver over (the bass right at the ceiling, with the song's own peaks between samples): all of it down by that
-  if (tp > C0) { const g = C0 / tp; for (const o of out) for (let i = 0; i < n; i++) o[i] *= g; A *= g; tp = C0; }
-  progress && progress(0.95);
-  let peak = 0, over = 0;
-  for (const o of out) for (let i = 0; i < n; i++) { const a = Math.abs(o[i]); if (a > peak) peak = a; if (a >= 1) over++; }
-  if (nCh === 1) out.push(Float32Array.from(out[0]));
-  return {
-    out,
-    stats: {
-      peakDb: linToDb(peak), truePeakDb: linToDb(tp), clipped: over, bassGain: A, bassActualDb: linToDb(A * bassPeak),
-      songDb: linToDb(gStatic), rideDb: linToDb(rideMin), ridePct: 100 * rideFrac,
+      songDb: linToDb(gSong), songTouchedPct: (100 * touched) / n, bassKeptDb: eSet > 0 ? 10 * Math.log10(eGot / eSet) : 0, songTruePeakDb: linToDb(songTp), heldPct: bassOn ? (100 * held) / bassOn : 0,
     },
   };
 }

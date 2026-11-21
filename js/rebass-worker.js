@@ -7,7 +7,7 @@
 // laid into the bass-free song with no clipping, sent back with a 10 ms map for the graphs and the numbers.
 // If the separator can't run on this phone, the old way is used: the notes found in the whole song, the old bass taken
 // out at its own notes' pitches.
-import { rebassMix, rebassMixRoom, slowDown, freeverb, mixMono, cleanLowEnd } from "./dsp.js";
+import { rebassMix, slowDown, freeverb, mixMono, cleanLowEnd } from "./dsp.js";
 import { analyzeBassLine, planMapping, renderBass, makeFreqAt, st2hz } from "./bassline.js";
 import { getStem, putStem, pack, unpack } from "./stems.js";
 
@@ -106,7 +106,7 @@ function render(p) {
   post("build", 0);
   const n = pr.music[0].length;
   const { bass, peak } = renderBass(an0, plan, sr, n, sp, (q) => post("build", q));
-  const { out, stats } = (p.room ? rebassMixRoom : rebassMix)(pr.music, bass, peak, sr, { bassDb: p.db, band: [p.lo, p.hi], progress: (q) => post("master", q) });
+  const { out, stats } = rebassMix(pr.music, bass, peak, sr, { bassDb: p.db, band: [p.lo, p.hi], progress: (q) => post("master", q) });
   // the map for the graphs, on the (slowed) song's own timeline: the old bass and the new
   const frames = an0.f0.length, map = new Float32Array(frames * 3), fAt = makeFreqAt(an0, plan);
   for (let i = 0; i < frames; i++) {
@@ -125,7 +125,7 @@ function render(p) {
     stats: {
       ...stats, notes: an0.notes.length, drums: an0.dropped.drums, other: an0.dropped.other, mapping: plan.describe, kind: plan.kind,
       songLo: an0.lo * sp, songHi: an0.hi * sp, newLo: targets.length ? Math.min(...targets) : p.lo, newHi: targets.length ? Math.max(...targets) : p.hi,
-      lo: p.lo, hi: p.hi, bassDb: p.db, speed: sp, reverb: !!p.reverb, mode, backend, room: !!p.room,
+      lo: p.lo, hi: p.hi, bassDb: p.db, speed: sp, reverb: !!p.reverb, mode, backend,
     },
   }, transfer);
 }
