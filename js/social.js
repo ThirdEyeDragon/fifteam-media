@@ -4,7 +4,7 @@
 //   own message when it comes into view (file links expire, so they are always fetched fresh). A message deleted on
 //   the service is gone from the feed.
 //   Everything from other people is shown as text (textContent), never as markup. @mentions never ping anyone.
-import { $, toast, openSheet, closeSheet, fmtTime, bus, placeholderArt, getCtx, artUrl } from "./ui.js";
+import { $, toast, openSheet, closeSheet, fmtTime, bus, placeholderArt, getCtx, artUrl, pushLayer, dropLayer } from "./ui.js";
 import * as store from "./store.js";
 import { library } from "./library.js";
 import { player } from "./player.js";
@@ -16,6 +16,7 @@ import { loadMeta, votesOf, setVote, meta, canSee, blocked } from "./meta.js";
 import { bannedPhones, noPicPhones, checkBans, badgesOf } from "./ban.js";
 import { activityChanged, initActivity } from "./activity.js";
 import { hookFetch, holdFor } from "./limiter.js";
+import { offensive, OFFENSIVE } from "./filter.js";
 import { showMarket, marketOpen, loadMarket, renderMarket } from "./market.js";
 
 const NAME_KEY = "fifteam-social-name", MINE_KEY = "fifteam-social-mine", ME_KEY = "fifteam-social-me", AV_KEY = "fifteam-social-avatar";
@@ -133,8 +134,13 @@ function clean(list) {
       ? { id: c.id, by: /^[a-z0-9]{6,16}$/.test(c.by) ? c.by : "", user: str(c.user, 24) || "someone", text: str(c.text, 300), at: +c.at || 0,
           re: /^[a-z0-9]{6,20}$/.test(c.re) ? c.re : "", likes: Array.isArray(c.likes) ? [...new Set(c.likes.filter((x) => typeof x === "string" && /^[a-z0-9]{6,16}$/.test(x)))].slice(0, 2000) : [] } : null)).filter(Boolean);
     const video = p.video === "mp4" || p.video === "webm" ? p.video : "";
-    const music = p.image && p.music && typeof p.music === "object" ? { title: str(p.music.title, 120) || "Music", artist: str(p.music.artist, 80), len: Math.max(1, Math.min(60, +p.music.len || 0)) } : null;
-    return { id: p.id, at: +p.at || 0, user: str(p.user, 24) || "someone", text: str(p.text, 500), image: !!p.image, avatar: !!p.avatar, song: s, likes, by: /^[a-z0-9]{6,16}$/.test(p.by) ? p.by : "", video, comments, music };
+    const pl = p.playlist && typeof p.playlist === "object" && Array.isArray(p.playlist.items) ? {
+      name: str(p.playlist.name, 60) || "Playlist",
+      items: p.playlist.items.filter((x) => x && ID.test(x.id)).slice(0, 25).map((x) => ({ id: x.id, title: str(x.title, 120) || "Song", artist: str(x.artist, 80), note: str(x.note, 80), duration: +x.duration || 0 })),
+    } : null;
+    const media = Array.isArray(p.media) ? p.media.filter((k) => k === "i" || k === "mp4" || k === "webm").slice(0, 10) : [];
+    const music = (p.image || (media.includes("i") && !media.some((k) => k !== "i"))) && p.music && typeof p.music === "object" ? { title: str(p.music.title, 120) || "Music", artist: str(p.music.artist, 80), len: Math.max(1, Math.min(60, +p.music.len || 0)) } : null;
+    return { id: p.id, at: +p.at || 0, user: str(p.user, 24) || "someone", text: str(p.text, 500), image: !!p.image, avatar: !!p.avatar, song: s, likes, by: /^[a-z0-9]{6,16}$/.test(p.by) ? p.by : "", video, comments, music, media, playlist: pl && pl.items.length ? pl : null };
   }).filter(Boolean);
 }
 /** A post's message (for its picture and song links), fetched once per load, a couple at a time. */
@@ -301,6 +307,7 @@ function render() {
       e.preventDefault();
       const v = inp.value.trim().replace(/\s+/g, " ");
       if (!NAME_OK.test(v)) { err.textContent = "2 to 24 letters, numbers, spaces, _ . or -"; return; }
+      if (offensive(v)) { err.textContent = OFFENSIVE; return; }
       S.name = v; S.editingName = false;
       try { localStorage.setItem(NAME_KEY, v); } catch {}
       render();
@@ -407,9 +414,12 @@ function postCard(p) {
   if (p.music) { card.append(musicRow(p)); clipWatch(card, p); }
   if (p.text) card.append(h("p", "so-text", p.text));
   let img = null, song = null, vid = null;
+  let col = null;
+  if (p.media.length) { col = collage(p); card.append(col); }
   if (p.image) { img = h("div", "so-img so-wait"); card.append(img); }
   if (p.video) { vid = videoBlock(p); card.append(vid); }
   if (p.song) { song = songBlock(p); card.append(song); }
+  if (p.playlist) card.append(playlistBlock(p));
   // the counts, then Like, Comment and (a rebassed song) Vote
   const stats = h("div", "so-stats");
   const sl = h("span", "so-slikes"), sv = h("span", "so-svotes"), sc = h("button", "so-scom");
@@ -435,7 +445,7 @@ function postCard(p) {
   paintLike(lk, p);
   paintCount(card, p);
   // the pictures, video and song links, from the post's own message, once it is near the screen
-  if (p.image || p.song || p.avatar || p.video) {
+  if (p.image || p.song || p.avatar || p.video || p.media.length || p.playlist) {
     card._fill = async () => {
       try {
         const m = await message(p.id);
@@ -444,6 +454,8 @@ function postCard(p) {
         if (img && pic) { const i = h("img", "so-img"); i.alt = p.text ? p.text.slice(0, 80) : "A picture"; i.decoding = "async"; i.onload = () => i.classList.add("in"); i.onerror = () => i.classList.add("in"); i.src = pic.url; i.onclick = () => openViewer({ post: p, src: pic.url }); img.replaceWith(i); }
         if (song) { song._url = mp3 && mp3.url; if (cov) song.querySelector(".so-cover").style.backgroundImage = `url("${cov.url}")`; }
         if (vid) { const f = fileOf(m, "video." + p.video), po = fileOf(m, "poster.jpg"); vid._attach(f && f.url, po && po.url); }
+        if (col) col._attach(m);
+        if (p.playlist && cov) card.querySelector(".so-plcover").style.backgroundImage = `url("${cov.url}")`;
       } catch (e) {
         if (e.status === 404) { S.gone.add(p.id); card.remove(); }
         else if (img) img.textContent = "Couldn't load the picture";
@@ -453,6 +465,137 @@ function postCard(p) {
   }
   return card;
 }
+// ---------------------------------------------------------------------------------------------------- shared playlists
+/** A playlist in the feed: its cover, name and songs, each to play or add; or all of them at once, as a category. (No
+ * vote: a playlist can't be the rebass of the week.) */
+function playlistBlock(p) {
+  const pl = p.playlist, box = h("div", "so-pl");
+  const top = h("div", "so-pltop");
+  const cov = h("span", "so-plcover"); cov.style.backgroundImage = `url("${placeholderArt(pl.name, "rebass")}")`;
+  const meta = h("div", "so-smeta"); meta.append(h("small", "so-pltag", "Playlist"), h("b", "", pl.name), h("small", "", `${pl.items.length} song${pl.items.length === 1 ? "" : "s"} · ${fmtTime(pl.items.reduce((a, x) => a + x.duration, 0))}`));
+  const all = h("button", "btn small", "Add all"); all.onclick = () => addPlaylist(p, all);
+  top.append(cov, meta, all);
+  box.append(top);
+  const list = h("div", "so-pllist");
+  const show = (n) => {
+    list.replaceChildren();
+    for (const it of pl.items.slice(0, n)) {
+      const sb = songBlock({ id: it.id, user: p.user, by: p.by, song: { title: it.title, artist: it.artist, note: it.note, duration: it.duration } });
+      message(it.id).then((m) => { const c = fileOf(m, "cover.jpg"); if (c) sb.querySelector(".so-cover").style.backgroundImage = `url("${c.url}")`; }).catch(() => {});
+      list.append(sb);
+    }
+    if (pl.items.length > n) { const more = h("button", "btn small so-plmore", `Show all ${pl.items.length} songs`); more.onclick = () => show(pl.items.length); list.append(more); }
+  };
+  show(3);
+  box.append(list);
+  return box;
+}
+/** Every song in a shared playlist into the library, and a category of them (with its cover). */
+async function addPlaylist(p, btn) {
+  const pl = p.playlist;
+  btn.disabled = true;
+  const ids = [];
+  try {
+    for (const [i, it] of pl.items.entries()) {
+      btn.textContent = `${i + 1} of ${pl.items.length}…`;
+      const q = { id: it.id, user: p.user, by: p.by, song: { title: it.title, artist: it.artist, note: it.note, duration: it.duration } };
+      const id = await addToLibrary(q, { _url: null }, null);
+      if (id) ids.push(id);
+    }
+    let cover = null;
+    try { const m = await message(p.id), c = fileOf(m, "cover.jpg"); if (c) cover = await (await fetch(c.url, { cache: "no-store" })).blob(); } catch {}
+    const { createCategory } = await import("./categories.js");
+    await createCategory(pl.name, ids, cover);
+    btn.textContent = "Added"; btn.classList.add("done");
+    toast(`${ids.length} songs added, in the category ${pl.name} (Library › Rebassed)`, 3500);
+  } catch { btn.disabled = false; btn.textContent = "Add all"; toast("Couldn't add them all. Are you online?"); }
+}
+/** A category from the library, shared to Social: each song goes up on its own (so each fits), then the playlist post. */
+export async function sharePlaylist(cat, tracks, cover, text, say) {
+  await config();
+  if (!S.name) throw new Error("Pick a username in Social first.");
+  if (offensive(cat.name, text)) throw new Error(OFFENSIVE);
+  const items = [];
+  for (const [i, t] of tracks.slice(0, 25).entries()) {
+    say(`Song ${i + 1} of ${Math.min(25, tracks.length)}…`);
+    const art = t.hasArt ? await store.getArt(t.id) : null;
+    const files = [];
+    if (art) { try { files.push(["cover.jpg", await squareJpeg(art, 400)]); } catch {} }
+    const room = MAX_MSG - files.reduce((a, [, b]) => a + b.size, 0) - 64 * 1024;
+    const kbps = [192, 160, 128, 112, 96].find((k) => (k * 1000 / 8) * (t.duration || 0) * 1.03 < room);
+    if (!kbps) continue;                                            // (too long to share: left out)
+    const f = await libraryMp3(t, kbps);
+    if (f.size > room) continue;
+    files.push(["song.mp4", await scramble(f)]);
+    const fd = new FormData();
+    fd.append("payload_json", JSON.stringify({ content: `🎵 ${t.title}${t.artist ? " · " + t.artist : ""} (in ${S.name}'s playlist ${cat.name})`.slice(0, 1900), username: `${S.name} · FifTeam`.replace(/discord|clyde/gi, "").slice(0, 80), allowed_mentions: { parse: [] }, attachments: files.map(([n], k) => ({ id: k, filename: n })) }));
+    files.forEach(([n, b], k) => fd.append(`files[${k}]`, b, n));
+    const m = await dc("?wait=true", { method: "POST", form: fd });
+    items.push({ id: m.id, title: t.title.slice(0, 120), artist: (t.artist || "").slice(0, 80), note: (t.note || "").slice(0, 80), duration: Math.round(t.duration || 0) });
+  }
+  if (!items.length) throw new Error("Those songs are too long to share.");
+  say("Sharing the playlist…");
+  const fd = new FormData(), files = [];
+  if (cover) { try { files.push(["cover.jpg", await squareJpeg(cover, 600)]); } catch {} }
+  const entry = { at: Date.now(), user: S.name, text: (text || "").slice(0, 500), image: false, video: "", comments: [], avatar: false, by: S.me, likes: [], song: null, playlist: { name: cat.name.slice(0, 60), items } };
+  fd.append("payload_json", JSON.stringify({ content: [`**${S.name}** shared a playlist: ${cat.name} (${items.length} songs)`, entry.text].filter(Boolean).join("\n").slice(0, 1900), username: `${S.name} · FifTeam`.replace(/discord|clyde/gi, "").slice(0, 80), allowed_mentions: { parse: [] }, attachments: files.map(([n], k) => ({ id: k, filename: n })) }));
+  files.forEach(([n, b], k) => fd.append(`files[${k}]`, b, n));
+  const m = await dc("?wait=true", { method: "POST", form: fd });
+  entry.id = m.id;
+  S.mine.add(m.id); saveMine();
+  try { await changeIndex((posts) => { if (!posts.some((x) => x.id === m.id)) posts.unshift(entry); }, (now) => now.some((x) => x.id === m.id)); }
+  catch (e) { dc(`/messages/${m.id}`, { method: "DELETE" }).catch(() => {}); for (const it of items) dc(`/messages/${it.id}`, { method: "DELETE", low: true }).catch(() => {}); throw e; }
+  return items.length;
+}
+
+// ---------------------------------------------------------------------------------------------------- several pictures and videos
+const mediaFile = (p, i, still) => (p.media[i] === "i" ? `m${i}.jpg` : still ? `m${i}.poster.jpg` : `m${i}.${p.media[i]}`);
+/** Several pictures and videos in the feed: up to four in a collage (the last one saying how many more); a tap opens
+ * the post's own feed of all of them. */
+function collage(p) {
+  const n = p.media.length, shown = Math.min(4, n);
+  const box = h("div", `so-col c${shown}`);
+  for (let i = 0; i < shown; i++) {
+    const t = h("button", "so-cell so-wait" + (p.media[i] !== "i" ? " vid" : ""));
+    t.setAttribute("aria-label", `${p.media[i] === "i" ? "Picture" : "Video"} ${i + 1} of ${n}`);
+    if (i === shown - 1 && n > shown) t.append(h("span", "so-more-n", `+${n - shown}`));
+    t.onclick = () => openPostMedia(p, i);
+    box.append(t);
+  }
+  box._attach = (m) => box.querySelectorAll(".so-cell").forEach((t, i) => { const f = fileOf(m, mediaFile(p, i, true)); if (f) { t.style.backgroundImage = `url("${f.url}")`; t.classList.remove("so-wait"); } });
+  return box;
+}
+/** A post's own feed: every picture and video in it, one under the other; a tap on one goes full screen, where they
+ * swipe from one to the next. */
+async function openPostMedia(p, start = 0) {
+  const name = nameOf(p);
+  openSheet((panel) => {
+    panel.classList.add("pf-panel", "pm-panel");
+    const head = h("div", "so-head"), who = h("div", "so-who");
+    const av = avatarEl(40, "", name); showPicture(av, p);
+    const nm = h("span", "so-name"); nm.append(nameLine(name, p.by), h("small", "", ago(p.at)));
+    who.append(av, nm); head.append(who); panel.append(head);
+    if (p.music) panel.append(musicRow(p));
+    if (p.text) panel.append(h("p", "so-text", p.text));
+    const list = h("div", "pm-list"); panel.append(list);
+    p.media.forEach((k, i) => {
+      if (k === "i") { const im = h("img", "pm-img"); im.alt = `Picture ${i + 1}`; im.decoding = "async"; im.onclick = () => openViewer({ post: p, index: i }); list.append(im); }
+      else { const v = document.createElement("video"); v.className = "pm-vid"; v.controls = true; v.playsInline = true; v.setAttribute("playsinline", ""); v.preload = "metadata"; list.append(v); }
+    });
+    const foot = h("button", "btn small pm-foot", [p.likes.length ? `♥ ${p.likes.length}` : "", `💬 ${commentsOf(p).length ? commentsOf(p).length + " comments" : "Comment"}`].filter(Boolean).join("  ·  "));
+    foot.onclick = () => openComments(p.id);
+    panel.append(foot);
+  });
+  try {
+    const m = await message(p.id), els = document.querySelectorAll("#sheet-panel .pm-list > *");
+    els.forEach((el, i) => {
+      const f = fileOf(m, mediaFile(p, i)); if (!f) return;
+      if (el.tagName === "IMG") el.src = f.url; else { const po = fileOf(m, mediaFile(p, i, true)); if (po) el.poster = po.url; el.src = f.url; }
+    });
+    if (start && els[start]) els[start].scrollIntoView({ block: "start" });
+  } catch { toast("Couldn't load that post. Are you online?"); }
+}
+
 /** A post's video: plays by itself, without sound, while it's on screen (looping); tap it to pause; the speaker
  * button turns the sound on or off for every video (and stops the music player while a video has sound). */
 function videoBlock(p) {
@@ -549,7 +692,7 @@ function openComments(id) {
     const go = h("button", "btn small primary", "Send"); go.type = "submit";
     const row = h("div", "cs-row"); row.append(inp, go);
     f.append(to, row);
-    f.onsubmit = (e) => { e.preventDefault(); const v = inp.value.trim(); if (v) { inp.value = ""; comment(id, v, S.cs && S.cs.reply); setReply(null); } };
+    f.onsubmit = (e) => { e.preventDefault(); const v = inp.value.trim(); if (!v) return; if (offensive(v)) { toast(OFFENSIVE, 3500); return; } inp.value = ""; comment(id, v, S.cs && S.cs.reply); setReply(null); };
     panel.append(f);
   });
   paintSheet();
@@ -779,22 +922,28 @@ function stopSong() { if (S.audio && S.playing) { S.audio.pause(); S.playing = n
 async function addToLibrary(p, block, btn) {
   const s = p.song;
   try {
-    btn.disabled = true; btn.classList.add("busy");
+    if (btn) { btn.disabled = true; btn.classList.add("busy"); }
     const audio = await songBlob(p, block);
     let cover = null;
     try { const m = await message(p.id), c = fileOf(m, "cover.jpg"); if (c) cover = await (await fetch(c.url, { cache: "no-store" })).blob(); } catch {}
     const file = new File([audio], `${s.title}.mp3`.replace(/[\\/:*?"<>|]+/g, " "), { type: "audio/mpeg" });
-    await library.add({ id: store.newId(), kind: "rebass", title: s.title, artist: s.artist || nameOf(p), album: "FifTeam Social", note: s.note || `from ${nameOf(p)}`,
+    const id = store.newId();
+    await library.add({ id, kind: "rebass", title: s.title, artist: s.artist || nameOf(p), album: "FifTeam Social", note: s.note || `from ${nameOf(p)}`,
       duration: s.duration, size: file.size, type: file.type, fileName: file.name, added: Date.now(), hasArt: !!cover, from: "social" }, file, cover);
-    btn.classList.remove("busy"); btn.classList.add("done"); toast("Added to your library, under Rebassed");
-  } catch { btn.disabled = false; btn.classList.remove("busy"); toast("Couldn't download that song. Are you online?"); }
+    if (btn) { btn.classList.remove("busy"); btn.classList.add("done"); toast("Added to your library, under Rebassed"); }
+    return id;
+  } catch (e) {
+    if (!btn) throw e;
+    btn.disabled = false; btn.classList.remove("busy"); toast("Couldn't download that song. Are you online?");
+    return null;
+  }
 }
 function viewImage(src) { openViewer({ src }); }
 /** Full screen: a post's picture, or its video playing with sound (from a profile, or a tap on a picture). */
-async function openViewer({ post, src }) {
+async function openViewer({ post, src, index }) {
   closeViewer();
   const v = h("div", "viewer"); v.id = "viewer"; v.setAttribute("role", "dialog"); v.setAttribute("aria-modal", "true");
-  const x = h("button", "viewer-x"); x.setAttribute("aria-label", "Close"); x.textContent = "×"; x.onclick = closeViewer;
+  const x = h("button", "viewer-x"); x.setAttribute("aria-label", "Close"); x.textContent = "×"; x.onclick = () => closeViewer();
   const stage = h("div", "viewer-stage");
   v.append(stage, x);
   if (post) {
@@ -809,11 +958,29 @@ async function openViewer({ post, src }) {
   }
   v.onclick = (e) => { if (e.target === v || e.target === stage) closeViewer(); };
   document.body.append(v);
+  pushLayer("viewer", () => closeViewer(true));
   document.body.classList.add("viewing");   // (nothing behind it shows: the app and any open page are hidden meanwhile)
   addEventListener("keydown", viewerKey);
   stage.append(h("div", "viewer-spin"));
   try {
-    if (post && post.video) {
+    if (post && post.media && post.media.length) {
+      const m = await message(post.id), n = post.media.length;
+      const strip = h("div", "viewer-strip"), count = h("span", "viewer-count", `${(index || 0) + 1} / ${n}`);
+      post.media.forEach((k, i) => {
+        const slide = h("div", "viewer-slide"), f = fileOf(m, mediaFile(post, i));
+        if (!f) { slide.append(h("p", "status", "Couldn't load this one")); strip.append(slide); return; }
+        if (k === "i") { const im = h("img", ""); im.alt = `Picture ${i + 1}`; im.decoding = "async"; im.src = f.url; slide.append(im); }
+        else { const v = document.createElement("video"); v.controls = true; v.playsInline = true; v.setAttribute("playsinline", ""); v.preload = "metadata"; const po = fileOf(m, mediaFile(post, i, true)); if (po) v.poster = po.url; v.src = f.url; slide.append(v); }
+        strip.append(slide);
+      });
+      stage.replaceChildren(strip, count);
+      pauseVideos(); stopSong(); try { player.pause(); } catch {}
+      // the one on screen plays (a video), the rest wait
+      const on = () => { const i = Math.round(strip.scrollLeft / Math.max(1, strip.clientWidth)); count.textContent = `${i + 1} / ${n}`; strip.querySelectorAll(".viewer-slide").forEach((sl, j) => { const v = sl.querySelector("video"); if (!v) return; if (j === i) v.play().catch(() => {}); else v.pause(); }); };
+      strip.addEventListener("scroll", () => { clearTimeout(strip._t); strip._t = setTimeout(on, 120); }, { passive: true });
+      requestAnimationFrame(() => { strip.scrollLeft = (index || 0) * strip.clientWidth; on(); });
+      if (post.music && !post.media.some((k) => k !== "i")) { stage.append(musicRow(post)); playClip(post, true); }
+    } else if (post && post.video) {
       const m = await message(post.id), f = fileOf(m, "video." + post.video), po = fileOf(m, "poster.jpg");
       if (!f) throw new Error("gone");
       const vid = document.createElement("video");
@@ -834,8 +1001,9 @@ async function openViewer({ post, src }) {
   } catch { stage.replaceChildren(h("p", "status", "Couldn't load that. Are you online?")); }
 }
 function viewerKey(e) { if (e.key === "Escape") closeViewer(); }
-function closeViewer() {
+function closeViewer(fromBack) {
   const v = $("viewer"); if (!v) return;
+  if (!fromBack) dropLayer("viewer");
   removeEventListener("keydown", viewerKey);
   v.querySelectorAll("video").forEach((x) => { x.pause(); x.removeAttribute("src"); x.load(); });
   v.remove();
@@ -933,63 +1101,80 @@ async function prepareVideo(file, budget, say) {
 
 // ---------------------------------------------------------------------------------------------------- posting
 /** The new-post sheet. preset: { text, img, song: { title, artist, note, duration, cover (Blob), encode(kbps) -> File } } */
+const MAX_ITEMS = 10;
 function composer(preset) {
   if (!S.name) { toast("Pick a username first"); S.editingName = true; render(); setTimeout(() => { const i = document.querySelector("#so-body .so-nameform input"); if (i) i.focus(); }, 100); return; }
-  let img = preset.img || null, song = preset.song || null, video = preset.video || null, music = preset.music || null;
-  preset = { ...preset };
+  // what's going up: pictures and videos (up to 10), a rebassed song, music for the pictures
+  let items = preset.items ? [...preset.items] : [...(preset.img ? [{ k: "i", blob: preset.img }] : []), ...(preset.video ? [{ k: "v", file: preset.video.file, duration: preset.video.duration }] : [])];
+  let song = preset.song || null, music = preset.music || null;
+  const pics = () => items.filter((x) => x.k === "i").length, vids = () => items.filter((x) => x.k === "v");
   openSheet((p) => {
     p.append(h("h3", "", "New post"));
     const text = h("textarea", "input so-compose"); text.rows = 3; text.maxLength = 500; text.placeholder = "Say something"; text.setAttribute("aria-label", "Your post");
     text.value = preset.text || "";
+    const again = (more) => composer({ items, song, music, text: text.value, ...more });
     const prev = h("div", "stack-sm");
     const paint = () => {
       prev.replaceChildren();
-      if (img) {
-        const i = h("img", "so-img"); i.src = URL.createObjectURL(img);
-        const x = h("button", "btn small", "Remove picture"); x.onclick = () => { img = null; music = null; paint(); };
-        // music on the picture: a part of a song from the library
-        const mb = h("button", "btn small so-addmusic"); mb.append(h("span", "", "♪"), music ? "Change music" : "Add music");
-        mb.onclick = () => pickMusic((m) => { music = m; composer({ img, song, music, text: text.value }); }, () => composer({ img, song, music, text: text.value }));
-        const row = h("div", "row wrap"); row.append(mb, x);
-        prev.append(i, row);
-        if (music) {
-          const chip = h("div", "so-mchip"); chip.append(h("span", "", `♪ ${music.track.title}${music.track.artist ? " · " + music.track.artist : ""} · ${fmtTime(music.start)}–${fmtTime(music.start + music.len)}`));
-          const rm = h("button", "cs-x", "×"); rm.setAttribute("aria-label", "No music"); rm.onclick = () => { music = null; paint(); };
-          chip.append(rm); prev.append(chip);
+      if (items.length) {
+        const strip = h("div", "so-pstrip");
+        items.forEach((it, i) => {
+          const t = h("span", "so-pthumb" + (it.k === "v" ? " vid" : ""));
+          if (it.k === "i") t.style.backgroundImage = `url("${URL.createObjectURL(it.blob)}")`;
+          else { const v = document.createElement("video"); v.src = URL.createObjectURL(it.file); v.muted = true; v.playsInline = true; v.preload = "metadata"; t.append(v, h("small", "", fmtTime(it.duration))); }
+          const x = h("button", "mk-px", "×"); x.setAttribute("aria-label", "Remove"); x.onclick = () => { items.splice(i, 1); if (!pics() || vids().length) music = null; paint(); };
+          t.append(x); strip.append(t);
+        });
+        const big = vids().some((v) => v.file.size > MAX_MSG / Math.max(1, items.length));
+        prev.append(strip, h("p", "status", `${items.length} of ${MAX_ITEMS}${big ? " · videos are made smaller to fit" : ""}`));
+        // music for pictures (not with videos: they have their own sound)
+        if (pics() && !vids().length) {
+          const mb = h("button", "btn small so-addmusic"); mb.append(h("span", "", "♪"), music ? "Change music" : "Add music");
+          mb.onclick = () => pickMusic((m) => { music = m; again(); }, () => again());
+          prev.append(mb);
+          if (music) {
+            const chip = h("div", "so-mchip"); chip.append(h("span", "", `♪ ${music.track.title}${music.track.artist ? " · " + music.track.artist : ""} · ${fmtTime(music.start)}–${fmtTime(music.start + music.len)}`));
+            const rm = h("button", "cs-x", "×"); rm.setAttribute("aria-label", "No music"); rm.onclick = () => { music = null; paint(); };
+            chip.append(rm); prev.append(chip);
+          }
         }
       }
-      if (video) {
-        const v = document.createElement("video"); v.className = "so-img"; v.src = URL.createObjectURL(video.file); v.muted = true; v.playsInline = true; v.controls = true;
-        const x = h("button", "btn small", "Remove video"); x.onclick = () => { video = null; paint(); };
-        prev.append(v, h("p", "status", `${fmtTime(video.duration)}${video.file.size > MAX_MSG ? " · it'll be made smaller to post" : ""}`), x);
-      }
       if (song) {
-        const s = h("div", "so-song"), c = h("span", "so-cover"); c.style.backgroundImage = `url("${song.cover ? URL.createObjectURL(song.cover) : placeholderArt(song.title, "rebass")}")`;
+        const sb = h("div", "so-song"), c = h("span", "so-cover"); c.style.backgroundImage = `url("${song.cover ? URL.createObjectURL(song.cover) : placeholderArt(song.title, "rebass")}")`;
         const m = h("div", "so-smeta"); m.append(h("b", "", song.title), h("small", "", [song.artist, song.note, song.duration ? fmtTime(song.duration) : ""].filter(Boolean).join(" · ")));
-        const x = h("button", "btn small", "Remove"); x.onclick = () => { song = null; paint(); }; s.append(c, m, x); prev.append(s);
+        const x = h("button", "btn small", "Remove"); x.onclick = () => { song = null; paint(); }; sb.append(c, m, x); prev.append(sb);
       }
     };
     const addRow = h("div", "row wrap");
-    const ai = h("button", "btn small"); ai.append(icon("i-image"), "Picture");
-    ai.onclick = async () => { const f = await pickAny(); if (f) { try { img = await fitJpeg(f, 1600); video = null; paint(); } catch { toast("Couldn't read that picture"); } } };
+    const ai = h("button", "btn small"); ai.append(icon("i-image"), "Pictures");
+    ai.onclick = async () => {
+      if (items.length >= MAX_ITEMS) { toast(`Up to ${MAX_ITEMS} pictures and videos`); return; }
+      const fs = await pickMany("image/*");
+      for (const f of fs.slice(0, MAX_ITEMS - items.length)) { try { items.push({ k: "i", blob: await fitJpeg(f, 1600) }); } catch { toast("Couldn't read that picture"); } }
+      if (fs.length > MAX_ITEMS - items.length + fs.length) toast(`Up to ${MAX_ITEMS} pictures and videos`);
+      paint();
+    };
     const av = h("button", "btn small"); av.append(icon("i-video"), "Video");
     av.onclick = async () => {
+      if (items.length >= MAX_ITEMS) { toast(`Up to ${MAX_ITEMS} pictures and videos`); return; }
+      if (song) { toast("A post can have videos or a song"); return; }
       const f = await pickAny("video/*"); if (!f) return;
       try {
         const d = await videoInfo(f);
-        if (d.duration > MAX_VIDEO_SEC) { toast(`Videos up to ${MAX_VIDEO_SEC / 60} minutes`); return; }
-        video = { file: f, duration: d.duration }; img = null; song = null; paint();
+        if (d.duration + vids().reduce((a, v) => a + v.duration, 0) > MAX_VIDEO_SEC) { toast(`Videos up to ${MAX_VIDEO_SEC / 60} minutes in all`); return; }
+        items.push({ k: "v", file: f, duration: d.duration }); music = null; paint();
       } catch { toast("This phone can't play that video."); }
     };
     const as = h("button", "btn small"); as.append(icon("i-bass"), "Rebassed song");
-    as.onclick = () => { if (video) { toast("A post can have a video or a song"); return; } pickRebass((s) => composer({ song: s, text: text.value, img, music })); };
+    as.onclick = () => { if (vids().length) { toast("A post can have videos or a song"); return; } pickRebass((sg) => again({ song: sg })); };
     addRow.append(ai, av, as);
     const err = h("p", "set-err"), go = h("button", "btn primary block", "Post");
     go.onclick = async () => {
-      if (!img && !song && !video && !text.value.trim()) { err.textContent = "Write something, or add a picture, a video or a song."; return; }
+      if (!items.length && !song && !text.value.trim()) { err.textContent = "Write something, or add pictures, a video or a song."; return; }
+      if (offensive(text.value)) { err.textContent = OFFENSIVE; return; }
       go.disabled = true; err.textContent = "";
       try {
-        await post(text.value.trim(), img, song, (msg) => { go.textContent = msg; }, video, img ? music : null);
+        await post(text.value.trim(), items, song, (msg) => { go.textContent = msg; }, pics() && !vids().length ? music : null);
         closeSheet(); toast("Posted"); render(); $("view-social").scrollTop = 0;
       } catch (e) { err.textContent = e.message === "setup" ? "FifTeam Social isn't switched on yet." : e.message || "Couldn't post."; go.disabled = false; go.textContent = "Post"; }
     };
@@ -997,6 +1182,10 @@ function composer(preset) {
     paint();
     if (preset.pick === "image") ai.click(); else if (preset.pick === "video") av.click();
   });
+}
+/** Several files at once (pictures). */
+function pickMany(accept) {
+  return new Promise((res) => { const i = document.createElement("input"); i.type = "file"; i.accept = accept; i.multiple = true; i.onchange = () => res([...(i.files || [])]); i.addEventListener("cancel", () => res([])); i.click(); });
 }
 function pickAny(accept = "image/*") {
   return new Promise((res) => { const i = document.createElement("input"); i.type = "file"; i.accept = accept; i.onchange = () => res(i.files && i.files[0]); i.addEventListener("cancel", () => res(null)); i.click(); });
@@ -1103,11 +1292,31 @@ async function libraryMp3(t, kbps) {
   const chs = [buf.getChannelData(0), buf.numberOfChannels > 1 ? buf.getChannelData(1) : buf.getChannelData(0)];
   return (await makeFile(chs, buf.sampleRate, t.title, "mp3", ctx, null, { title: t.title, artist: t.artist || "", album: "FifTeam Social", kbps })).file;
 }
-async function post(text, img, song, say, video, music) {
+async function post(text, items, song, say, music) {
   await config();
-  const files = [];
+  items = items || [];
+  const files = [], imgsOnly = items.filter((x) => x.k === "i"), vidsOnly = items.filter((x) => x.k === "v");
+  const img = items.length === 1 && imgsOnly.length ? imgsOnly[0].blob : null;
+  const video = items.length === 1 && vidsOnly.length ? vidsOnly[0] : null;
+  let media = null;
   if (img) files.push(["picture.jpg", img]);
-  if (img && music) {
+  if (items.length > 1) {
+    // the videos share what's left of the post's room, each by its length
+    const room = MAX_MSG - imgsOnly.reduce((a, x) => a + x.blob.size, 0) - vidsOnly.length * 160 * 1024 - 256 * 1024 - (music ? 600 * 1024 : 0);
+    const total = vidsOnly.reduce((a, x) => a + x.duration, 0) || 1;
+    if (vidsOnly.length && room < vidsOnly.length * 300 * 1024) throw new Error("That's too much to fit in one post. Try fewer pictures or a shorter video.");
+    media = [];
+    let nv = 0;
+    for (const [i, it] of items.entries()) {
+      if (it.k === "i") { files.push([`m${i}.jpg`, it.blob]); media.push("i"); continue; }
+      nv++;
+      const v = await prepareVideo(it.file, Math.max(300 * 1024, Math.floor(room * it.duration / total)), (m) => say(vidsOnly.length > 1 ? `Video ${nv} of ${vidsOnly.length}: ${m}` : m));
+      files.push([`m${i}.${v.ext}`, v.blob]);
+      if (v.poster) files.push([`m${i}.poster.jpg`, v.poster]);
+      media.push(v.ext);
+    }
+  }
+  if ((img || (media && !vidsOnly.length)) && music) {
     say("Getting the music ready…");
     let clip; try { clip = await clipMp3(music); } catch { throw new Error("Couldn't read that song for the music. Try another one."); }
     files.push(["music.mp4", await scramble(clip)]);
@@ -1131,7 +1340,7 @@ async function post(text, img, song, say, video, music) {
     files.push(["song.mp4", await scramble(f)]);
   }
   say(files.length ? `Uploading (${sizeText(files.reduce((a, [, b]) => a + b.size, 0))})…` : "Posting…");
-  const entry = { at: Date.now(), user: S.name, text: text.slice(0, 500), image: !!img, video: vtype, ...(img && music ? { music: { title: music.track.title.slice(0, 120), artist: (music.track.artist || "").slice(0, 80), len: Math.round(music.len) } } : {}), comments: [], avatar: false, by: S.me, likes: [], song: song ? { title: song.title.slice(0, 120), artist: (song.artist || "").slice(0, 80), note: (song.note || "").slice(0, 80), duration: Math.round(song.duration || 0) } : null };
+  const entry = { at: Date.now(), user: S.name, text: text.slice(0, 500), image: !!img, video: vtype, ...(media ? { media } : {}), ...((img || (media && !vidsOnly.length)) && music ? { music: { title: music.track.title.slice(0, 120), artist: (music.track.artist || "").slice(0, 80), len: Math.round(music.len) } } : {}), comments: [], avatar: false, by: S.me, likes: [], song: song ? { title: song.title.slice(0, 120), artist: (song.artist || "").slice(0, 80), note: (song.note || "").slice(0, 80), duration: Math.round(song.duration || 0) } : null };
   // the post's own message
   const lines = [`**${S.name}**`];
   if (entry.text) lines.push(entry.text);
@@ -1156,6 +1365,7 @@ async function removePost(p) {
   S.gone.add(p.id); render();
   try {
     await dc(`/messages/${p.id}`, { method: "DELETE" }).catch((e) => { if (e.status !== 404) { S.gone.delete(p.id); render(); throw e; } });
+    if (p.playlist) for (const it of p.playlist.items) dc(`/messages/${it.id}`, { method: "DELETE", low: true }).catch(() => {});
     await changeIndex((posts) => { const i = posts.findIndex((x) => x.id === p.id); if (i >= 0) posts.splice(i, 1); }, (now) => !now.some((x) => x.id === p.id));
     S.mine.delete(p.id); saveMine(); toast("Deleted"); render();
   } catch (e) { toast(e.message); }
@@ -1307,7 +1517,7 @@ function warm() {
   if (warmed) return; warmed = true;
   const posts = S.feed.filter((p) => !S.gone.has(p.id) && visible(p)).slice(0, 6);
   const avs = new Set(posts.map(pictureFor).filter(Boolean));
-  for (const p of posts) if (p.image || p.video || p.song) message(p.id, true).then((m) => { for (const n of ["picture.jpg", "poster.jpg", "cover.jpg"]) { const f = fileOf(m, n); if (f) { const i = new Image(); i.decoding = "async"; i.src = f.url; } } }).catch(() => {});
+  for (const p of posts) if (p.image || p.video || p.song || p.media.length) message(p.id, true).then((m) => { for (const n of ["picture.jpg", "poster.jpg", "cover.jpg", ...p.media.slice(0, 4).map((k, i) => (k === "i" ? `m${i}.jpg` : `m${i}.poster.jpg`))]) { const f = fileOf(m, n); if (f) { const i = new Image(); i.decoding = "async"; i.src = f.url; } } }).catch(() => {});
   for (const id of avs) message(id, true).then((m) => { const f = fileOf(m, "avatar.jpg"); if (f) new Image().src = f.url; }).catch(() => {});
 }
 /** A post on the Social screen: scrolled to and lit up (shown further down the list if it has to be). */

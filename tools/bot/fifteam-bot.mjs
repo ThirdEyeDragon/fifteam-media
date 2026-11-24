@@ -184,6 +184,7 @@ export async function cmdDeletePost(id) {
   const gone = (d) => { d.posts = d.posts.filter((x) => x.id !== id); }, ok = (d) => !d.posts.some((x) => x.id === id);
   await changeFeed(gone, ok);
   await hook(`/messages/${id}`, { method: "DELETE" }).catch(() => {});
+  for (const it of (p.playlist && Array.isArray(p.playlist.items) ? p.playlist.items : [])) await hook(`/messages/${it.id}`, { method: "DELETE" }).catch(() => {});
   again(async () => { if (!ok(await feedNow())) await changeFeed(gone, ok); });
   return `Deleted **${clean(nameIn(f, p))}**'s post (${clean(what(p), 70)}). It's gone from everyone's feed the next time it refreshes.`;
 }
@@ -202,7 +203,7 @@ export async function cmdPurge(user) {
   const w = await whoIs(user), t = mineTest(w.phones, w.name);
   if (!w.phones.length && !String(user || "").trim()) return "Who? Give a username or phone id.";
   const f = await feedNow();
-  const posts = f.posts.filter(t).map((x) => x.id);
+  const posts = f.posts.filter(t).flatMap((x) => [x.id, ...(x.playlist && Array.isArray(x.playlist.items) ? x.playlist.items.map((it) => it.id) : [])]);
   let comments = 0; for (const p of f.posts) if (!posts.includes(p.id)) for (const c of p.comments || []) if (t(c)) comments++;
   if (!posts.length && !comments && !(await marketNow().catch(() => ({ items: [] }))).items.some(t)) return `**${clean(w.name)}** has no posts, comments or listings.`;
   const purge = (d) => {
@@ -219,7 +220,7 @@ export async function cmdPurge(user) {
     await changeStore("market", "market.json", MARKET_LABEL, () => ({ v: 1, items: [] }), (m) => { m.items = (m.items || []).filter((x) => !t(x)); }, (m) => !(m.items || []).some(t));
     for (const id of gone) await hook(`/messages/${id}`, { method: "DELETE" }).catch(() => {});
   }
-  return `Removed ${posts.length} post${posts.length === 1 ? "" : "s"}, ${comments} comment${comments === 1 ? "" : "s"}${gone.length ? ` and ${gone.length} Audio Market listing${gone.length === 1 ? "" : "s"}` : ""} by **${clean(w.name)}**.`;
+  return `Removed ${f.posts.filter(t).length} post${f.posts.filter(t).length === 1 ? "" : "s"}, ${comments} comment${comments === 1 ? "" : "s"}${gone.length ? ` and ${gone.length} Audio Market listing${gone.length === 1 ? "" : "s"}` : ""} by **${clean(w.name)}**.`;
 }
 export async function cmdClearProfile(user) {
   const w = await whoIs(user);
@@ -328,11 +329,11 @@ export async function refreshLinks() {
   if (!cfg.links) return 0;
   const f = await feedNow();
   const mk = await marketNow().catch(() => ({ items: [] }));
-  const ids = [...new Set([...f.posts.filter((p) => p.image || p.video || p.song || p.avatar).map((p) => p.id), ...Object.values(f.profiles).map((v) => v && v.av).filter((x) => /^\d{5,25}$/.test(x || "")), ...mk.items.filter((x) => !x.sold).map((x) => x.id)])];
+  const ids = [...new Set([...f.posts.filter((p) => p.image || p.video || p.song || p.avatar || (Array.isArray(p.media) && p.media.length) || p.playlist).map((p) => p.id), ...Object.values(f.profiles).map((v) => v && v.av).filter((x) => /^\d{5,25}$/.test(x || "")), ...mk.items.filter((x) => !x.sold).map((x) => x.id)])];
   const links = {};
   for (const id of ids) {
     try { const m = await hook(`/messages/${id}`); const a = (m.attachments || []).map(({ filename, url }) => ({ filename, url })); if (a.length) links[id] = a; } catch {}
-    await new Promise((r) => setTimeout(r, 450));          // (well under the service's 5 requests every 2 seconds)
+    await new Promise((r) => setTimeout(r, 1000));         // (one a second: phones on the same internet connection share the 5-every-2-seconds limit with it)
   }
   await writeStore("links", "links.json", LINKS_LABEL, { v: 1, at: Date.now(), links });
   return Object.keys(links).length;

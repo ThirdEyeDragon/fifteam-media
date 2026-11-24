@@ -64,6 +64,7 @@ let clobber = null;
 const gets = new Map();
 function discord(method, url, headers, body) {
   const u = new URL(url);
+  if (u.host === "api.bigdatacloud.net") { const lat = +u.searchParams.get("latitude"); return json(lat > 40.5 ? { city: "City of Toledo", principalSubdivisionCode: "US-OH", countryCode: "US" } : { city: "Columbus", principalSubdivisionCode: "US-OH", countryCode: "US" }); }
   if (u.host === "cdn.discordapp.com") { const f = cdn.get(url.split("?")[0]); return f ? { status: 200, type: f.type, body: f.bytes } : { status: 404, type: "text/plain", body: Buffer.from("no") }; }
   if (u.pathname.endsWith("/social/config.json")) return json({ hook: HOOK, key: Buffer.from(TOKEN.split("").reverse().join("")).toString("base64"), index: INDEX, dm: DM, meta: META, presence: PRES, mod: MOD, links: LINKS, market: MARKET });
   const base = `/api/v10/webhooks/${HOOK}/${TOKEN}`;
@@ -102,7 +103,7 @@ b.on(async (m) => {
   const r = discord(request.method, request.url, request.headers, body);
   await send("Fetch.fulfillRequest", { requestId, responseCode: r.status, responseHeaders: [...CORS, { name: "Content-Type", value: r.type }], body: r.body.toString("base64") }, m.sessionId);
 });
-await send("Fetch.enable", { patterns: [{ urlPattern: "https://discord.com/*" }, { urlPattern: "https://cdn.discordapp.com/*" }, { urlPattern: "*social/config.json*" }] });
+await send("Fetch.enable", { patterns: [{ urlPattern: "https://discord.com/*" }, { urlPattern: "https://cdn.discordapp.com/*" }, { urlPattern: "*social/config.json*" }, { urlPattern: "https://api.bigdatacloud.net/*" }] });
 // (the app's service worker fetches pictures itself: its requests go to the stand-in too)
 b.on((m) => { if (m.method === "Target.attachedToTarget" && m.params.targetInfo.type === "service_worker") send("Fetch.enable", { patterns: [{ urlPattern: "https://cdn.discordapp.com/*" }, { urlPattern: "https://discord.com/*" }] }, m.params.sessionId); });
 const until = async (expr, ms, what) => { const t = Date.now(); while (Date.now() - t < ms) { if (await ev(expr).catch(() => false)) return true; await sleep(200); } check(false, "timed out waiting for " + what); return false; };
@@ -264,11 +265,11 @@ try {
   writeFileSync(png, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGP4z8DAwMDAxMDAwMDAAAANHQEDK+mmyAAAAABJRU5ErkJggg==", "base64"));
   await send("DOM.setFileInputFiles", { backendNodeId: fc.backendNodeId, files: [png] });
   await send("Page.setInterceptFileChooserDialog", { enabled: false });
-  await until(`!!document.querySelector('#sheet-panel .so-img')`, 8000, "the picture in the new post");
+  await until(`!!document.querySelector('#sheet-panel .so-pthumb')`, 8000, "the picture in the new post");
   await ev(`[...document.querySelectorAll('#sheet-panel .btn')].find(b => b.textContent.includes('Rebassed song')).click(), 1`); await sleep(300);
   await ev(`[...document.querySelectorAll('#sheet-panel .item')].find(i => i.textContent.includes('Test Rebass')).click(), 1`); await sleep(500);
   await shot("d2_new_post");
-  console.log("new post before sending:", await ev(`document.querySelector('#sheet-panel textarea').value + ' | picture ' + !!document.querySelector('#sheet-panel .so-img') + ' | song ' + (document.querySelector('#sheet-panel .so-song b') || {}).textContent`));
+  console.log("new post before sending:", await ev(`document.querySelector('#sheet-panel textarea').value + ' | picture ' + !!document.querySelector('#sheet-panel .so-pthumb') + ' | song ' + (document.querySelector('#sheet-panel .so-song b') || {}).textContent`));
   await ev(`[...document.querySelectorAll('#sheet-panel .btn')].find(b => b.textContent === 'Post').click(), 1`);
   await until(`[...document.querySelectorAll('#so-body .so-post')].some(p => p.textContent.includes('Fresh one'))`, 30000, "the post in the feed");
   const p0 = posted.find((x) => x.payload.content);
@@ -283,7 +284,7 @@ try {
   // another phone sees Alice's picture on her post, from her profile
   {
     const other = await browser();
-    await other.send("Fetch.enable", { patterns: [{ urlPattern: "https://discord.com/*" }, { urlPattern: "https://cdn.discordapp.com/*" }, { urlPattern: "*social/config.json*" }] });
+    await other.send("Fetch.enable", { patterns: [{ urlPattern: "https://discord.com/*" }, { urlPattern: "https://cdn.discordapp.com/*" }, { urlPattern: "*social/config.json*" }, { urlPattern: "https://api.bigdatacloud.net/*" }] });
     other.on(async (m) => {
       if (m.method !== "Fetch.requestPaused") return;
       const { requestId, request } = m.params;
@@ -493,7 +494,9 @@ try {
     const mine = await ev(`document.querySelector('#sheet-panel .pf-name').textContent + ' | ' + document.querySelector('#sheet-panel .pf-likes').textContent`);
     console.log("top-bar profile button (from the Library):", mine);
     // her likes: on her posts and her comments, counted from the feed list
-    const likesShould = feedNow().reduce((n, x) => n + ((x.by === meNow ? (x.likes || []).length : 0) + (x.comments || []).filter((c) => c.by === meNow).reduce((m, c) => m + (c.likes || []).length, 0)), 0);
+    const fromOthers = (l) => (l || []).filter((w) => w !== meNow).length;
+    const likesShould = feedNow().reduce((n, x) => n + ((x.by === meNow ? fromOthers(x.likes) : 0) + (x.comments || []).filter((c) => c.by === meNow).reduce((m, c) => m + fromOthers(c.likes), 0)), 0);
+    console.log("her likes given to her own posts and comments (not counted):", feedNow().reduce((n, x) => n + (x.by === meNow && (x.likes || []).includes(meNow) ? 1 : 0), 0));
     check(mine.startsWith("Alice") && mine.endsWith(`${likesShould} like${likesShould === 1 ? "" : "s"}`), `her own page, with her ${likesShould} likes`);
     await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await ev(`location.hash = '#social', 1`); await sleep(400);
 
@@ -552,9 +555,10 @@ try {
       await send("Page.setInterceptFileChooserDialog", { enabled: false });
     }
     await until(`document.querySelectorAll('#sheet-panel .mk-pthumb').length === 2`, 6000, "two photos");
-    await ev(`(() => { const P = document.getElementById('sheet-panel'); const i = P.querySelectorAll('input.input'); i[0].value = 'Sundown SA-12 D2'; i[1].value = '250'; P.querySelector('textarea').value = 'Barely used, no blown coils. Pick up only.'; [...P.querySelectorAll('.mk-catpick .chip')].find(c => c.textContent === 'Subwoofers').click(); [...P.querySelectorAll('.mk-condpick .chip')].find(c => c.textContent === 'Used – like new').click(); P.querySelector('input[aria-label="Your town"]').value = 'Toledo, OH'; return 1; })()`);
-    await ev(`[...document.querySelectorAll('#sheet-panel .btn')].find(x => x.textContent.includes('Use my location')).click(), 1`);
-    await until(`[...document.querySelectorAll('#sheet-panel .btn')].some(x => x.textContent.includes('Location set'))`, 8000, "her location");
+    await ev(`(() => { const P = document.getElementById('sheet-panel'); const i = P.querySelectorAll('input.input'); i[0].value = 'Sundown SA-12 D2'; i[1].value = '250'; P.querySelector('textarea').value = 'Barely used, no blown coils. Pick up only.'; [...P.querySelectorAll('.mk-catpick .chip')].find(c => c.textContent === 'Subwoofers').click(); [...P.querySelectorAll('.mk-condpick .chip')].find(c => c.textContent === 'Used – like new').click(); return 1; })()`);
+    check(!(await ev(`!!document.querySelector('#sheet-panel input[aria-label="Your town"], #sheet-panel input[placeholder*="town"]')`)), "no place to type a town");
+    await until(`(document.querySelector('#sheet-panel .mk-locname') || {}).textContent === '📍 Toledo, OH'`, 8000, "her town, from her location");
+    console.log("where (from the phone's location):", await ev(`document.querySelector('#sheet-panel .mk-loc').textContent`));
     await shot("d19_sell");
     const nListed = posted.length;
     await ev(`[...document.querySelectorAll('#sheet-panel .btn')].find(x => x.textContent === 'List it').click(), 1`);
@@ -568,8 +572,11 @@ try {
     console.log("Alice's grid:", await ev(`[...document.querySelectorAll('#mk-body .mk-tile')].map(t => t.textContent).join(' | ')`));
     await sleep(600); await shot("d20_market");
     // Ben: the grid, the distance, the filters
-    await other.ev(`(async () => { localStorage.removeItem('fifteam-market-here'); const m = await import('./js/market.js'); m.showMarket(true); await m.loadMarket(0); m.renderMarket(); return 1; })()`); await sleep(500);
-    await other.ev(`import('./js/market.js').then((m) => m.market.locate()).then(() => import('./js/market.js')).then((m) => { m.renderMarket(); return 1; })`); await sleep(400);
+    // (opening Audio Market asks for the location by itself)
+    await other.ev(`(async () => { localStorage.removeItem('fifteam-market-here'); const m = await import('./js/market.js'); m.showMarket(true); return 1; })()`);
+    await sleep(1500);
+    await other.ev(`import('./js/market.js').then((m) => m.loadMarket(0)).then(() => import('./js/market.js')).then((m) => { m.renderMarket(); return 1; })`); await sleep(400);
+    console.log("Ben's location, asked for on opening Audio Market:", await other.ev(`localStorage.getItem('fifteam-market-here')`));
     const benTile = await other.ev(`[...document.querySelectorAll('#mk-body .mk-tile')].map(t => t.textContent).join(' | ')`);
     console.log("Ben's grid:", benTile);
     check(/\$250.*Sundown.*Toledo, OH · 1[0-9]{2} mi/.test(benTile), "Ben sees it, with how far away it is (about 120 miles)");
@@ -749,6 +756,91 @@ try {
   console.log("a feed picture, tapped:", await ev(`document.querySelector('#viewer .viewer-foot').textContent`));
   await ev(`document.querySelector('#viewer .viewer-x').click(), 1`); await sleep(300);
 
+  // the slur filter: a comment with one isn't sent (and says why); swearing goes through
+  {
+    const before = (feedNow().find((x) => x.id === eve) || {}).comments.length;
+    await ev(`${`document.querySelector('#so-body .so-post[data-id="${eve}"]')`}.querySelector('.so-cbtn').click(), 1`); await sleep(400);
+    const word = ["n", "i", "g", "g", "3", "r"].join("");
+    await ev(`(() => { const f = document.querySelector('#sheet-panel .cs-form'); f.querySelector('input').value = 'you ${word}'; f.requestSubmit(); return 1; })()`); await sleep(500);
+    const said = await ev(`document.getElementById('toast').textContent`);
+    const kept = await ev(`document.querySelector('#sheet-panel .cs-form input').value.length > 0`);
+    await sleep(1500);
+    console.log("a slur in a comment:", said, "| still in the box:", kept, "| comments saved:", (feedNow().find((x) => x.id === eve) || {}).comments.length - before);
+    check(said === "Unable to post due to profanity that is found to be offensive to others" && (feedNow().find((x) => x.id === eve) || {}).comments.length === before, "a slur isn't posted, and it says why");
+    await ev(`(() => { const f = document.querySelector('#sheet-panel .cs-form'); f.querySelector('input').value = 'this shit slaps'; f.requestSubmit(); return 1; })()`);
+    for (let i = 0; i < 40 && (feedNow().find((x) => x.id === eve) || {}).comments.length === before; i++) await sleep(200);
+    check((feedNow().find((x) => x.id === eve) || {}).comments.length === before + 1, "swearing goes through");
+    await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
+  }
+
+  // several pictures and a video in one post: a collage; a tap opens the post's own feed of them; full screen, swiped
+  await ev(`document.querySelector('#so-body .so-new').click(), 1`); await sleep(400);
+  await ev(`(() => { document.querySelector('#sheet-panel textarea').value = 'Three in one'; return 1; })()`);
+  {
+    await send("Page.setInterceptFileChooserDialog", { enabled: true });
+    let ch = new Promise((res) => b.on((m) => { if (m.method === "Page.fileChooserOpened") res(m.params); }));
+    await ev(`[...document.querySelectorAll('#sheet-panel .btn')].find(x => x.textContent.includes('Pictures')).click(), 1`);
+    let fc = await ch;
+    await send("DOM.setFileInputFiles", { backendNodeId: fc.backendNodeId, files: [avPng, avPng] });
+    await until(`document.querySelectorAll('#sheet-panel .so-pthumb').length === 2`, 6000, "two pictures in the new post");
+    const vfile = join(mkdtempSync(join(tmpdir(), "ft-v3-")), "clip.webm");
+    writeFileSync(vfile, Buffer.from(await ev(`(async () => {
+      const c = document.createElement('canvas'); c.width = 160; c.height = 120; const g = c.getContext('2d');
+      const st = c.captureStream(20), rec = new MediaRecorder(st, { mimeType: 'video/webm' }), parts = []; rec.ondataavailable = (e) => parts.push(e.data);
+      const done = new Promise((r) => rec.onstop = r); rec.start(100);
+      const t0 = performance.now(); await new Promise((res) => { const f = () => { g.fillStyle = 'hsl(' + ((performance.now() - t0) / 5) + ',80%,50%)'; g.fillRect(0, 0, 160, 120); if (performance.now() - t0 < 1200) requestAnimationFrame(f); else res(); }; f(); });
+      rec.stop(); await done; const u8 = new Uint8Array(await new Blob(parts).arrayBuffer()); let s = ''; for (const x of u8) s += String.fromCharCode(x); return btoa(s); })()`), "base64"));
+    ch = new Promise((res) => b.on((m) => { if (m.method === "Page.fileChooserOpened") res(m.params); }));
+    await ev(`[...document.querySelectorAll('#sheet-panel .btn')].find(x => x.textContent.includes('Video')).click(), 1`);
+    fc = await ch;
+    await send("DOM.setFileInputFiles", { backendNodeId: fc.backendNodeId, files: [vfile] });
+    await send("Page.setInterceptFileChooserDialog", { enabled: false });
+    await until(`document.querySelectorAll('#sheet-panel .so-pthumb').length === 3`, 8000, "and a video");
+  }
+  console.log("the new post:", await ev(`document.querySelector('#sheet-panel .so-pstrip').parentElement.textContent`));
+  const n3 = posted.length;
+  await ev(`[...document.querySelectorAll('#sheet-panel .btn')].find(x => x.textContent === 'Post').click(), 1`);
+  await until(`[...document.querySelectorAll('#so-body .so-post')].some(p => p.textContent.includes('Three in one'))`, 60000, "the post with three");
+  const p3 = posted.slice(n3).find((x) => x.payload.content && x.payload.content.includes("Three in one"));
+  const e3 = feedNow().find((x) => x.text === "Three in one") || {};
+  console.log("sent:", p3 ? p3.files.map(([nm, b2]) => `${nm} ${b2.length}`).join(", ") : "nothing", "| on the feed:", JSON.stringify(e3.media));
+  check(p3 && ["m0.jpg", "m1.jpg", "m2.webm", "m2.poster.jpg"].every((nm) => p3.files.some(([f]) => f === nm)) && JSON.stringify(e3.media) === '["i","i","webm"]', "two pictures and a video, in order, in one post");
+  const c3 = `[...document.querySelectorAll('#so-body .so-post')].find(p => p.textContent.includes('Three in one'))`;
+  await until(`${c3}.querySelectorAll('.so-col .so-cell').length === 3 && !${c3}.querySelector('.so-cell.so-wait')`, 8000, "the collage");
+  await ev(`${c3}.scrollIntoView({ block: 'start' }), 1`); await sleep(300);
+  await shot("d23_collage");
+  await ev(`${c3}.querySelectorAll('.so-cell')[1].click(), 1`); await sleep(800);
+  const feed3 = await ev(`JSON.stringify({ panel: document.querySelector('#sheet-panel').classList.contains('pm-panel'), imgs: document.querySelectorAll('#sheet-panel .pm-img').length, vids: document.querySelectorAll('#sheet-panel .pm-vid').length, loaded: [...document.querySelectorAll('#sheet-panel .pm-img')].every(i => i.naturalWidth > 0) })`);
+  console.log("the post's own feed:", feed3);
+  check(JSON.parse(feed3).panel && JSON.parse(feed3).imgs === 2 && JSON.parse(feed3).vids === 1, "a tap opens the post's own feed of all three");
+  await shot("d24_post_feed");
+  await ev(`document.querySelectorAll('#sheet-panel .pm-img')[0].click(), 1`);
+  await until(`!!document.querySelector('#viewer .viewer-strip') && document.querySelectorAll('#viewer .viewer-slide').length === 3`, 6000, "full screen, all three");
+  await sleep(500);
+  const c1 = await ev(`document.querySelector('#viewer .viewer-count').textContent`);
+  await ev(`(() => { const s = document.querySelector('#viewer .viewer-strip'); s.scrollLeft = s.clientWidth * 2; return 1; })()`); await sleep(700);
+  const c2 = await ev(`document.querySelector('#viewer .viewer-count').textContent`);
+  const vplay = await ev(`(() => { const v = document.querySelector('#viewer .viewer-slide:last-child video'); return !!v && !v.paused; })()`);
+  console.log("full screen:", c1, "→ swiped:", c2, "| the video plays when it's on screen:", vplay);
+  check(c1 === "1 / 3" && c2 === "3 / 3", "full screen, swiping from one to the next");
+
+  // going back: a swipe in from the left edge closes the top layer (the viewer, then the post's feed)
+  const swipe = async () => {
+    await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: 6, y: 420 }] });
+    for (let x = 6; x <= 200; x += 24) { await send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: 424 }] }); await sleep(16); }
+    await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] }); await sleep(600);
+  };
+  await swipe();
+  const afterOne = await ev(`JSON.stringify({ viewer: !!document.getElementById('viewer'), sheet: document.getElementById('sheet').classList.contains('open') })`);
+  await swipe();
+  const afterTwo = await ev(`JSON.stringify({ viewer: !!document.getElementById('viewer'), sheet: document.getElementById('sheet').classList.contains('open'), hash: location.hash })`);
+  console.log("swipe back once:", afterOne, "| twice:", afterTwo);
+  check(JSON.parse(afterOne).viewer === false && JSON.parse(afterOne).sheet === true && JSON.parse(afterTwo).sheet === false && JSON.parse(afterTwo).hash === "#social", "swiping back closes the viewer, then the post's feed (and stays in Social)");
+  // the phone's own back (Android's gesture or button) does the same
+  await ev(`document.querySelector('#so-body .so-cbtn').click(), 1`); await sleep(400);
+  await ev(`history.back(), 1`); await sleep(500);
+  check(!(await ev(`document.getElementById('sheet').classList.contains('open')`)) && (await ev(`location.hash`)) === "#social", "the phone's back closes a sheet");
+
   // music on a picture: a part of a song from her library, chosen and heard before posting; it plays in the feed
   await ev(`document.querySelector('#so-body .so-qbtn').click(), 1`);   // (Photo: straight to choosing a picture)
   await sleep(300);
@@ -864,9 +956,31 @@ try {
   console.log("the category open:", open1);
   check(open1.includes("Car bangers") && open1.endsWith("| Test Rebass"), "opened: just its songs");
   await shot("d12_category_open");
+  // shared to Social as a playlist
+  await ev(`document.querySelector('#lib-cats .more').click(), 1`); await sleep(300);
+  await ev(`[...document.querySelectorAll('#sheet-panel .menu-item')].find(x => x.textContent.includes('Share to Social')).click(), 1`); await sleep(300);
+  const nPl = posted.length;
+  await ev(`[...document.querySelectorAll('#sheet-panel .btn')].find(x => x.textContent === 'Share playlist').click(), 1`);
+  await until(`location.hash === '#social' && [...document.querySelectorAll('#so-body .so-pl')].length > 0`, 60000, "the playlist on Social");
+  const plPost = posted.slice(nPl).find((x) => x.payload.content && x.payload.content.includes("shared a playlist"));
+  const plSongs = posted.slice(nPl).filter((x) => x.files.some(([nm]) => nm === "song.mp4"));
+  const plEntry = feedNow().find((x) => x.playlist) || {};
+  console.log("playlist shared:", plPost && plPost.payload.content.split("\n")[0], "| songs sent:", plSongs.length, "| on the feed:", JSON.stringify(plEntry.playlist && { name: plEntry.playlist.name, n: plEntry.playlist.items.length }));
+  check(plPost && plSongs.length === 1 && plEntry.playlist && plEntry.playlist.name === "Car bangers" && plEntry.playlist.items.length === 1, "a category shared as a playlist (each song its own file)");
+  const plCard = `document.querySelector('#so-body .so-pl').closest('.so-post')`;
+  check(!(await ev(`!!${plCard}.querySelector('.so-vote')`)), "a playlist can't be voted for (so it's never the rebass of the week)");
+  await ev(`${plCard}.scrollIntoView({ block: 'start' }), 1`); await sleep(400); await shot("d25_playlist");
+  await ev(`${plCard}.querySelector('.so-pltop .btn').click(), 1`);
+  await until(`${plCard}.querySelector('.so-pltop .btn').textContent === 'Added'`, 20000, "the playlist added");
+  const catsNow = JSON.parse(await ev(`localStorage.getItem('fifteam-cats')`));
+  console.log("added all: categories now", catsNow.map((c) => `${c.name} (${c.ids.length})`).join(", "));
+  check(catsNow.length === 2 && catsNow[1].ids.length === 1, "added all: the songs, in a category of their own");
+  await ev(`location.hash = '#library', 1`); await sleep(400);
+  await ev(`document.querySelector('#lib-seg [data-k="rebass"]').click(), 1`); await sleep(300);
+  await ev(`(document.querySelector('#lib-cats .cat-tile[data-cat]') || { click() {} }).click(), 1`); await sleep(300);   // (still open from before)
   await ev(`(() => { window.confirm = () => true; document.querySelector('#lib-cats .more').click(); return 1; })()`); await sleep(300);
   await ev(`[...document.querySelectorAll('#sheet-panel .menu-item')].find(x => x.textContent.includes('Delete')).click(), 1`); await sleep(400);
-  check(JSON.parse(await ev(`localStorage.getItem('fifteam-cats')`)).length === 0 && (await ev(`document.querySelectorAll('#lib-list .item').length`)) >= 2, "category deleted; its songs still in the library");
+  check(JSON.parse(await ev(`localStorage.getItem('fifteam-cats')`)).length === 1 && (await ev(`document.querySelectorAll('#lib-list .item').length`)) >= 2, "category deleted; its songs still in the library");
   await ev(`location.hash = '#social', 1`); await sleep(300);
 
   // the knob lock

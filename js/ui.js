@@ -10,16 +10,44 @@ export function toast(msg, ms = 3200) {
   clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove("show"), ms);
 }
 
+// ---------------------------------------------------------------------------------------------------- going back
+// Each layer on top of the app (an open sheet, the full-screen viewer) is one step in the history: the phone's own back
+// (Android's gesture or button) and a swipe in from the left edge close the top one; with none open, back goes to the
+// screen before. A layer the app closes itself takes its step back out again.
+const layers = [], dropping = new Set();
+let skipPops = 0;
+export const openLayers = () => layers.length;
+export function pushLayer(name, close) {
+  if (dropping.has(name)) { dropping.delete(name); layers.push({ name, close }); return; }   // (closed and opened again at once: the same step)
+  if (layers.some((l) => l.name === name)) return;
+  layers.push({ name, close });
+  try { history.pushState({ ftLayer: name }, ""); } catch {}
+}
+export function dropLayer(name) {
+  const i = layers.findIndex((l) => l.name === name);
+  if (i < 0) return;
+  layers.splice(i, 1);
+  dropping.add(name);
+  // (only while that step is still the current one: if the app has moved to another screen meanwhile, going back
+  // would undo that, so the step is left where it is)
+  setTimeout(() => { if (dropping.delete(name) && history.state && history.state.ftLayer === name) { skipPops++; history.back(); } }, 0);
+}
+addEventListener("popstate", () => {
+  if (skipPops) { skipPops--; return; }
+  const top = layers.pop();
+  if (top) top.close(true);
+});
+
 export function openSheet(build) {
   const s = $("sheet"), p = $("sheet-panel");
   p.className = "sheet-panel"; p.innerHTML = '<div class="grabber"></div>';
   build(p);
   s.classList.add("open");
-  const close = () => s.classList.remove("open");
-  s.onclick = (e) => { if (e.target === s) close(); };
-  return close;
+  pushLayer("sheet", () => s.classList.remove("open"));
+  s.onclick = (e) => { if (e.target === s) closeSheet(); };
+  return closeSheet;
 }
-export const closeSheet = () => $("sheet").classList.remove("open");
+export const closeSheet = () => { $("sheet").classList.remove("open"); dropLayer("sheet"); };
 
 /** Puts `text` in `el`. If it doesn't fit, it glides slowly to the left, round and round, so all of it can be read. */
 export function marquee(el, text) {

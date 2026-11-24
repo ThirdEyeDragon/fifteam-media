@@ -834,3 +834,56 @@ h2 { background: linear-gradient(90deg, #ffffff 0%, #e6dcff 55%, #cdb6ff 100%); 
 .mk-sellp > *, .mk-panel > *, .pf-panel > .pf-body > * { flex-shrink: 0; }
 .mk-sellp .input:not(textarea) { height: 48px; }
 .dm-mid .dm-mktag { color: #fff; }
+.mk-loc { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.mk-locname { font-weight: 700; padding: 8px 12px; border-radius: 12px; background: linear-gradient(135deg, rgba(47, 120, 255, 0.16), rgba(187, 77, 255, 0.16)); border: 1px solid rgba(187, 77, 255, 0.3); }
+/* the swipe-back arrow */
+.swipe-back { position: fixed; left: 6px; top: 50%; z-index: 60; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; font: 600 26px/1 var(--font-body); color: #fff;
+  background: rgba(30, 26, 80, 0.85); border: 1px solid rgba(187, 77, 255, 0.4); opacity: 0; transform: translate3d(-34px, -50%, 0); pointer-events: none; transition: background 0.15s; }
+.swipe-back.go { background: var(--grad); }
+
+/* ---------------------------------------------------------------------------- 2.10: several pictures and videos in a post */
+.so-col { display: grid; gap: 3px; margin: 0 -18px; width: calc(100% + 36px); }
+.so-col.c1 { grid-template-columns: 1fr; }
+.so-col.c2 { grid-template-columns: 1fr 1fr; }
+.so-col.c3 { grid-template-columns: 2fr 1fr; grid-template-rows: 1fr 1fr; }
+.so-col.c3 .so-cell:first-child { grid-row: span 2; }
+.so-col.c4 { grid-template-columns: 1fr 1fr; }
+.so-cell { position: relative; aspect-ratio: 1; background: rgba(255, 255, 255, 0.05) center / cover; }
+.so-col.c1 .so-cell { aspect-ratio: 4 / 3; }
+.so-col.c3 .so-cell:first-child { aspect-ratio: auto; }
+.so-cell.vid::after { content: "▶"; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; background: rgba(0, 0, 0, 0.5); color: #fff; font-size: 18px; }
+.so-more-n { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(0, 0, 0, 0.55); font: 700 28px/1 var(--font-head); color: #fff; }
+#so-body > .so-post > .so-col { margin: 0 -18px; }
+/* the composer's strip of them */
+.so-pstrip { display: flex; gap: 8px; overflow-x: auto; padding: 6px 2px; scrollbar-width: none; }
+.so-pthumb { position: relative; flex: none; width: 84px; height: 84px; border-radius: 12px; background: #000 center / cover; overflow: visible; }
+.so-pthumb video { width: 100%; height: 100%; object-fit: cover; border-radius: 12px; }
+.so-pthumb small { position: absolute; left: 6px; bottom: 4px; font-size: 11px; font-weight: 700; text-shadow: 0 1px 3px #000; }
+/* a post's own feed of them */
+.pm-panel { gap: 12px; }
+.pm-panel > * { flex-shrink: 0; }
+.pm-list { display: flex; flex-direction: column; gap: 6px; margin: 0 -18px; }
+.pm-img, .pm-vid { width: 100%; display: block; background: #000; min-height: 120px; }
+.pm-img { cursor: zoom-in; }
+.pm-foot { align-self: flex-start; }
+/* full screen: swipe from one to the next */
+.viewer-strip { width: 100%; height: 100%; display: flex; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; }
+.viewer-strip::-webkit-scrollbar { display: none; }
+.viewer-slide { flex: none; width: 100%; height: 100%; display: grid; place-items: center; scroll-snap-align: center; }
+.viewer-slide img, .viewer-slide video { max-width: 100%; max-height: 100%; object-fit: contain; }
+.viewer-slide video { width: 100%; }
+.viewer-count { position: absolute; left: 16px; top: calc(env(safe-area-inset-top, 0px) + 18px); padding: 3px 10px; border-radius: 999px; background: rgba(255, 255, 255, 0.14); font-size: 13px; font-weight: 700; }
+.viewer-stage { padding: calc(env(safe-area-inset-top, 0px) + 56px) 0 8px; }
+.pf-tile.many::after { content: "▣"; position: absolute; right: 6px; top: 3px; color: #fff; font-size: 14px; text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7); }
+.so-cell.so-wait { height: auto; display: block; }
+/* ---------------------------------------------------------------------------- 2.10: shared playlists */
+.so-pl { display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 16px; border: 1px solid transparent;
+  background: linear-gradient(160deg, rgba(122, 75, 255, 0.14), rgba(24, 22, 64, 0.4)) padding-box, linear-gradient(135deg, rgba(47, 120, 255, 0.45), rgba(187, 77, 255, 0.4)) border-box; }
+.so-pltop { display: flex; align-items: center; gap: 12px; }
+.so-plcover { width: 72px; height: 72px; border-radius: 12px; flex: none; background: var(--grad) center / cover; box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35); }
+.so-pltag { color: var(--purple) !important; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; font-size: 11px !important; }
+.so-pltop .btn { flex: none; }
+.so-pllist { display: flex; flex-direction: column; gap: 6px; }
+.so-pllist .so-song { padding: 6px 8px; }
+.so-pllist .so-cover { width: 40px; height: 40px; }
+.so-plmore { align-self: center; }

@@ -83,11 +83,42 @@ export function chooseCategories(t, onDone) {
   });
 }
 
+/** A category made from a playlist someone shared (its songs just added to the library). */
+export async function createCategory(name, ids, cover) {
+  let n = String(name || "Playlist").slice(0, 40), k = 2;
+  while (cats.some((c) => c.name.toLowerCase() === n.toLowerCase())) n = `${String(name).slice(0, 36)} (${k++})`;
+  const c = { id: store.newId(), name: n, ids: [...ids], cover: false, at: Date.now() };
+  if (cover) { try { await store.putArt(artKey(c), await squareJpeg(cover, 400).catch(() => cover)); c.cover = true; } catch {} }
+  cats.push(c); save();
+  return c;
+}
+/** A category, shared to Social as a playlist: everyone can play its songs or add them all. */
+function shareCategory(c) {
+  openSheet((p) => {
+    p.append(h("h3", "", "Share to Social"));
+    p.append(h("p", "status", `${c.name} · ${c.ids.length} song${c.ids.length === 1 ? "" : "s"}${c.ids.length > 25 ? " (the first 25 go up)" : ""}. Everyone can play the songs or add them all to their library.`));
+    const t = h("textarea", "input so-compose"); t.rows = 2; t.maxLength = 500; t.placeholder = "Say something about it (optional)"; t.setAttribute("aria-label", "About the playlist");
+    const err = h("p", "set-err"), go = h("button", "btn primary block", "Share playlist");
+    go.onclick = async () => {
+      go.disabled = true; err.textContent = "";
+      try {
+        const [{ sharePlaylist }, { library }] = await Promise.all([import("./social.js"), import("./library.js")]);
+        const tracks = c.ids.map((id) => library.all().find((x) => x.id === id)).filter(Boolean);
+        const cover = c.cover ? await store.getArt(artKey(c)).catch(() => null) : null;
+        const n = await sharePlaylist(c, tracks, cover, t.value.trim(), (m) => { go.textContent = m; });
+        closeSheet(); toast(`Shared ${c.name} (${n} songs)`, 3000);
+        location.hash = "#social";
+      } catch (e) { err.textContent = e.message || "Couldn't share it. Try again."; go.disabled = false; go.textContent = "Share playlist"; }
+    };
+    p.append(t, err, go);
+  });
+}
 /** A category's own menu: rename, change the cover, delete (the songs stay in the library). */
 export function editCategory(c, onDone) {
   openSheet((p) => {
     p.append(h("h3", "", c.name));
     const item = (label, fn, cls = "") => { const b = h("button", "menu-item " + cls); b.append(h("span", "", label)); b.onclick = fn; p.append(b); };
+    if (c.ids.length) item("Share to Social", () => shareCategory(c));
     item("Rename", () => {
       const n = prompt("New name", c.name);
       if (n == null) return;

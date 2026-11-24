@@ -1,8 +1,8 @@
 // FifTeam Media: wiring the screens together.
-import { $, bus, toast } from "./ui.js";
+import { $, bus, toast, openLayers } from "./ui.js";
 import { player } from "./player.js";
 
-export const APP_VERSION = "2.9";
+export const APP_VERSION = "2.10";
 import * as store from "./store.js";
 import { initPlayer } from "./player.js";
 import { initLibrary, library, importFiles, openCode } from "./library.js";
@@ -50,8 +50,45 @@ function topBar() {
   bus.on("view", (name) => { show(true); const v = $("view-" + name); top.classList.toggle("solid", !!v && v.scrollTop > 4); });
 }
 
+/** Back with a swipe in from the left edge (the way an iPhone app goes back; Android's own back gesture and button work
+ * too): the top layer closes (the full-screen viewer, then an open sheet), or with none open, the screen before. An
+ * arrow follows the finger and goes once it's far enough. */
+// (the screens moved through inside the app, so a swipe back never leaves it: going back to the one before pops one off)
+const visited = [location.hash || "#player"];
+let trail = 0;
+function swipeBack() {
+  addEventListener("hashchange", () => {
+    const h = location.hash || "#player";
+    if (visited.length > 1 && visited[visited.length - 2] === h) visited.pop(); else if (visited[visited.length - 1] !== h) visited.push(h);
+    trail = visited.length - 1;
+  });
+  const arrow = document.createElement("div"); arrow.className = "swipe-back"; arrow.setAttribute("aria-hidden", "true"); arrow.textContent = "‹";
+  document.body.appendChild(arrow);
+  let x0 = null, y0 = 0, dx = 0, off = false;
+  addEventListener("touchstart", (e) => {
+    const t = e.touches[0];
+    x0 = e.touches.length === 1 && t.clientX < 24 && (openLayers() || trail > 0) ? t.clientX : null; y0 = t.clientY; dx = 0; off = false;
+  }, { passive: true });
+  addEventListener("touchmove", (e) => {
+    if (x0 == null) return;
+    const t = e.touches[0]; dx = t.clientX - x0;
+    if (Math.abs(t.clientY - y0) > 60 && dx < 40) { off = true; x0 = null; arrow.style.opacity = "0"; return; }
+    const k = Math.max(0, Math.min(1, dx / 90));
+    arrow.style.opacity = String(k); arrow.style.transform = `translate3d(${(k * 34 - 34).toFixed(1)}px, -50%, 0) scale(${(0.7 + k * 0.3).toFixed(2)})`;
+    arrow.classList.toggle("go", dx > 70);
+  }, { passive: true });
+  const end = () => {
+    if (x0 == null) return;
+    const go = !off && dx > 70;
+    x0 = null; arrow.style.opacity = "0"; arrow.classList.remove("go");
+    if (go) history.back();
+  };
+  addEventListener("touchend", end); addEventListener("touchcancel", end);
+}
+
 async function boot() {
   topBar();
+  swipeBack();
   initBan();
   // (the download page offers "Open" rather than "Download" on a phone that has the app)
   try { if (matchMedia("(display-mode: standalone)").matches || navigator.standalone) localStorage.setItem("fifteam-installed", "1"); } catch {}

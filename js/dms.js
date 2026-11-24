@@ -7,6 +7,7 @@
 import { $, toast, openSheet, closeSheet } from "./ui.js";
 import { api } from "./social.js";
 import { dmState, dmRequests, answerDm, blocked } from "./meta.js";
+import { offensive, OFFENSIVE } from "./filter.js";
 import { marketItem, openListing, loadMarket } from "./market.js";
 
 const KEY = "fifteam-dm-key", READ = "fifteam-dm-read", MAX = 2000;
@@ -201,7 +202,6 @@ export async function openChat(other, l = "") {
     const back = h("button", "btn small", "‹"); back.setAttribute("aria-label", "All messages"); back.onclick = () => openInbox();
     const av = api.avatarEl(36, "", nameOf(other)); api.showPicture(av, { by: other, user: nameOf(other), id: "" });
     head.append(back, av, h("b", "", nameOf(other)));
-    const lock = h("p", "status dm-lock", "🔒 Only the two of you can read these messages.");
     // an Audio Market chat: the listing it's about, on top (tap it to see it)
     if (l) {
       const it = marketItem(l), card = h("button", "dm-listing");
@@ -216,8 +216,8 @@ export async function openChat(other, l = "") {
     const inp = h("input", "input"); inp.maxLength = 500; inp.placeholder = "Message"; inp.autocomplete = "off"; inp.setAttribute("aria-label", "Message");
     const go = h("button", "btn primary small", "Send"); go.type = "submit";
     f.append(inp, go);
-    f.onsubmit = (e) => { e.preventDefault(); const v = inp.value.trim(); if (v) { inp.value = ""; send(other, v, l); } };
-    if (l) p.append(lock, msgs, f); else p.append(head, lock, msgs, f);
+    f.onsubmit = (e) => { e.preventDefault(); const v = inp.value.trim(); if (!v) return; if (offensive(v)) { toast(OFFENSIVE, 3500); return; } inp.value = ""; send(other, v, l); };
+    if (l) p.append(msgs, f); else p.append(head, msgs, f);
   });
   try { await Promise.all([api.ensureProfiles(), load()]); } catch {}
   paintChat();

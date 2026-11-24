@@ -11,6 +11,7 @@ import { jsonStore } from "./meta.js";
 import { openChat } from "./dms.js";
 import { openProfile } from "./profile.js";
 import { fitJpeg } from "./image.js";
+import { offensive, OFFENSIVE } from "./filter.js";
 
 const h = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 const PHONE = /^[a-z0-9]{6,16}$/, ID = /^\d{5,25}$/;
@@ -39,7 +40,9 @@ const saveFilters = () => { try { localStorage.setItem("fifteam-market-filters",
 try { const c = JSON.parse(localStorage.getItem("fifteam-market") || "null"); if (c && Array.isArray(c.items)) M.items = cleanMarket(c).items; } catch {}
 
 // ---------------------------------------------------------------------------------------------------- where
-/** This phone's rough spot (rounded to about 3 miles), from the phone's location, kept on the phone. */
+/** This phone's rough spot (rounded to about 3 miles) and its town, from the phone's location (the phone asks the
+ * person first), kept on the phone. Nobody types a place: the town comes from the rough spot (a free lookup that's only
+ * ever sent the rounded spot). */
 let here = null;
 try { here = JSON.parse(localStorage.getItem("fifteam-market-here") || "null"); } catch {}
 const round = (x) => Math.round(x * 20) / 20;
@@ -47,11 +50,19 @@ function locate() {
   return new Promise((res, rej) => {
     if (!navigator.geolocation) { rej(new Error("This phone can't share its location.")); return; }
     navigator.geolocation.getCurrentPosition((p) => {
-      here = { lat: round(p.coords.latitude), lon: round(p.coords.longitude), at: Date.now() };
-      try { localStorage.setItem("fifteam-market-here", JSON.stringify(here)); } catch {}
-      res(here);
+      const lat = round(p.coords.latitude), lon = round(p.coords.longitude);
+      const keep = (place) => { here = { lat, lon, place: place || (here && here.lat === lat && here.lon === lon ? here.place : "") || "", at: Date.now() }; try { localStorage.setItem("fifteam-market-here", JSON.stringify(here)); } catch {} res(here); };
+      townOf(lat, lon).then(keep, () => keep(""));
     }, (e) => rej(new Error(e.code === 1 ? "Location is turned off for FifTeam Media. Allow it in your phone's settings." : "Couldn't find your location. Try again.")), { enableHighAccuracy: false, timeout: 15000, maximumAge: 3600e3 });
   });
+}
+/** The town at a rough spot: "Toledo, OH" (a US state's two letters), or "Lyon, France". */
+async function townOf(lat, lon) {
+  const r = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=en`, { cache: "force-cache" });
+  if (!r.ok) throw new Error("town");
+  const d = await r.json(), town = (d.city || d.locality || "").trim().replace(/^(city|town|village|township|borough) of /i, "");
+  const st = (d.principalSubdivisionCode || "").split("-")[1] || "";
+  return (town ? `${town}, ${d.countryCode === "US" && st ? st : d.countryName || st}` : d.principalSubdivision || "").slice(0, 50);
 }
 /** Miles between two spots (as the crow flies). */
 function miles(a, b) {
@@ -275,27 +286,30 @@ function sellSheet() {
     const condRow = h("div", "chips mk-condpick");
     for (const c of CONDS) { const b = h("button", "chip", c); b.onclick = () => { cond = c; condRow.querySelectorAll(".chip").forEach((x) => x.classList.toggle("on", x === b)); }; condRow.append(b); }
     const desc = h("textarea", "input so-compose"); desc.rows = 4; desc.maxLength = 1500; desc.placeholder = "Describe it: what it is, how it's been used, what's included, pick-up or shipping"; desc.setAttribute("aria-label", "Description");
-    // where: a rough spot (rounded) and the town people see
-    const place = h("input", "input"); place.maxLength = 50; place.placeholder = "Your town (e.g. Toledo, OH)"; place.setAttribute("aria-label", "Your town");
-    try { place.value = localStorage.getItem("fifteam-market-place") || ""; } catch {}
-    const loc = h("button", "btn small"); const paintLoc = () => { loc.textContent = here ? "📍 Location set" : "📍 Use my location"; loc.classList.toggle("on", !!here); };
+    // where: from the phone's location (it asks), never typed; only the town and a rough spot are shared
+    const where = h("div", "mk-loc");
+    const paintLoc = (msg) => {
+      where.replaceChildren();
+      if (here) where.append(h("span", "mk-locname", `📍 ${here.place || "Your location"}`), h("span", "status mk-privacy", "Only your town and a spot rounded to about 3 miles are shared."));
+      else { const again = h("button", "btn small", "📍 Allow location"); again.onclick = ask; where.append(again, h("span", "status mk-privacy", msg || "Buyers see how far away it is, so selling needs your location.")); }
+    };
+    const ask = async () => { where.replaceChildren(h("span", "status", "📍 Finding your location…")); try { await locate(); paintLoc(); } catch (e) { paintLoc(e.message); } };
     paintLoc();
-    loc.onclick = async () => { loc.disabled = true; try { await locate(); toast("Location set"); } catch (e) { toast(e.message, 3500); } loc.disabled = false; paintLoc(); };
-    const locRow = h("div", "row wrap"); locRow.append(loc, h("span", "status mk-privacy", "Only your town and a spot rounded to about 3 miles are shared."));
+    ask();
     const err = h("p", "set-err"), go = h("button", "btn primary block", "List it");
     go.onclick = async () => {
       const pr = price.value.trim();
-      const miss = !photos.length ? "Add at least one photo." : !title.value.trim() ? "Give it a title." : pr === "" || !(+pr >= 0) ? "Set a price (0 for free)." : !cat ? "Pick a category." : !place.value.trim() ? "Add your town." : !here ? "Tap Use my location, so buyers see how far it is." : "";
+      const miss = !photos.length ? "Add at least one photo." : !title.value.trim() ? "Give it a title." : pr === "" || !(+pr >= 0) ? "Set a price (0 for free)." : !cat ? "Pick a category." : !here ? "Allow your location, so buyers see how far it is." : "";
       if (miss) { err.textContent = miss; return; }
+      if (offensive(title.value, desc.value)) { err.textContent = OFFENSIVE; return; }
       err.textContent = ""; go.disabled = true;
-      try { localStorage.setItem("fifteam-market-place", place.value.trim()); } catch {}
       try {
-        await list({ title: title.value.trim(), price: Math.round(+pr), cat, cond, desc: desc.value.trim(), place: place.value.trim(), photos }, (m) => { go.textContent = m; });
+        await list({ title: title.value.trim(), price: Math.round(+pr), cat, cond, desc: desc.value.trim(), place: here.place || "", photos }, (m) => { go.textContent = m; });
         closeSheet(); toast("Listed on Audio Market"); M.mine = false; renderMarket();
       } catch (e) { err.textContent = e.message || "Couldn't list it. Try again."; go.disabled = false; go.textContent = "List it"; }
     };
     const lab = (t) => h("span", "label", t);
-    p.append(strip, title, price, lab("Category"), catRow, lab("Condition"), condRow, desc, lab("Where"), place, locRow, err, go);
+    p.append(strip, title, price, lab("Category"), catRow, lab("Condition"), condRow, desc, lab("Where"), where, err, go);
   });
 }
 async function list(it, say) {
@@ -320,7 +334,10 @@ export function showMarket(on) {
   f.hidden = on; m.hidden = !on;
   document.querySelectorAll("#so-tabs button").forEach((b) => b.classList.toggle("on", (b.dataset.k === "market") === on));
   try { localStorage.setItem("fifteam-social-tab", on ? "market" : "feed"); } catch {}
-  if (on) { renderMarket(); loadMarket(20000).then(() => renderMarket(), () => renderMarket()); }
+  if (on) {
+    renderMarket(); loadMarket(20000).then(() => renderMarket(), () => renderMarket());
+    if (!here || !here.place || Date.now() - (here.at || 0) > 86400e3) locate().then(() => renderMarket(), () => {});
+  }
 }
 export const marketOpen = () => { const m = $("mk-body"); return !!m && !m.hidden; };
 export const market = { state: M, locate, miles };

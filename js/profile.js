@@ -4,6 +4,7 @@
 import { toast, openSheet } from "./ui.js";
 import { api } from "./social.js";
 import { openChat, talkedWith } from "./dms.js";
+import { offensive, OFFENSIVE } from "./filter.js";
 import { loadMeta, followersOf, followingOf, aboutOf, setFollow, setAbout, votesOf, followState, setFollowRequest, canSee, prefsOf, dmState, requestDm, blocksOf, blocked, setBlock } from "./meta.js";
 
 const PHONE = /^[a-z0-9]{6,16}$/;
@@ -44,12 +45,13 @@ function paint() {
     b.onclick = () => people(`${name} follows`, ing);
     counts.append(a, h("span", "pf-dot", "·"), b);
     head.append(counts);
-    // every like on their posts and comments
+    // the likes they've received: on their posts and comments, from other people (not their own)
     let likes = 0;
+    const from = (l) => l.filter((w) => w !== P.phone).length;
     for (const x of S.feed) {
       if (S.gone.has(x.id)) continue;
-      if (x.by === P.phone || (!x.by && x.user === name)) likes += x.likes.length;
-      for (const c of x.comments) if (c.by === P.phone) likes += c.likes.length;
+      if (x.by === P.phone || (!x.by && x.user === name)) likes += from(x.likes);
+      for (const c of x.comments) if (c.by === P.phone) likes += from(c.likes);
     }
     const lk = h("div", "pf-likes"); lk.append(h("b", "", String(likes)), document.createTextNode(likes === 1 ? " like" : " likes"));
     head.append(lk);
@@ -62,7 +64,7 @@ function paint() {
     const row = h("div", "row"), save = h("button", "btn small primary", "Save"), cancel = h("button", "btn small", "Cancel");
     save.type = "submit"; cancel.type = "button"; cancel.onclick = () => { P.editing = false; paint(); };
     row.append(save, cancel); f.append(t, row);
-    f.onsubmit = async (e) => { e.preventDefault(); P.editing = false; const job = setAbout(t.value); paint(); if (!(await job)) toast("Couldn't save that. Try again."); paint(); };
+    f.onsubmit = async (e) => { e.preventDefault(); if (offensive(t.value)) { toast(OFFENSIVE, 3500); return; } P.editing = false; const job = setAbout(t.value); paint(); if (!(await job)) toast("Couldn't save that. Try again."); paint(); };
     head.append(f);
     setTimeout(() => t.focus(), 50);
   } else if (about) head.append(h("p", "pf-about", about));
@@ -121,7 +123,7 @@ function paint() {
     box.append(lock);
     return;
   }
-  const posts = postsOf(), media = posts.filter((x) => x.image || x.video), songs = posts.filter((x) => x.song);
+  const posts = postsOf(), media = posts.filter((x) => x.image || x.video || (x.media && x.media.length)), songs = posts.filter((x) => x.song || x.playlist);
   const seg = h("div", "seg pf-seg");
   const t1 = h("button", P.tab === "media" ? "on" : "", `Pics & videos · ${media.length}`), t2 = h("button", P.tab === "songs" ? "on" : "", `Rebassed songs · ${songs.length}`);
   t1.onclick = () => { P.tab = "media"; paint(); }; t2.onclick = () => { P.tab = "songs"; paint(); };
@@ -130,9 +132,11 @@ function paint() {
     if (!media.length) { box.append(h("p", "status pf-none", self ? "Pictures and videos you post show up here." : "No pictures or videos yet.")); return; }
     const grid = h("div", "pf-grid");
     for (const x of media) {
-      const tile = h("button", "pf-tile" + (x.video ? " vid" : "") + (x.music ? " mus" : "")); tile.setAttribute("aria-label", x.text ? x.text.slice(0, 60) : x.video ? "A video" : "A picture");
+      const many = x.media && x.media.length > 1;
+      const tile = h("button", "pf-tile" + (x.video || (many && x.media[0] !== "i") ? " vid" : "") + (x.music ? " mus" : "") + (many ? " many" : "")); tile.setAttribute("aria-label", x.text ? x.text.slice(0, 60) : x.video ? "A video" : "A picture");
       tile.onclick = () => api.openViewer({ post: x });   // (watched right here, over their page)
-      api.message(x.id).then((m) => { const f = api.fileOf(m, x.video ? "poster.jpg" : "picture.jpg"); if (f) tile.style.backgroundImage = `url("${f.url}")`; }).catch(() => {});
+      const still = many ? (x.media[0] === "i" ? "m0.jpg" : "m0.poster.jpg") : x.video ? "poster.jpg" : "picture.jpg";
+      api.message(x.id).then((m) => { const f = api.fileOf(m, still); if (f) tile.style.backgroundImage = `url("${f.url}")`; }).catch(() => {});
       grid.append(tile);
     }
     box.append(grid);
@@ -140,6 +144,14 @@ function paint() {
     if (!songs.length) { box.append(h("p", "status pf-none", self ? "Rebassed songs you post show up here." : "No rebassed songs yet.")); return; }
     const list = h("div", "pf-songs");
     for (const x of songs) {
+      if (x.playlist) {
+        const row = h("button", "dm-row pf-plrow"); const cov = h("span", "dm-lph");
+        api.message(x.id).then((m) => { const c = api.fileOf(m, "cover.jpg"); if (c) cov.style.backgroundImage = `url("${c.url}")`; }).catch(() => {});
+        const t = h("span", "dm-mid"); t.append(h("small", "dm-mktag", "Playlist"), h("b", "", x.playlist.name), h("small", "", `${x.playlist.items.length} songs · ${api.ago(x.at)}`));
+        row.append(cov, t); row.onclick = () => api.showPost(x.id);
+        list.append(row);
+        continue;
+      }
       const b = api.songBlock(x);
       api.message(x.id).then((m) => { const c = api.fileOf(m, "cover.jpg"); if (c) b.querySelector(".so-cover").style.backgroundImage = `url("${c.url}")`; }).catch(() => {});
       const v = votesOf(x.id).length;
