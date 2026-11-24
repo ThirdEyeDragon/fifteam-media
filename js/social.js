@@ -15,6 +15,7 @@ import { openProfile } from "./profile.js";
 import { loadMeta, votesOf, setVote, meta, canSee, blocked } from "./meta.js";
 import { bannedPhones, noPicPhones, checkBans, badgesOf } from "./ban.js";
 import { activityChanged, initActivity } from "./activity.js";
+import { hookFetch, holdFor } from "./limiter.js";
 
 const NAME_KEY = "fifteam-social-name", MINE_KEY = "fifteam-social-mine", ME_KEY = "fifteam-social-me", AV_KEY = "fifteam-social-avatar";
 const MAX_MSG = 9.5 * 1024 * 1024;   // what one post may carry (10 MB), with room to spare
@@ -46,14 +47,14 @@ async function config() {
 }
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 /** A request to the feed service, waiting and trying again if it says "slow down". */
-async function dc(path, { method = "GET", form, json } = {}) {
+async function dc(path, { method = "GET", form, json, low = false } = {}) {
   const { base } = await config();
   for (let attempt = 0; attempt < 5; attempt++) {
     let r;
     try {
-      r = await fetch(base + path, { method, body: form || (json ? JSON.stringify(json) : undefined), headers: json ? { "Content-Type": "application/json" } : undefined, cache: "no-store" });
+      r = await hookFetch(base + path, { method, body: form || (json ? JSON.stringify(json) : undefined), headers: json ? { "Content-Type": "application/json" } : undefined, cache: "no-store" }, low);
     } catch { throw new Error("You're offline, or the feed can't be reached."); }
-    if (r.status === 429) { let s = 1; try { s = (await r.json()).retry_after || 1; } catch {} await wait(Math.min(10, s) * 1000 + 100); continue; }
+    if (r.status === 429) { let s = 1; try { s = (await r.json()).retry_after || 1; } catch {} holdFor(Math.min(10, s) * 1000 + 50); continue; }
     if (r.status === 204) return null;
     let data = null; try { data = await r.json(); } catch {}
     if (!r.ok) { const e = new Error(r.status === 404 ? "gone" : r.status === 413 ? "That's too big to post (10 MB at most)." : `Couldn't reach the feed (${r.status}). Try again.`); e.status = r.status; throw e; }
@@ -131,18 +132,46 @@ function clean(list) {
   }).filter(Boolean);
 }
 /** A post's message (for its picture and song links), fetched once per load, a couple at a time. */
-function message(id) {
+// Each file link says when it stops working (its "ex", in hex seconds); a post's links are kept on the phone until
+// shortly before then, so a post seen before needs no request to show its picture, video or song.
+const LINKS = "fifteam-links";
+let links = {};
+try { links = JSON.parse(localStorage.getItem(LINKS) || "{}") || {}; } catch {}
+let linksTimer = 0;
+function writeLinks() {
+  clearTimeout(linksTimer); linksTimer = 0;
+  const now = Date.now(), keep = Object.entries(links).filter(([, v]) => v.ex - now > 15 * 60e3).sort((a, b) => b[1].ex - a[1].ex).slice(0, 500);
+  links = Object.fromEntries(keep);
+  try { localStorage.setItem(LINKS, JSON.stringify(links)); } catch {}
+}
+function saveLinks() { clearTimeout(linksTimer); linksTimer = setTimeout(writeLinks, 800); }
+// (and at once when the app is closed or put away)
+addEventListener("pagehide", () => { if (linksTimer) writeLinks(); });
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden" && linksTimer) writeLinks(); });
+function expiryOf(atts) {
+  let ex = Infinity;
+  for (const a of atts) { const x = /[?&]ex=([0-9a-f]+)/.exec(a.url || ""); if (x) ex = Math.min(ex, parseInt(x[1], 16) * 1000); }
+  return ex === Infinity ? Date.now() + 6 * 3600e3 : ex;
+}
+function message(id, low = false) {
   if (S.msgs.has(id)) return S.msgs.get(id);
-  const p = new Promise((res, rej) => { S.queue.push({ id, res, rej }); pump(); });
+  const c = links[id];
+  if (c && c.ex - Date.now() > 15 * 60e3) {
+    const p = Promise.resolve({ id, attachments: c.a }); S.msgs.set(id, p);
+    // (pulled down to refresh: shown from what's remembered at once, and checked again behind it, in case it's gone)
+    if (S.recheck) dc(`/messages/${id}`, { low: true }).then((m) => { const a = ((m && m.attachments) || []).map(({ filename, url }) => ({ filename, url })); if (a.length) { links[id] = { a, ex: expiryOf(a) }; saveLinks(); } }, (e) => { if (e && e.status === 404) gone(id); });
+    return p;
+  }
+  const p = dc(`/messages/${id}`, { low });
   S.msgs.set(id, p);
+  p.then((m) => { const a = ((m && m.attachments) || []).map(({ filename, url }) => ({ filename, url })); if (a.length) { links[id] = { a, ex: expiryOf(a) }; saveLinks(); } }, () => { S.msgs.delete(id); });
   return p;
 }
-function pump() {
-  while (S.busy < 2 && S.queue.length) {
-    const { id, res, rej } = S.queue.shift();
-    S.busy++;
-    dc(`/messages/${id}`).then(res, rej).finally(() => { S.busy--; pump(); });
-  }
+/** A post (or picture) whose message is gone: off the screen, and forgotten. */
+function gone(id) {
+  delete links[id]; saveLinks();
+  S.gone.add(id);
+  document.querySelectorAll(`#so-body .so-post[data-id="${id}"]`).forEach((c) => c.remove());
 }
 const fileOf = (m, name) => ((m && m.attachments) || []).find((a) => a.filename === name);
 // A song is stored as song.mp4, its MP3 bytes lightly scrambled behind a "FTS1" mark: the file service only lets the app
@@ -384,7 +413,7 @@ function postCard(p) {
         const m = await message(p.id);
         const pic = fileOf(m, "picture.jpg"), mp3 = songOf(m), cov = fileOf(m, "cover.jpg"), face = fileOf(m, "avatar.jpg");
         if (face && !pictureFor(p) && !(mineAs(p) && S.avatarUrl)) av.style.backgroundImage = `url("${face.url}")`;
-        if (img && pic) { const i = h("img", "so-img"); i.alt = p.text ? p.text.slice(0, 80) : "A picture"; i.decoding = "async"; i.onload = () => i.classList.add("in"); i.onerror = () => i.classList.add("in"); i.src = pic.url; i.onclick = () => viewImage(pic.url); img.replaceWith(i); }
+        if (img && pic) { const i = h("img", "so-img"); i.alt = p.text ? p.text.slice(0, 80) : "A picture"; i.decoding = "async"; i.onload = () => i.classList.add("in"); i.onerror = () => i.classList.add("in"); i.src = pic.url; i.onclick = () => openViewer({ post: p, src: pic.url }); img.replaceWith(i); }
         if (song) { song._url = mp3 && mp3.url; if (cov) song.querySelector(".so-cover").style.backgroundImage = `url("${cov.url}")`; }
         if (vid) { const f = fileOf(m, "video." + p.video), po = fileOf(m, "poster.jpg"); vid._attach(f && f.url, po && po.url); }
       } catch (e) {
@@ -408,7 +437,7 @@ function videoBlock(p) {
   box._attach = (url, poster) => {
     if (poster) v.poster = poster;
     if (!url) { box.textContent = "Couldn't load the video"; return; }
-    v.src = url; box.classList.remove("so-wait"); box.classList.add("ready");
+    v.preload = "metadata"; v.src = url; box.classList.remove("so-wait"); box.classList.add("ready");
     videoObserver().observe(box);
   };
   v.onplay = () => box.classList.add("playing");
@@ -679,7 +708,55 @@ async function addToLibrary(p, block, btn) {
     btn.classList.remove("busy"); btn.classList.add("done"); toast("Added to your library, under Rebassed");
   } catch { btn.disabled = false; btn.classList.remove("busy"); toast("Couldn't download that song. Are you online?"); }
 }
-function viewImage(src) { openSheet((p) => { const i = h("img", "so-full"); i.src = src; i.alt = "Picture"; p.append(i); }); }
+function viewImage(src) { openViewer({ src }); }
+/** Full screen: a post's picture, or its video playing with sound (from a profile, or a tap on a picture). */
+async function openViewer({ post, src }) {
+  closeViewer();
+  const v = h("div", "viewer"); v.id = "viewer"; v.setAttribute("role", "dialog"); v.setAttribute("aria-modal", "true");
+  const x = h("button", "viewer-x"); x.setAttribute("aria-label", "Close"); x.textContent = "×"; x.onclick = closeViewer;
+  const stage = h("div", "viewer-stage");
+  v.append(stage, x);
+  if (post) {
+    const foot = h("div", "viewer-foot");
+    const who = h("div", "viewer-who"); who.append(nameLine(nameOf(post), post.by), h("small", "", ago(post.at)));
+    foot.append(who);
+    if (post.text) foot.append(h("p", "", post.text));
+    const go = h("button", "btn small", "See the post"); go.onclick = () => { closeViewer(); showPost(post.id); };
+    const n = h("span", "viewer-n", [post.likes.length ? `♥ ${post.likes.length}` : "", commentsOf(post).length ? `💬 ${commentsOf(post).length}` : ""].filter(Boolean).join("  "));
+    const row = h("div", "viewer-row"); row.append(n, go); foot.append(row);
+    v.append(foot);
+  }
+  v.onclick = (e) => { if (e.target === v || e.target === stage) closeViewer(); };
+  document.body.append(v);
+  addEventListener("keydown", viewerKey);
+  stage.append(h("div", "viewer-spin"));
+  try {
+    if (post && post.video) {
+      const m = await message(post.id), f = fileOf(m, "video." + post.video), po = fileOf(m, "poster.jpg");
+      if (!f) throw new Error("gone");
+      const vid = document.createElement("video");
+      vid.controls = true; vid.playsInline = true; vid.setAttribute("playsinline", ""); vid.autoplay = true; vid.preload = "auto";
+      if (po) vid.poster = po.url;
+      vid.src = f.url;
+      pauseVideos(); stopSong(); try { player.pause(); } catch {}
+      stage.replaceChildren(vid);
+      vid.play().catch(() => {});
+    } else {
+      let url = src;
+      if (!url && post) { const m = await message(post.id), f = fileOf(m, "picture.jpg"); url = f && f.url; }
+      if (!url) throw new Error("gone");
+      const i = h("img", ""); i.alt = (post && post.text) ? post.text.slice(0, 80) : "Picture"; i.decoding = "async"; i.src = url;
+      stage.replaceChildren(i);
+    }
+  } catch { stage.replaceChildren(h("p", "status", "Couldn't load that. Are you online?")); }
+}
+function viewerKey(e) { if (e.key === "Escape") closeViewer(); }
+function closeViewer() {
+  const v = $("viewer"); if (!v) return;
+  removeEventListener("keydown", viewerKey);
+  v.querySelectorAll("video").forEach((x) => { x.pause(); x.removeAttribute("src"); x.load(); });
+  v.remove();
+}
 
 // ---------------------------------------------------------------------------------------------------- videos
 /** A video's length, worked out by seeking to its end when the file doesn't say (videos recorded in a browser). */
@@ -907,15 +984,24 @@ async function removePost(p) {
 
 // ---------------------------------------------------------------------------------------------------- wiring
 /** The feed again. manual: pulled down (everything fetched fresh). Redraws only what changed. */
+const FEED = "fifteam-feed";
+function saveFeed() { try { localStorage.setItem(FEED, JSON.stringify({ at: Date.now(), posts: S.feed.slice(0, 120), profiles: S.profiles })); } catch {} }
+/** The feed as it was last time, on screen at once while the new one loads. */
+function cachedFeed() {
+  if (S.loadedAt || S.feed.length) return;
+  try { const c = JSON.parse(localStorage.getItem(FEED) || "null"); if (c && Array.isArray(c.posts)) { S.feed = clean(c.posts); S.profiles = cleanProfiles(c.profiles); } } catch {}
+}
 async function refresh({ manual = false } = {}) {
   if (S.loading) return S.loading;
   const firstTime = !S.loadedAt;
+  if (firstTime) cachedFeed();
   S.loading = (async () => {
     S.error = "";
     try {
-      await config(); if (manual) S.msgs.clear();
+      await config(); if (manual) { S.msgs.clear(); S.recheck = true; }
       const [list] = await Promise.all([readIndex(), loadMeta(0).catch(() => null)]);
       S.profiles = list.profiles; S.feed = keepGone(list); S.loadedAt = Date.now();
+      saveFeed();
     }
     catch (e) { S.error = e.message === "setup" || e instanceof SyntaxError ? "Social isn't available yet." : e.message; }
   })();
@@ -1006,6 +1092,7 @@ async function ensureProfiles(fresh) {
   if (!S.loadedAt || Date.now() - S.loadedAt > (fresh ? 5000 : 40000)) {
     // (the feed too: the bell's activity comes from it; the Social screen redraws from it the next time it refreshes)
     const [list] = await Promise.all([readIndex(), loadMeta(0).catch(() => null)]); S.profiles = list.profiles; S.feed = keepGone(list); S.loadedAt = Date.now();
+    saveFeed(); warm();
     activityChanged();
   }
   if (S.name) syncProfile();
@@ -1015,6 +1102,15 @@ function findPhone(name) {
   let best = null;
   for (const [k, v] of Object.entries(S.profiles || {})) if (v.name && v.name === name && (!best || v.at > best[1].at)) best = [k, v];
   return best ? best[0] : "";
+}
+/** With the feed read in the background: the first few posts' links and pictures fetched ahead, so they're there at once. */
+let warmed = false;
+function warm() {
+  if (warmed) return; warmed = true;
+  const posts = S.feed.filter((p) => !S.gone.has(p.id) && visible(p)).slice(0, 6);
+  const avs = new Set(posts.map(pictureFor).filter(Boolean));
+  for (const p of posts) if (p.image || p.video || p.song) message(p.id, true).then((m) => { for (const n of ["picture.jpg", "poster.jpg", "cover.jpg"]) { const f = fileOf(m, n); if (f) { const i = new Image(); i.decoding = "async"; i.src = f.url; } } }).catch(() => {});
+  for (const id of avs) message(id, true).then((m) => { const f = fileOf(m, "avatar.jpg"); if (f) new Image().src = f.url; }).catch(() => {});
 }
 /** A post on the Social screen: scrolled to and lit up (shown further down the list if it has to be). */
 function showPost(id) {
@@ -1030,5 +1126,5 @@ function showPost(id) {
   }, 350);
 }
 function editName() { closeSheet(); S.editingName = true; if (location.hash !== "#social") location.hash = "#social"; render(); setTimeout(() => { const i = document.querySelector("#so-body .so-nameform input"); if (i) { i.focus(); i.select(); } }, 120); }
-export const api = { nameLine, visible, state: S, config, dc, avatarEl, showPicture, ago, icon, findPhone, ensureProfiles, openComments, nameOf, hidden, songBlock, showPost, pickAvatar, editName, fileOf, message, viewImage, render };
+export const api = { openViewer, nameLine, visible, state: S, config, dc, avatarEl, showPicture, ago, icon, findPhone, ensureProfiles, openComments, nameOf, hidden, songBlock, showPost, pickAvatar, editName, fileOf, message, viewImage, render };
 export const social = { state: S, prepareVideo };

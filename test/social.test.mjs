@@ -3,7 +3,7 @@
 // rebass, playing and keeping someone's song, deleting, a post deleted in Discord, markup in a post, no pings. Also the
 // knob lock on the Player.
 import { spawn } from "node:child_process";
-import { writeFileSync, mkdtempSync } from "node:fs";
+import { writeFileSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { browser } from "./cdp.mjs";
@@ -17,7 +17,7 @@ const check = (ok, what) => { if (!ok) { failed = true; console.log("  FAIL:", w
 const HOOK = "111222333", TOKEN = "fake-webhook-token", INDEX = "900000000000000001";
 const msgs = new Map(), cdn = new Map(), posted = [];
 let nextId = 900000000000001000n;
-const attach = (id, name, bytes, type) => { const url = `https://cdn.discordapp.com/attachments/1/${id}/${name}?ex=abc`; cdn.set(url.split("?")[0], { bytes, type }); return { id: String(Math.random()).slice(2), filename: name, url }; };
+const attach = (id, name, bytes, type) => { const url = `https://cdn.discordapp.com/attachments/1/${id}/${name}?ex=${Math.floor(Date.now() / 1000 + 86400).toString(16)}&is=0&hm=${Math.random().toString(16).slice(2)}`; cdn.set(url.split("?")[0], { bytes, type }); return { id: String(Math.random()).slice(2), filename: name, url }; };
 const tinyJpeg = Buffer.from("/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/yQALCAABAAEBAREA/8wABgAQEAX/2gAIAQEAAD8A0s8g/9k=", "base64");
 const bob = "900000000000000101", eve = "900000000000000102";
 msgs.set(bob, { id: bob, content: "**Bob**", attachments: [attach(bob, "picture.jpg", tinyJpeg, "image/jpeg"), attach(bob, "song.mp4", Buffer.alloc(4000, 0xff), "video/mp4")] });
@@ -57,6 +57,7 @@ function multipart(body, ctype) {
 const json = (o, status = 200) => ({ status, type: "application/json", body: Buffer.from(JSON.stringify(o)) });
 // another phone's write landing just after this phone checked its own: armed, the next feed write is undone right after it's read back
 let clobber = null;
+const gets = new Map();
 function discord(method, url, headers, body) {
   const u = new URL(url);
   if (u.host === "cdn.discordapp.com") { const f = cdn.get(url.split("?")[0]); return f ? { status: 200, type: f.type, body: f.bytes } : { status: 404, type: "text/plain", body: Buffer.from("no") }; }
@@ -65,6 +66,7 @@ function discord(method, url, headers, body) {
   if (!u.pathname.startsWith(base)) return json({ message: "Unknown Webhook", code: 10015 }, 404);
   const rest = u.pathname.slice(base.length), m = /^\/messages\/(\d+)$/.exec(rest);
   if (method === "GET" && m) {
+    gets.set(m[1], (gets.get(m[1]) || 0) + 1);
     const r = msgs.has(m[1]) ? json(msgs.get(m[1])) : json({ message: "Unknown Message" }, 404);
     if (clobber && clobber.state === "written" && m[1] === INDEX) { msgs.set(INDEX, clobber.before); cdn.set(...clobber.bytes); clobber.state = "done"; }
     return r;
@@ -97,6 +99,8 @@ b.on(async (m) => {
   await send("Fetch.fulfillRequest", { requestId, responseCode: r.status, responseHeaders: [...CORS, { name: "Content-Type", value: r.type }], body: r.body.toString("base64") }, m.sessionId);
 });
 await send("Fetch.enable", { patterns: [{ urlPattern: "https://discord.com/*" }, { urlPattern: "https://cdn.discordapp.com/*" }, { urlPattern: "*social/config.json*" }] });
+// (the app's service worker fetches pictures itself: its requests go to the stand-in too)
+b.on((m) => { if (m.method === "Target.attachedToTarget" && m.params.targetInfo.type === "service_worker") send("Fetch.enable", { patterns: [{ urlPattern: "https://cdn.discordapp.com/*" }, { urlPattern: "https://discord.com/*" }] }, m.params.sessionId); });
 const until = async (expr, ms, what) => { const t = Date.now(); while (Date.now() - t < ms) { if (await ev(expr).catch(() => false)) return true; await sleep(200); } check(false, "timed out waiting for " + what); return false; };
 const text = (sel) => ev(`[...document.querySelectorAll(${JSON.stringify(sel)})].map(e => e.textContent).join(' | ')`);
 const shot = async (name) => { if (!process.env.SHOTS) return; const r = await send("Page.captureScreenshot", { format: "png" }); writeFileSync(join(process.env.SHOTS, name + ".png"), Buffer.from(r.result.data, "base64")); };
@@ -184,6 +188,7 @@ try {
   await ev(`${bobCard}.querySelector('.so-vote').click(), 1`);
   for (let i = 0; i < 40 && (storeNow(META).votes[bob] || []).length; i++) await sleep(200);
   await sleep(300);
+  await until(`!document.querySelector('#so-body .so-week')`, 4000, "the rebass of the week gone");
   check(!(storeNow(META).votes[bob] || []).length && !(await ev(`!!document.querySelector('#so-body .so-week')`)), "vote taken back: no rebass of the week");
   await ev(`${bobCard}.querySelector('.so-vote').click(), 1`);
   for (let i = 0; i < 40 && !(storeNow(META).votes[bob] || []).length; i++) await sleep(200);
@@ -626,6 +631,43 @@ try {
   const muted = await ev(`${vcard}.querySelector('video').muted`);
   console.log("mute button: sound on", unmuted, "| off again", muted);
   check(unmuted && muted, "the mute button");
+  // on her page: the video plays right there (full screen, with sound), not by jumping to the feed
+  await ev(`document.getElementById('btn-me').click(), 1`); await sleep(600);
+  const tiles = await ev(`[...document.querySelectorAll('#sheet-panel .pf-tile')].map(t => t.classList.contains('vid') ? 'video' : 'picture').join(',')`);
+  await ev(`document.querySelector('#sheet-panel .pf-tile.vid').click(), 1`);
+  await until(`(() => { const v = document.querySelector('#viewer video'); return v && /cdn\.discordapp\.com/.test(v.src) && !v.paused; })()`, 10000, "the video playing on her page");
+  const inViewer = await ev(`(() => { const v = document.querySelector('#viewer video'); return { playing: !v.paused, sound: !v.muted, controls: v.controls, still: /poster\.jpg/.test(v.poster), caption: document.querySelector('#viewer .viewer-foot').textContent, pageStillOpen: document.getElementById('sheet').classList.contains('open') && !!document.querySelector('#sheet-panel .pf-grid'), hash: location.hash }; })()`);
+  console.log("her page's tiles:", tiles, "| the video, tapped:", JSON.stringify(inViewer));
+  check(inViewer.playing && inViewer.sound && inViewer.controls && inViewer.pageStillOpen, "the video plays on her page, over it, with sound");
+  await shot("d17_viewer");
+  await ev(`document.querySelector('#viewer .viewer-x').click(), 1`); await sleep(300);
+  check(!(await ev(`!!document.getElementById('viewer')`)) && (await ev(`document.getElementById('sheet').classList.contains('open')`)), "closed: back on her page");
+  await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
+  // a picture in the feed, tapped: full screen too, with its post's words
+  {
+    const pid = "900000000000000777";
+    msgs.set(pid, { id: pid, content: "**Eve**", attachments: [attach(pid, "picture.jpg", readFileSync(avPng), "image/png")] });
+    const k = msgs.get(INDEX).attachments[0].url.split("?")[0], d = JSON.parse(cdn.get(k).bytes.toString());
+    d.posts.unshift({ id: pid, at: Date.now(), user: "Eve", text: "Pic time", image: true, by: "", likes: [], comments: [] });
+    msgs.set(INDEX, { id: INDEX, content: "FifTeam Social feed", attachments: [attach(INDEX, "feed.json", Buffer.from(JSON.stringify(d)), "application/json")] });
+  }
+  await sleep(5200);
+  await ev(`import('./js/social.js').then((m) => m.api.ensureProfiles(true)).then((x) => import('./js/social.js')).then((m) => { m.api.render(); return 1; })`);
+  await until(`!!document.querySelector('#so-body img.so-img.in')`, 8000, "the new picture post");
+  await ev(`document.querySelector('#so-body img.so-img').click(), 1`);
+  await until(`!!document.querySelector('#viewer img') && document.querySelector('#viewer img').naturalWidth > 0`, 8000, "a picture full screen");
+  console.log("a feed picture, tapped:", await ev(`document.querySelector('#viewer .viewer-foot').textContent`));
+  await ev(`document.querySelector('#viewer .viewer-x').click(), 1`); await sleep(300);
+
+  // speed: opened again, the posts' files come from what the phone remembers (no request per post), pictures from its cache
+  check(Object.keys(JSON.parse(await ev(`localStorage.getItem('fifteam-links') || '{}'`))).length >= 2, "file links remembered on the phone");
+  gets.clear();
+  await b.open(`http://127.0.0.1:${port}/?again3#social`, 2500);
+  await until(`!!document.querySelector('#so-body img.so-img.in')`, 10000, "the pictures after opening again");
+  const postReads = [...gets.entries()].filter(([id]) => feedNow().some((x) => x.id === id && (x.image || x.video || x.song))).length;
+  const pics = await ev(`caches.open('fifteam-media-pics').then((c) => c.keys()).then((k) => k.length)`);
+  console.log("opened again: post reads", postReads, "| pictures kept on the phone:", pics, "| feed kept for an instant start:", await ev(`!!localStorage.getItem('fifteam-feed')`));
+  check(postReads === 0 && pics > 0, "opened again: no request per post, pictures from the phone");
   // a video too big to post as it is: played through and recorded again smaller
   const small = JSON.parse(await ev(`(async () => {
     const { social } = await import('./js/social.js');

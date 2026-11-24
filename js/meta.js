@@ -15,12 +15,12 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 /** One JSON file in one store message: read it fresh, write it, and change it safely (this phone's changes one at a
  * time, each read back to check it took, and looked at again twice a little later in case another phone's copy landed
  * on top of it). */
-export function jsonStore(key, file, label, clean) {
+export function jsonStore(key, file, label, clean, low = false) {
   let queue = Promise.resolve(), seq = 0;
   async function read() {
     const cfg = await api.config();
     if (!cfg[key]) throw new Error("setup");
-    const m = await api.dc(`/messages/${cfg[key]}`);
+    const m = await api.dc(`/messages/${cfg[key]}`, { low });
     const a = (m.attachments || []).find((x) => x.filename === file);
     return clean(a ? await (await fetch(a.url, { cache: "no-store" })).json() : null);
   }
@@ -28,7 +28,7 @@ export function jsonStore(key, file, label, clean) {
     const cfg = await api.config(), f = new FormData();
     f.append("payload_json", JSON.stringify({ content: `${label} (the app keeps this message up to date; please don't delete it)`, attachments: [{ id: 0, filename: file }], allowed_mentions: { parse: [] } }));
     f.append("files[0]", new Blob([JSON.stringify(d)], { type: "application/json" }), file);
-    await api.dc(`/messages/${cfg[key]}`, { method: "PATCH", form: f });
+    await api.dc(`/messages/${cfg[key]}`, { method: "PATCH", form: f, low });
   }
   async function changeNow(change, check) {
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -74,20 +74,26 @@ function cleanMeta(d) {
 }
 const metaStore = jsonStore("meta", "meta.json", "FifTeam votes, follows and about", cleanMeta);
 const M = { d: cleanMeta(null), at: 0, loading: null, pending: new Map() };
+// (what it was last time, at once: votes, follows and the rest show before the new copy arrives)
+const META_CACHE = "fifteam-meta";
+try { const c = localStorage.getItem(META_CACHE); if (c) M.d = cleanMeta(JSON.parse(c)); } catch {}
+const saveMeta = () => { try { localStorage.setItem(META_CACHE, JSON.stringify(M.d)); } catch {} };
 export const meta = M;
 
 /** The votes, follows and abouts, fetched again if they're older than maxAge (ms). */
 export async function loadMeta(maxAge = 0) {
   if (M.loading) return M.loading;
   if (M.at && Date.now() - M.at < maxAge) return M.d;
-  M.loading = (async () => { try { const d = await metaStore.read(); M.d = withPending(d); M.at = Date.now(); return M.d; } finally { M.loading = null; } })();
+  // (a copy read while a change from here was on its way, and finished after it, is older than what's on screen: not used)
+  const ver = M.ver;
+  M.loading = (async () => { try { const d = await metaStore.read(); if (ver !== M.ver || M.pending.size) return M.d; M.d = withPending(d); M.at = Date.now(); saveMeta(); return M.d; } finally { M.loading = null; } })();
   return M.loading;
 }
 // changes from here still on their way: kept showing even if a copy without them comes back in the meantime
 function withPending(d) { for (const fn of M.pending.values()) fn(d); return d; }
 async function metaChange(key, fn, check) {
-  M.pending.set(key, fn); fn(M.d);
-  try { const now = await metaStore.change(fn, check); M.pending.delete(key); M.d = withPending(now); M.at = Date.now(); return true; }
+  M.pending.set(key, fn); fn(M.d); M.ver = (M.ver || 0) + 1;
+  try { const now = await metaStore.change(fn, check); M.pending.delete(key); M.d = withPending(now); M.at = Date.now(); M.ver++; saveMeta(); return true; }
   catch { M.pending.delete(key); try { M.d = withPending(await metaStore.read()); M.at = Date.now(); } catch {} return false; }
 }
 
@@ -187,7 +193,7 @@ function cleanPresence(d) {
     out.on[k] = { n: String(v.n || "").slice(0, 24), d: String(v.d || "").slice(0, 60), v: String(v.v || "").slice(0, 12), at: +v.at };
   return out;
 }
-const presenceStore = jsonStore("presence", "presence.json", "FifTeam who's online", cleanPresence);
+const presenceStore = jsonStore("presence", "presence.json", "FifTeam who's online", cleanPresence, true);
 let lastBeat = 0, beating = false;
 export async function heartbeat() {
   if (beating || document.visibilityState !== "visible" || !api.state.me || Date.now() - lastBeat < 4 * 60e3) return;

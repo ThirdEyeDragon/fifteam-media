@@ -126,6 +126,7 @@ export function openSettings() {
     </div>`);
     p.append(pvSec);
     const paintPv = () => {
+      if (!$("set-dm-why")) return;   // (Settings closed meanwhile)
       const me = api.state.me, pr = prefsOf(me);
       pvSec.querySelectorAll("#set-dm button").forEach((b) => { b.classList.toggle("on", b.dataset.v === pr.dm); b.setAttribute("aria-checked", String(b.dataset.v === pr.dm)); });
       $("set-dm-why").textContent = pr.dm === "all" ? "Anyone can message you."

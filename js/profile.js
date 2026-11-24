@@ -131,7 +131,7 @@ function paint() {
     const grid = h("div", "pf-grid");
     for (const x of media) {
       const tile = h("button", "pf-tile" + (x.video ? " vid" : "")); tile.setAttribute("aria-label", x.text ? x.text.slice(0, 60) : x.video ? "A video" : "A picture");
-      tile.onclick = () => api.showPost(x.id);
+      tile.onclick = () => api.openViewer({ post: x });   // (watched right here, over their page)
       api.message(x.id).then((m) => { const f = api.fileOf(m, x.video ? "poster.jpg" : "picture.jpg"); if (f) tile.style.backgroundImage = `url("${f.url}")`; }).catch(() => {});
       grid.append(tile);
     }

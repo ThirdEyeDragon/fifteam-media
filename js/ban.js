@@ -3,6 +3,7 @@
 // "mod"), which only the FifTeam bot writes; the app reads it when it opens and every few minutes. A phone that has been
 // banned remembers it, so it stays shut even offline, until the ban is lifted.
 import { player } from "./player.js";
+import { hookFetch } from "./limiter.js";
 
 const FLAG = "fifteam-ban", LIST = "fifteam-bans", ME = "fifteam-social-me";
 const ls = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch {} }, del(k) { try { localStorage.removeItem(k); } catch {} } };
@@ -54,7 +55,7 @@ export async function checkBans() {
     const c = await (await fetch(new URL("../social/config.json", import.meta.url), { cache: "no-cache" })).json();
     if (!c.mod) return;
     const base = `https://discord.com/api/v10/webhooks/${c.hook}/${atob(c.key).split("").reverse().join("")}`;
-    const r = await fetch(`${base}/messages/${c.mod}`, { cache: "no-store" });
+    const r = await hookFetch(`${base}/messages/${c.mod}`, { cache: "no-store" }, true);
     if (!r.ok) return;
     const a = ((await r.json()).attachments || []).find((x) => x.filename === "mod.json");
     if (!a) return;

@@ -1,12 +1,12 @@
 // FifTeam Media's service worker: the app works offline, and audio files shared to it from other apps (Android) land in
 // its inbox. Bump VERSION whenever the app's files change.
-const VERSION = "fifteam-v26";
+const VERSION = "fifteam-v27";
 const SHELL = [
   "./", "index.html", "manifest.webmanifest", "css/app.css",
   "js/app.js", "js/ui.js", "js/store.js", "js/tags.js", "js/tilt.js", "js/player.js", "js/library.js",
   "js/rebass.js", "js/rebass-worker.js", "js/tones.js", "js/export.js", "js/dsp.js", "js/mp3-worker.js",
   "js/knob.js", "js/eq.js", "js/image.js", "js/limiter-worklet.js", "js/settings.js", "js/demo.js", "js/bassline.js", "js/share.js",
-  "js/demucs.js", "js/social.js", "js/dms.js", "js/activity.js", "js/meta.js", "js/device.js", "js/ban.js", "js/profile.js", "js/categories.js", "js/separator.js", "js/sep-worker.js", "js/stems.js", "vendor/ort/ort.webgpu.min.mjs", "vendor/ort/ort-wasm-simd-threaded.asyncify.mjs",
+  "js/demucs.js", "js/social.js", "js/dms.js", "js/activity.js", "js/meta.js", "js/device.js", "js/ban.js", "js/profile.js", "js/categories.js", "js/limiter.js", "js/separator.js", "js/sep-worker.js", "js/stems.js", "vendor/ort/ort.webgpu.min.mjs", "vendor/ort/ort-wasm-simd-threaded.asyncify.mjs",
   "icons/icon-192.png", "icons/icon-512.png", "icons/maskable-512.png", "icons/apple-touch-icon.png",
 ];
 
@@ -15,7 +15,7 @@ self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: "reload" })))).then(() => self.skipWaiting()));
 });
 self.addEventListener("activate", (e) => {
-  e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== VERSION && k !== "fifteam-runtime" && !k.startsWith("fifteam-sep")).map((k) => caches.delete(k)))).then(() => self.clients.claim()));
+  e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== VERSION && k !== "fifteam-runtime" && k !== MEDIA && k !== "fifteam-flags" && !k.startsWith("fifteam-sep")).map((k) => caches.delete(k)))).then(() => self.clients.claim()));
 });
 
 // the same database the app uses (keep in step with js/store.js)
@@ -54,6 +54,10 @@ self.addEventListener("notificationclick", (e) => {
   })());
 });
 
+const MEDIA = "fifteam-media-pics";
+let mediaPuts = 0;
+/** At most 600 pictures kept (the oldest go first). */
+async function trimMedia(c) { const keys = await c.keys(); for (const k of keys.slice(0, Math.max(0, keys.length - 600))) await c.delete(k); }
 self.addEventListener("fetch", (e) => {
   const req = e.request, url = new URL(req.url);
   if (req.method === "POST" && url.pathname.endsWith("/share-target")) {
@@ -86,6 +90,17 @@ self.addEventListener("fetch", (e) => {
       const net = fetch(req).then((r) => { if (r.ok) c.put(req, r.clone()); return r; }).catch(() => null);
       return isolated(hit || (await net) || (await c.match("index.html")));
     }));
+  } else if (url.host === "cdn.discordapp.com" && /\.(jpe?g|png|webp|gif)$/i.test(url.pathname)) {
+    // Social's pictures (posts, profile pictures, covers, video stills): kept on the phone, so a picture seen once shows at
+    // once after that. A file's address changes each time its link is renewed, but its path doesn't: that's the key.
+    const key = url.origin + url.pathname;
+    e.respondWith(caches.open(MEDIA).then(async (c) => {
+      const hit = await c.match(key);
+      if (hit) return hit;
+      const r = await fetch(req.url, { mode: "cors", credentials: "omit" });
+      if (r.ok) { await c.put(key, r.clone()); if (++mediaPuts % 40 === 0) trimMedia(c); }
+      return r;
+    }).catch(() => fetch(req)));
   } else if (/fonts\.(googleapis|gstatic)\.com|cdnjs\.cloudflare\.com/.test(url.host)) {
     // fonts and the MP3 encoder: kept after the first use, so they work offline too
     e.respondWith(caches.open("fifteam-runtime").then(async (c) => {

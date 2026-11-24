@@ -3,6 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<script>
+  // Android draws installed apps edge to edge, under the status bar, without always saying how tall the bar is: there the
+  // app is kept below it (iPhones say, so the app can run up behind theirs).
+  if (/Android/i.test(navigator.userAgent)) document.querySelector('meta[name="viewport"]').setAttribute("content", "width=device-width, initial-scale=1");
+</script>
 <title>FifTeam Media</title>
 <meta name="description" content="Your music, a rebass studio and a tone generator, in one app.">
 <meta name="theme-color" content="#0b0a24">
