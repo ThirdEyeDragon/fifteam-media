@@ -34,6 +34,9 @@ const DM = "900000000000000002";
 const META = "900000000000000003", PRES = "900000000000000004", MOD = "900000000000000005";
 for (const [id, file, d] of [[META, "meta.json", { v: 1, votes: {}, follows: {}, about: {} }], [PRES, "presence.json", { v: 1, on: {} }], [MOD, "mod.json", { v: 1, bans: {} }]])
   msgs.set(id, { id, content: file, attachments: [attach(id, file, Buffer.from(JSON.stringify(d)), "application/json")] });
+// the file links the FifTeam bot keeps (every post's, in one store): seeded with the two posts that have files
+const LINKS = "900000000000000006";
+msgs.set(LINKS, { id: LINKS, content: "links", attachments: [attach(LINKS, "links.json", Buffer.from(JSON.stringify({ v: 1, at: Date.now(), links: Object.fromEntries([bob, eve].filter((id) => msgs.has(id)).map((id) => [id, msgs.get(id).attachments.map(({ filename, url }) => ({ filename, url }))])) })), "application/json")] });
 const storeNow = (id) => JSON.parse(cdn.get(msgs.get(id).attachments[0].url.split("?")[0]).bytes.toString());
 const setStore = (id, d) => msgs.set(id, { id, content: "x", attachments: [attach(id, msgs.get(id).attachments[0].filename, Buffer.from(JSON.stringify(d)), "application/json")] });
 msgs.set(DM, { id: DM, content: "FifTeam messages", attachments: [attach(DM, "dm.json", Buffer.from(JSON.stringify({ v: 1, msgs: [] })), "application/json")] });
@@ -61,7 +64,7 @@ const gets = new Map();
 function discord(method, url, headers, body) {
   const u = new URL(url);
   if (u.host === "cdn.discordapp.com") { const f = cdn.get(url.split("?")[0]); return f ? { status: 200, type: f.type, body: f.bytes } : { status: 404, type: "text/plain", body: Buffer.from("no") }; }
-  if (u.pathname.endsWith("/social/config.json")) return json({ hook: HOOK, key: Buffer.from(TOKEN.split("").reverse().join("")).toString("base64"), index: INDEX, dm: DM, meta: META, presence: PRES, mod: MOD });
+  if (u.pathname.endsWith("/social/config.json")) return json({ hook: HOOK, key: Buffer.from(TOKEN.split("").reverse().join("")).toString("base64"), index: INDEX, dm: DM, meta: META, presence: PRES, mod: MOD, links: LINKS });
   const base = `/api/v10/webhooks/${HOOK}/${TOKEN}`;
   if (!u.pathname.startsWith(base)) return json({ message: "Unknown Webhook", code: 10015 }, 404);
   const rest = u.pathname.slice(base.length), m = /^\/messages\/(\d+)$/.exec(rest);
@@ -116,6 +119,8 @@ try {
   await until(`!!document.querySelector('#so-body img.so-img') && document.querySelector('#so-body img.so-img').naturalWidth > 0`, 8000, "the picture");
   await until(`document.querySelector('#so-body img.so-img').classList.contains('in')`, 4000, "the picture faded in");
   await shot("d1_feed");
+  console.log("first look, reads of the posts themselves:", [bob, eve].map((id) => gets.get(id) || 0).join(","), "| the links store read:", gets.get(LINKS) || 0);
+  check(!gets.get(bob) && !gets.get(eve) && gets.get(LINKS) === 1, "a phone's first look: every post's files from the one links store");
   await until(`/cdn\.discordapp\.com.*avatar\.jpg/.test(document.querySelector('#so-body .so-post .so-av').style.backgroundImage)`, 8000, "Bob's picture on his post (from his profile)");
   console.log("Bob's picture on his older post:", await ev(`/avatar\.jpg/.test(document.querySelector('#so-body .so-post .so-av').style.backgroundImage)`));
 

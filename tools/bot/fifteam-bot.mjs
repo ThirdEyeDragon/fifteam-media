@@ -10,6 +10,8 @@
 //   /devices           every phone that has used the app (the last half year), with its device; the full list as a file
 //   /tag-member, /tag-founder, /tag-developer <user>   the gradient tag next to their name (remove: True takes it off)
 //   /tags              who has which tag
+// And in the background, every half hour: every post's and profile picture's current file links in one store message
+// (social/config.json "links"), so a phone reads one file instead of asking for each post (much faster to load).
 // It reads and writes the app's store messages through the same webhook the app uses (social/config.json), and talks
 // to Discord over the gateway (a websocket), so it needs no web server: it runs on this PC (node 18+, no packages).
 //
@@ -284,6 +286,23 @@ async function suggest(cmd, typed) {
     .slice(0, 25).map(([k, v]) => ({ name: `${v.name || "(no username)"} · ${v.device || "device unknown"} · ${k}`.slice(0, 100), value: k }));
 }
 
+// ---------------------------------------------------------------------------------------------------- file links
+// File links expire after about a day and each post's are read from its own message; reading them all here, slowly,
+// and keeping them in one store saves every phone that work (phones still read any post that's missing or expired).
+const LINKS_LABEL = "FifTeam file links (kept fresh by the FifTeam bot; please don't delete it)";
+export async function refreshLinks() {
+  if (!cfg.links) return 0;
+  const f = await feedNow();
+  const ids = [...new Set([...f.posts.filter((p) => p.image || p.video || p.song || p.avatar).map((p) => p.id), ...Object.values(f.profiles).map((v) => v && v.av).filter((x) => /^\d{5,25}$/.test(x || ""))])];
+  const links = {};
+  for (const id of ids) {
+    try { const m = await hook(`/messages/${id}`); const a = (m.attachments || []).map(({ filename, url }) => ({ filename, url })); if (a.length) links[id] = a; } catch {}
+    await new Promise((r) => setTimeout(r, 450));          // (well under the service's 5 requests every 2 seconds)
+  }
+  await writeStore("links", "links.json", LINKS_LABEL, { v: 1, at: Date.now(), links });
+  return Object.keys(links).length;
+}
+
 // ---------------------------------------------------------------------------------------------------- Discord
 const COMMANDS = [
   { name: "online", description: "Who has FifTeam Media open right now, and on what device", type: 1 },
@@ -362,6 +381,8 @@ async function run() {
   if (!tok) { log("No bot token. Run: node tools/bot/fifteam-bot.mjs --setup"); process.exit(1); }
   const reg = async () => { try { const { app, guild } = await register(tok); log(`commands ready for ${app.name} in server ${guild}`); return true; } catch (e) { log("couldn't register the commands yet (is the bot in the server?):", e.message.slice(0, 160)); return false; } };
   if (!(await reg())) { const t = setInterval(async () => { if (await reg()) clearInterval(t); }, 60e3); }
+  const links = async () => { try { log(`file links refreshed: ${await refreshLinks()}`); } catch (e) { log("file links:", e.message); } };
+  links(); setInterval(links, 30 * 60e3);
   let wait = 2000;
   for (;;) {
     try { await session(tok); wait = 2000; } catch (e) { log("gateway:", e.message); }

@@ -42,7 +42,7 @@ async function config() {
   const c = await r.json();
   if (!c.hook || !c.key || !c.index) throw new Error("setup");
   // (the key is kept reversed in the file, so robots that search code for links don't pick it up)
-  S.cfg = { base: `https://discord.com/api/v10/webhooks/${c.hook}/${atob(c.key).split("").reverse().join("")}`, index: c.index, dm: c.dm || "", meta: c.meta || "", presence: c.presence || "", mod: c.mod || "" };
+  S.cfg = { base: `https://discord.com/api/v10/webhooks/${c.hook}/${atob(c.key).split("").reverse().join("")}`, index: c.index, dm: c.dm || "", meta: c.meta || "", presence: c.presence || "", mod: c.mod || "", links: c.links || "" };
   return S.cfg;
 }
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -152,6 +152,27 @@ function expiryOf(atts) {
   let ex = Infinity;
   for (const a of atts) { const x = /[?&]ex=([0-9a-f]+)/.exec(a.url || ""); if (x) ex = Math.min(ex, parseInt(x[1], 16) * 1000); }
   return ex === Infinity ? Date.now() + 6 * 3600e3 : ex;
+}
+/** Every post's file links at once, kept fresh by the FifTeam bot: one read instead of one per post (at most every
+ * 20 minutes; posts it doesn't have, or that have expired, are still read one by one). */
+let linksAt = 0;
+try { linksAt = +localStorage.getItem(LINKS + "-at") || 0; } catch {}
+async function loadLinks() {
+  const cfg = await config();
+  if (!cfg.links || Date.now() - linksAt < 20 * 60e3) return;
+  const m = await dc(`/messages/${cfg.links}`), f = fileOf(m, "links.json");
+  if (!f) return;
+  const d = await (await fetch(f.url, { cache: "no-store" })).json();
+  let n = 0;
+  for (const [id, a] of Object.entries((d && d.links) || {})) {
+    if (!/^\d{5,25}$/.test(id) || !Array.isArray(a)) continue;
+    const at = a.filter((x) => x && typeof x.filename === "string" && /^https:\/\/cdn\.discordapp\.com\//.test(x.url || "")).map(({ filename, url }) => ({ filename, url }));
+    const ex = expiryOf(at);
+    if (at.length && ex - Date.now() > 15 * 60e3 && (!links[id] || links[id].ex < ex)) { links[id] = { a: at, ex }; S.msgs.delete(id); n++; }
+  }
+  linksAt = Date.now();
+  try { localStorage.setItem(LINKS + "-at", String(linksAt)); } catch {}
+  if (n) writeLinks();
 }
 function message(id, low = false) {
   if (S.msgs.has(id)) return S.msgs.get(id);
@@ -999,7 +1020,7 @@ async function refresh({ manual = false } = {}) {
     S.error = "";
     try {
       await config(); if (manual) { S.msgs.clear(); S.recheck = true; }
-      const [list] = await Promise.all([readIndex(), loadMeta(0).catch(() => null)]);
+      const [list] = await Promise.all([readIndex(), loadMeta(0).catch(() => null), loadLinks().catch(() => null)]);
       S.profiles = list.profiles; S.feed = keepGone(list); S.loadedAt = Date.now();
       saveFeed();
     }
@@ -1091,7 +1112,7 @@ async function ensureProfiles(fresh) {
   await config();
   if (!S.loadedAt || Date.now() - S.loadedAt > (fresh ? 5000 : 40000)) {
     // (the feed too: the bell's activity comes from it; the Social screen redraws from it the next time it refreshes)
-    const [list] = await Promise.all([readIndex(), loadMeta(0).catch(() => null)]); S.profiles = list.profiles; S.feed = keepGone(list); S.loadedAt = Date.now();
+    const [list] = await Promise.all([readIndex(), loadMeta(0).catch(() => null), loadLinks().catch(() => null)]); S.profiles = list.profiles; S.feed = keepGone(list); S.loadedAt = Date.now();
     saveFeed(); warm();
     activityChanged();
   }
