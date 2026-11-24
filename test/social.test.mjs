@@ -31,7 +31,8 @@ const bobPic = "900000000000000201";
 msgs.set(bobPic, { id: bobPic, content: "", attachments: [attach(bobPic, "avatar.jpg", tinyJpeg, "image/jpeg")] });
 const seedProfiles = { bobphone001: { name: seedFeed[0].user, av: bobPic, at: Date.now() - 86400e3 } };
 const DM = "900000000000000002";
-const META = "900000000000000003", PRES = "900000000000000004", MOD = "900000000000000005";
+const META = "900000000000000003", PRES = "900000000000000004", MOD = "900000000000000005", MARKET = "900000000000000007";
+msgs.set(MARKET, { id: MARKET, content: "market", attachments: [attach(MARKET, "market.json", Buffer.from(JSON.stringify({ v: 1, items: [] })), "application/json")] });
 for (const [id, file, d] of [[META, "meta.json", { v: 1, votes: {}, follows: {}, about: {} }], [PRES, "presence.json", { v: 1, on: {} }], [MOD, "mod.json", { v: 1, bans: {} }]])
   msgs.set(id, { id, content: file, attachments: [attach(id, file, Buffer.from(JSON.stringify(d)), "application/json")] });
 // the file links the FifTeam bot keeps (every post's, in one store): seeded with the two posts that have files
@@ -64,7 +65,7 @@ const gets = new Map();
 function discord(method, url, headers, body) {
   const u = new URL(url);
   if (u.host === "cdn.discordapp.com") { const f = cdn.get(url.split("?")[0]); return f ? { status: 200, type: f.type, body: f.bytes } : { status: 404, type: "text/plain", body: Buffer.from("no") }; }
-  if (u.pathname.endsWith("/social/config.json")) return json({ hook: HOOK, key: Buffer.from(TOKEN.split("").reverse().join("")).toString("base64"), index: INDEX, dm: DM, meta: META, presence: PRES, mod: MOD, links: LINKS });
+  if (u.pathname.endsWith("/social/config.json")) return json({ hook: HOOK, key: Buffer.from(TOKEN.split("").reverse().join("")).toString("base64"), index: INDEX, dm: DM, meta: META, presence: PRES, mod: MOD, links: LINKS, market: MARKET });
   const base = `/api/v10/webhooks/${HOOK}/${TOKEN}`;
   if (!u.pathname.startsWith(base)) return json({ message: "Unknown Webhook", code: 10015 }, 404);
   const rest = u.pathname.slice(base.length), m = /^\/messages\/(\d+)$/.exec(rest);
@@ -532,6 +533,89 @@ try {
     check(!((storeNow(META).blocks || {})[meNow] || []).length, "unblocked from Settings");
     await ev(`import('./js/social.js').then((m) => m.api.render()).then(() => 1)`);
 
+    // Audio Market: Alice (in Toledo) lists a sub; Ben (about 120 miles away, in Columbus) finds it, asks about it
+    const origin = `http://127.0.0.1:${port}`;
+    await send("Browser.grantPermissions", { permissions: ["geolocation"], origin });
+    await send("Emulation.setGeolocationOverride", { latitude: 41.6528, longitude: -83.5379, accuracy: 30 });
+    await other.send("Browser.grantPermissions", { permissions: ["geolocation"], origin });
+    await other.send("Emulation.setGeolocationOverride", { latitude: 39.9612, longitude: -82.9988, accuracy: 30 });
+    const marketNow = () => storeNow(MARKET).items || [];
+    await ev(`document.querySelector('#so-tabs [data-k="market"]').click(), 1`); await sleep(600);
+    console.log("Audio Market, empty:", await ev(`document.querySelector('#mk-body .mk-empty').textContent`), "| chips:", await ev(`[...document.querySelectorAll('#mk-body .mk-chips .chip')].map(c => c.textContent).join(' | ')`));
+    await ev(`document.querySelector('#mk-body .mk-sell').click(), 1`); await sleep(400);
+    {
+      await send("Page.setInterceptFileChooserDialog", { enabled: true });
+      const ch = new Promise((res) => b.on((m) => { if (m.method === "Page.fileChooserOpened") res(m.params); }));
+      await ev(`document.querySelector('#sheet-panel .mk-padd').click(), 1`);
+      const fc = await ch;
+      await send("DOM.setFileInputFiles", { backendNodeId: fc.backendNodeId, files: [avPng, avPng] });
+      await send("Page.setInterceptFileChooserDialog", { enabled: false });
+    }
+    await until(`document.querySelectorAll('#sheet-panel .mk-pthumb').length === 2`, 6000, "two photos");
+    await ev(`(() => { const P = document.getElementById('sheet-panel'); const i = P.querySelectorAll('input.input'); i[0].value = 'Sundown SA-12 D2'; i[1].value = '250'; P.querySelector('textarea').value = 'Barely used, no blown coils. Pick up only.'; [...P.querySelectorAll('.mk-catpick .chip')].find(c => c.textContent === 'Subwoofers').click(); [...P.querySelectorAll('.mk-condpick .chip')].find(c => c.textContent === 'Used – like new').click(); P.querySelector('input[aria-label="Your town"]').value = 'Toledo, OH'; return 1; })()`);
+    await ev(`[...document.querySelectorAll('#sheet-panel .btn')].find(x => x.textContent.includes('Use my location')).click(), 1`);
+    await until(`[...document.querySelectorAll('#sheet-panel .btn')].some(x => x.textContent.includes('Location set'))`, 8000, "her location");
+    await shot("d19_sell");
+    const nListed = posted.length;
+    await ev(`[...document.querySelectorAll('#sheet-panel .btn')].find(x => x.textContent === 'List it').click(), 1`);
+    for (let i = 0; i < 60 && !marketNow().length; i++) await sleep(250);
+    await sleep(400);
+    const item = marketNow()[0] || {};
+    const lp = posted.slice(nListed).find((x) => x.payload.content && x.payload.content.includes("Audio Market"));
+    console.log("listed:", JSON.stringify({ title: item.title, price: item.price, cat: item.cat, cond: item.cond, place: item.place, lat: item.lat, lon: item.lon, n: item.n, by: item.by === meNow }), "| photos:", lp ? lp.files.map(([n]) => n).join(",") : "none");
+    check(item.title === "Sundown SA-12 D2" && item.price === 250 && item.cat === "Subwoofers" && item.n === 2 && item.lat === 41.65 && item.lon === -83.55 && lp && lp.files.length === 2, "listed: its photos, price, category and a rough spot (rounded)");
+    await until(`!!document.querySelector('#mk-body .mk-tile')`, 6000, "the listing in the grid");
+    console.log("Alice's grid:", await ev(`[...document.querySelectorAll('#mk-body .mk-tile')].map(t => t.textContent).join(' | ')`));
+    await sleep(600); await shot("d20_market");
+    // Ben: the grid, the distance, the filters
+    await other.ev(`(async () => { localStorage.removeItem('fifteam-market-here'); const m = await import('./js/market.js'); m.showMarket(true); await m.loadMarket(0); m.renderMarket(); return 1; })()`); await sleep(500);
+    await other.ev(`import('./js/market.js').then((m) => m.market.locate()).then(() => import('./js/market.js')).then((m) => { m.renderMarket(); return 1; })`); await sleep(400);
+    const benTile = await other.ev(`[...document.querySelectorAll('#mk-body .mk-tile')].map(t => t.textContent).join(' | ')`);
+    console.log("Ben's grid:", benTile);
+    check(/\$250.*Sundown.*Toledo, OH · 1[0-9]{2} mi/.test(benTile), "Ben sees it, with how far away it is (about 120 miles)");
+    const benFilter = async (fn) => { await other.ev(`import('./js/market.js').then((m) => { const M = m.market.state; ${fn}; m.renderMarket(); return 1; })`); await sleep(200); return other.ev(`document.querySelectorAll('#mk-body .mk-tile').length`); };
+    const within50 = await benFilter("M.dist = 50"), within250 = await benFilter("M.dist = 250"), under100 = await benFilter("M.dist = 0; M.max = 100"), sub = await benFilter("M.max = null; M.cat = 'Amplifiers'"), back2 = await benFilter("M.cat = ''");
+    console.log("Ben's filters: within 50 mi", within50, "| within 250 mi", within250, "| under $100", under100, "| amplifiers", sub, "| all", back2);
+    check(within50 === 0 && within250 === 1 && under100 === 0 && sub === 0 && back2 === 1, "distance, price and category filters");
+    // Ben asks about it: an Audio Market chat (apart from their usual messages)
+    await other.ev(`document.querySelector('#mk-body .mk-tile').click(), 1`); await sleep(700);
+    console.log("the listing, on Ben's phone:", await other.ev(`document.querySelector('#sheet-panel .mk-info').textContent`));
+    await other.ev(`[...document.querySelectorAll('#sheet-panel .btn')].find(x => x.textContent.includes('Message seller')).click(), 1`); await sleep(1200);
+    await other.ev(`(() => { const f = document.querySelector('#sheet-panel .dm-form'); f.querySelector('input').value = 'Is the sub still available?'; f.requestSubmit(); return 1; })()`);
+    for (let i = 0; i < 40 && !dmNow().some((x) => x.l === item.id); i++) await sleep(250);
+    await sleep(300);
+    const mm = dmNow().find((x) => x.l === item.id);
+    console.log("the message is about the listing:", !!mm, "| sealed:", mm && !/sub still/.test(JSON.stringify(mm)));
+    check(mm && mm.f === benPhone && mm.t === meNow && !/sub still/.test(JSON.stringify(mm)), "an Audio Market chat message, sealed, tied to the listing");
+    await other.ev(`document.getElementById('sheet').classList.remove('open'), 1`);
+    await ev(`import('./js/dms.js').then((m) => m.dms.state.check()).then(() => 1)`);
+    await ev(`document.getElementById('btn-dms').click(), 1`); await sleep(900);
+    const inboxAll = await ev(`[...document.querySelectorAll('#sheet-panel .dm-row')].map(r => r.textContent).join(' | ')`);
+    await ev(`document.querySelector('#sheet-panel .dm-seg [data-k="chats"]').click(), 1`); await sleep(200);
+    const inboxChats = await ev(`[...document.querySelectorAll('#sheet-panel .dm-row')].map(r => r.textContent).join(' | ')`);
+    await ev(`document.querySelector('#sheet-panel .dm-seg [data-k="market"]').click(), 1`); await sleep(200);
+    const inboxMarket = await ev(`[...document.querySelectorAll('#sheet-panel .dm-row')].map(r => r.textContent).join(' | ')`);
+    console.log("Alice's messages: all:", inboxAll, "|| chats:", inboxChats || "(none)", "|| Audio Market:", inboxMarket);
+    check(inboxMarket.includes("Audio Market · Sundown SA-12 D2") && inboxMarket.includes("Is the sub still available?") && !inboxChats.includes("Is the sub still available?"), "the Audio Market chat sits under Audio Market, apart from the usual chats");
+    await shot("d21_market_inbox");
+    await ev(`document.querySelector('#sheet-panel .dm-row.dm-mk').click(), 1`); await sleep(900);
+    const chat = await ev(`document.querySelector('#sheet-panel .dm-listing').textContent + ' || ' + [...document.querySelectorAll('#sheet-panel .dm-bubble')].map(b => b.textContent).join(' | ')`);
+    console.log("the chat:", chat);
+    check(chat.includes("Sundown SA-12 D2") && chat.includes("$250") && chat.includes("Is the sub still available?"), "the chat shows the listing it's about");
+    await shot("d22_market_chat");
+    await ev(`document.querySelector('#sheet-panel .dm-listing').click(), 1`); await sleep(600);
+    // sold: off the grid for buyers
+    await ev(`[...document.querySelectorAll('#sheet-panel .btn')].find(x => x.textContent === 'Mark as sold').click(), 1`);
+    for (let i = 0; i < 40 && !(marketNow()[0] || {}).sold; i++) await sleep(250);
+    await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
+    const benAfter = await benFilter("0");
+    await other.ev(`import('./js/market.js').then((m) => m.loadMarket(0)).then(() => import('./js/market.js')).then((m) => { m.renderMarket(); return 1; })`); await sleep(300);
+    const benSold = await other.ev(`document.querySelectorAll('#mk-body .mk-tile').length`);
+    console.log("sold:", !!(marketNow()[0] || {}).sold, "| on Ben's grid:", benSold);
+    check((marketNow()[0] || {}).sold === 1 && benSold === 0, "sold: off the grid");
+    await ev(`document.querySelector('#so-tabs [data-k="feed"]').click(), 1`); await sleep(300);
+    await other.ev(`import('./js/market.js').then((m) => { m.showMarket(false); return 1; })`);
+
     // a ban (the bot's /ban): Ben's phone shut, even after reopening; his comments out of Alice's sight; lifted: open again
     setStore(MOD, { v: 1, bans: { [benPhone]: { at: Date.now(), name: "Ben" } } });
     await other.ev(`import('./js/ban.js').then((m) => m.checkBans()).then(() => 1)`);
@@ -697,15 +781,24 @@ try {
   console.log("posted:", pm ? pm.files.map(([n, b2]) => `${n} ${b2.length} bytes`).join(", ") : "nothing", "| on the feed:", JSON.stringify(entry.music), "| in the channel:", pm && pm.payload.content.split("\n").slice(-1)[0]);
   check(mus && mus[1].subarray(0, 4).toString() === "FTS1" && entry.music && entry.music.len === 3 && entry.music.title === "Test Rebass", "the music clip went up with the picture (15 seconds asked, the whole 3-second song)");
   const mcard = `[...document.querySelectorAll('#so-body .so-post')].find(p => p.textContent.includes('Pic with music'))`;
-  await ev(`${mcard}.querySelector('.so-music').click(), 1`);
-  await until(`${mcard}.querySelector('.so-music').classList.contains('on')`, 8000, "the music playing");
-  await sleep(800);
-  const playing = await ev(`import('./js/social.js').then((m) => { const a = m.social.state.clip; return !!a && !a.paused && a.currentTime > 0.2; })`);
-  console.log("the music, tapped:", await ev(`${mcard}.querySelector('.so-music').textContent`), "| playing:", playing);
-  check(playing, "the picture's music plays in the feed");
+  await ev(`${mcard}.scrollIntoView({ block: 'center' }), 1`);
+  await until(`${mcard}.querySelector('.so-music').classList.contains('on')`, 8000, "the music playing by itself, the picture on screen");
+  const clipState = () => ev(`import('./js/social.js').then((m) => { const a = m.social.state.clip; return !!a && !a.paused && a.currentTime > 0.2; })`);
+  let playing = false;
+  for (let i = 0; i < 25 && !playing; i++) { playing = await clipState(); if (!playing) await sleep(200); }
+  console.log("the picture on screen, its music:", await ev(`${mcard}.querySelector('.so-music').textContent`), "| playing by itself:", playing);
+  check(playing, "the picture's music plays by itself while it's on screen");
   await shot("d18_music");
-  await ev(`${mcard}.querySelector('.so-music').click(), 1`); await sleep(300);
-  check(await ev(`import('./js/social.js').then((m) => m.social.state.clip.paused)`), "and stops again");
+  await ev(`${mcard}.querySelector('.so-music').click(), 1`); await sleep(1500);
+  const pausedStays = await ev(`import('./js/social.js').then((m) => m.social.state.clip.paused)`);
+  await ev(`${mcard}.querySelector('.so-music').click(), 1`);
+  let resumed = false;
+  for (let i = 0; i < 25 && !resumed; i++) { resumed = await clipState(); if (!resumed) await sleep(200); }
+  console.log("tapped: paused (and stays paused):", pausedStays, "| tapped again, playing:", resumed);
+  check(pausedStays && resumed, "a tap pauses it, another plays it again");
+  await ev(`document.getElementById('view-social').scrollTop = 99999, 1`); await sleep(600);
+  check(await ev(`import('./js/social.js').then((m) => m.social.state.clip.paused)`), "scrolled away: the music stops");
+  await ev(`document.getElementById('view-social').scrollTop = 0, 1`); await sleep(300);
 
   // the top bar slides away scrolling down, and comes back at the smallest scroll up
   await ev(`(() => { const v = document.getElementById('view-social'); v.scrollTop = 0; return 1; })()`); await sleep(300);

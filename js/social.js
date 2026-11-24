@@ -16,6 +16,7 @@ import { loadMeta, votesOf, setVote, meta, canSee, blocked } from "./meta.js";
 import { bannedPhones, noPicPhones, checkBans, badgesOf } from "./ban.js";
 import { activityChanged, initActivity } from "./activity.js";
 import { hookFetch, holdFor } from "./limiter.js";
+import { showMarket, marketOpen, loadMarket, renderMarket } from "./market.js";
 
 const NAME_KEY = "fifteam-social-name", MINE_KEY = "fifteam-social-mine", ME_KEY = "fifteam-social-me", AV_KEY = "fifteam-social-avatar";
 const MAX_MSG = 9.5 * 1024 * 1024;   // what one post may carry (10 MB), with room to spare
@@ -42,7 +43,7 @@ async function config() {
   const c = await r.json();
   if (!c.hook || !c.key || !c.index) throw new Error("setup");
   // (the key is kept reversed in the file, so robots that search code for links don't pick it up)
-  S.cfg = { base: `https://discord.com/api/v10/webhooks/${c.hook}/${atob(c.key).split("").reverse().join("")}`, index: c.index, dm: c.dm || "", meta: c.meta || "", presence: c.presence || "", mod: c.mod || "", links: c.links || "" };
+  S.cfg = { base: `https://discord.com/api/v10/webhooks/${c.hook}/${atob(c.key).split("").reverse().join("")}`, index: c.index, dm: c.dm || "", meta: c.meta || "", presence: c.presence || "", mod: c.mod || "", links: c.links || "", market: c.market || "" };
   return S.cfg;
 }
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -86,8 +87,12 @@ const keepGone = (list) => { const out = list.filter((p) => !S.gone.has(p.id)); 
  *  each other), and each is looked at again a moment later: another phone that read the list just before this write
  *  can land its own copy on top of it, and then the change is made again (unless a newer one from here followed it). */
 let indexQueue = Promise.resolve(), indexSeq = 0;
+// (bumped by every change made here, as it starts and as it lands: a copy of the list read while one was on its way is
+// older than what's on screen, and isn't used)
+let indexVer = 0;
 function changeIndex(change, check) {
   const seq = ++indexSeq;
+  indexVer++;
   const run = indexQueue.then(() => changeIndexNow(change, check));
   indexQueue = run.catch(() => {});
   // (twice: the feed can answer with a copy a second or two old just after a write)
@@ -105,7 +110,7 @@ async function changeIndexNow(change, check) {
     change(posts);
     await writeIndex(posts);
     const now = await readIndex();
-    if (check(now)) { S.feed = keepGone(now); S.profiles = now.profiles; return; }
+    if (check(now)) { indexVer++; S.feed = keepGone(now); S.profiles = now.profiles; return; }
     await wait(400 + Math.random() * 800);
   }
   throw new Error("The feed was busy. Try again.");
@@ -399,7 +404,7 @@ function postCard(p) {
   who.append(av, nm); head.append(who);
   if (S.mine.has(p.id)) { const d = h("button", "so-more"); d.setAttribute("aria-label", "More"); d.append(icon("i-more")); d.onclick = () => postMenu(p); head.append(d); }
   card.append(head);
-  if (p.music) card.append(musicRow(p));
+  if (p.music) { card.append(musicRow(p)); clipWatch(card, p); }
   if (p.text) card.append(h("p", "so-text", p.text));
   let img = null, song = null, vid = null;
   if (p.image) { img = h("div", "so-img so-wait"); card.append(img); }
@@ -719,16 +724,32 @@ async function playSong(p, block) {
   paintPlay();
 }
 // ---------------------------------------------------------------------------------------------------- a picture's music
-/** "♪ Title · Artist" under the poster's name: tap to play the clip (it loops), again to stop. */
+/** "♪ Title · Artist" under the poster's name. The clip plays by itself while the picture is on screen (looping), and
+ * stops when it scrolls away; a tap pauses it (and it stays paused for that picture until tapped again). */
 function musicRow(p) {
-  const mu = h("button", "so-music"); mu.dataset.id = p.id; mu.setAttribute("aria-label", `Play the music: ${p.music.title}`);
+  const mu = h("button", "so-music"); mu.dataset.id = p.id; mu.setAttribute("aria-label", `Play or pause the music: ${p.music.title}`);
   mu.append(icon(S.clipOn === p.id ? "i-pause" : "i-play"), h("span", "so-mt", `♪ ${p.music.title}${p.music.artist ? " · " + p.music.artist : ""}`), h("span", "so-eq", ""));
-  mu.onclick = (e) => { e.stopPropagation(); playClip(p); };
-  if ("IntersectionObserver" in window) {
-    S.clipObs = S.clipObs || new IntersectionObserver((es) => { for (const x of es) if (!x.isIntersecting && x.target.dataset.id === S.clipOn && !$("viewer")) stopClip(); }, { threshold: 0 });
-    S.clipObs.observe(mu);
-  }
+  mu.onclick = (e) => {
+    e.stopPropagation();
+    S.clipPaused = S.clipPaused || new Set();
+    if (S.clipOn === p.id) { S.clipPaused.add(p.id); stopClip(); } else { S.clipPaused.delete(p.id); playClip(p, true); }
+  };
   return mu;
+}
+/** A picture with music in the feed: its clip plays while most of it is on screen (unless it was paused, or the
+ * music player is playing a song), and stops when it's scrolled away. */
+function clipWatch(card, p) {
+  if (!("IntersectionObserver" in window)) return;
+  S.clipObs = S.clipObs || new IntersectionObserver((es) => {
+    for (const x of es) {
+      const q = x.target._post; if (!q) continue;
+      if (x.intersectionRatio >= 0.6) {
+        if (S.clipOn !== q.id && !(S.clipPaused && S.clipPaused.has(q.id)) && !player.playing && !$("viewer") && location.hash === "#social") playClip(q, true);
+      } else if (x.intersectionRatio < 0.35 && S.clipOn === q.id && !$("viewer")) stopClip();
+    }
+  }, { threshold: [0, 0.35, 0.6, 0.9] });
+  card._post = p;
+  S.clipObs.observe(card);
 }
 async function clipUrl(p) {
   S.clips = S.clips || new Map();
@@ -1157,8 +1178,10 @@ async function refresh({ manual = false } = {}) {
     S.error = "";
     try {
       await config(); if (manual) { S.msgs.clear(); S.recheck = true; }
+      const ver = indexVer;
       const [list] = await Promise.all([readIndex(), loadMeta(0).catch(() => null), loadLinks().catch(() => null)]);
-      S.profiles = list.profiles; S.feed = keepGone(list); S.loadedAt = Date.now();
+      if (ver === indexVer) { S.profiles = list.profiles; S.feed = keepGone(list); }
+      S.loadedAt = Date.now();
       saveFeed();
     }
     catch (e) { S.error = e.message === "setup" || e instanceof SyntaxError ? "Social isn't available yet." : e.message; }
@@ -1220,7 +1243,7 @@ function pullToRefresh() {
     active = false;
     if (d >= GO) {
       busy = true; set(58, true); ind.classList.add("spin");
-      try { await refresh({ manual: true }); } finally {
+      try { if (marketOpen()) { await loadMarket(0).catch(() => {}); renderMarket(); } else await refresh({ manual: true }); } finally {
         ind.classList.remove("spin"); busy = false; set(0, true);
         setTimeout(() => { inner.style.willChange = ""; }, 450);
       }
@@ -1236,8 +1259,22 @@ export function initSocial() {
   // a rebass made just now, posted from the Rebass screen
   bus.on("social-post", (song) => { location.hash = "#social"; setTimeout(() => composer({ song }), 50); });
   pullToRefresh();
+  // Feed or Audio Market (the last one looked at)
+  const tabs = $("so-tabs");
+  if (tabs) {
+    tabs.onclick = (e) => { const b = e.target.closest("button"); if (b) { stopClip(); showMarket(b.dataset.k === "market"); } };
+    let last = "feed"; try { last = localStorage.getItem("fifteam-social-tab") || "feed"; } catch {}
+    if (last === "market") showMarket(true);
+  }
   paintMe();
   const me = $("btn-me"); if (me) me.onclick = openMe;
+  // phones only let a page play sound after a tap: the pictures' music player is readied at the first one
+  const unlock = () => {
+    removeEventListener("click", unlock, true);
+    if (!S.clip) { S.clip = new Audio(); S.clip.loop = true; }
+    if (!S.clip.src) { S.clip.src = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA="; S.clip.play().then(() => S.clip.pause(), () => {}); }
+  };
+  addEventListener("click", unlock, true);
   addEventListener("fifteam-badges", () => { render(); });
   initDms();
   initActivity();
@@ -1249,7 +1286,10 @@ async function ensureProfiles(fresh) {
   await config();
   if (!S.loadedAt || Date.now() - S.loadedAt > (fresh ? 5000 : 40000)) {
     // (the feed too: the bell's activity comes from it; the Social screen redraws from it the next time it refreshes)
-    const [list] = await Promise.all([readIndex(), loadMeta(0).catch(() => null), loadLinks().catch(() => null)]); S.profiles = list.profiles; S.feed = keepGone(list); S.loadedAt = Date.now();
+    const ver = indexVer;
+    const [list] = await Promise.all([readIndex(), loadMeta(0).catch(() => null), loadLinks().catch(() => null)]);
+    if (ver === indexVer) { S.profiles = list.profiles; S.feed = keepGone(list); }
+    S.loadedAt = Date.now();
     saveFeed(); warm();
     activityChanged();
   }

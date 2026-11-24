@@ -6,7 +6,8 @@
 //   The messages live in one store message of their own (social/config.json "dm": a dm.json attached to it).
 import { $, toast, openSheet, closeSheet } from "./ui.js";
 import { api } from "./social.js";
-import { dmState, dmRequests, answerDm } from "./meta.js";
+import { dmState, dmRequests, answerDm, blocked } from "./meta.js";
+import { marketItem, openListing, loadMarket } from "./market.js";
 
 const KEY = "fifteam-dm-key", READ = "fifteam-dm-read", MAX = 2000;
 const D = { msgs: [], loadedAt: 0, loading: null, keys: new Map(), plain: new Map(), chat: null, poll: 0, queue: Promise.resolve() };
@@ -74,7 +75,7 @@ async function readStore() {
   if (!a) return [];
   const d = await (await fetch(a.url, { cache: "no-store" })).json();
   return (Array.isArray(d.msgs) ? d.msgs : []).slice(-MAX).filter((x) => x && /^[a-z0-9]{8,24}$/.test(x.id) && PHONE.test(x.f) && PHONE.test(x.t) && typeof x.c === "string" && typeof x.iv === "string" && x.c.length < 4000)
-    .map((x) => ({ id: x.id, f: x.f, t: x.t, at: +x.at || 0, iv: x.iv, c: x.c }));
+    .map((x) => ({ id: x.id, f: x.f, t: x.t, at: +x.at || 0, iv: x.iv, c: x.c, ...(/^\d{5,25}$/.test(x.l || "") ? { l: x.l } : {}) }));
 }
 async function writeStore(msgs) {
   const cfg = await api.config(), f = new FormData();
@@ -96,15 +97,20 @@ async function load() {
 }
 /** This phone's conversations: what it sent, and what came from phones it takes messages from (Settings: everyone, by
  * request, or nobody; someone it has written to, follows or let in always counts, unless messages are off). */
-const mineOnly = () => { const me = api.state.me; return D.msgs.filter((m) => m.f === me || (m.t === me && dmState(m.f, me, wrote(m.f)) === "ok")); };
+// (an Audio Market chat: anyone may ask a seller about what they're selling, unless one has blocked the other)
+const mineOnly = () => { const me = api.state.me; return D.msgs.filter((m) => m.f === me || (m.t === me && (m.l ? !blocked(m.f, me) : dmState(m.f, me, wrote(m.f)) === "ok"))); };
+/** A conversation: the other phone, and (an Audio Market chat) the listing it's about. */
+const thread = (m) => (m.f === api.state.me ? m.t : m.f) + "|" + (m.l || "");
 const wrote = (to) => D.msgs.some((m) => m.f === api.state.me && m.t === to);
 /** Whether someone has written to this phone (which lets this phone write back, whatever their settings say). */
 export const talkedWith = (phone) => D.msgs.some((m) => m.f === phone && m.t === api.state.me);
 function lastRead() { try { return JSON.parse(localStorage.getItem(READ) || "{}"); } catch { return {}; } }
-function markRead(phone) { const r = lastRead(); r[phone] = Date.now(); try { localStorage.setItem(READ, JSON.stringify(r)); } catch {} paintBadge(); }
+// (read up to when, per conversation: a phone's own chat under its id, an Audio Market chat under "phone|listing")
+const readKey = (phone, l) => (l ? `${phone}|${l}` : phone);
+function markRead(phone, l) { const r = lastRead(); r[readKey(phone, l)] = Date.now(); try { localStorage.setItem(READ, JSON.stringify(r)); } catch {} paintBadge(); }
 function unread() {
   const r = lastRead(), from = new Set();
-  for (const m of mineOnly()) if (m.t === api.state.me && m.at > (r[m.f] || 0)) from.add(m.f);
+  for (const m of mineOnly()) if (m.t === api.state.me && m.at > (r[readKey(m.f, m.l)] || 0)) from.add(thread(m));
   return from.size;
 }
 function paintBadge() {
@@ -124,6 +130,10 @@ export async function openInbox() {
   openSheet((p) => {
     p.classList.add("dm-panel");
     p.append(h("h3", "", "Messages"));
+    const seg = h("div", "seg dm-seg");
+    for (const [k, label] of [["all", "All"], ["chats", "Chats"], ["market", "Audio Market"]]) { const b = h("button", (D.box || "all") === k ? "on" : "", label); b.dataset.k = k; seg.append(b); }
+    seg.onclick = (e) => { const b = e.target.closest("button"); if (!b) return; D.box = b.dataset.k; seg.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b)); paintInbox(list); };
+    p.append(seg);
     const list = h("div", "dm-list"); p.append(list);
     list.append(h("p", "status", "Loading…"));
     paintInbox(list);
@@ -135,12 +145,13 @@ export async function openInbox() {
 }
 async function paintInbox(list) {
   if (!D.loadedAt) return;
-  const by = new Map();
-  for (const m of mineOnly()) { const other = m.f === api.state.me ? m.t : m.f; if (!by.has(other) || by.get(other).at < m.at) by.set(other, m); }
+  const by = new Map(), box = D.box || "all";
+  for (const m of mineOnly()) { if ((box === "chats" && m.l) || (box === "market" && !m.l)) continue; const k = thread(m); if (!by.has(k) || by.get(k).at < m.at) by.set(k, m); }
   const convs = [...by.entries()].sort((a, b) => b[1].at - a[1].at), r = lastRead();
+  if ([...by.values()].some((m) => m.l)) loadMarket(60000).catch(() => {});
   list.replaceChildren();
   // people asking to message this phone: yes or no
-  const reqs = dmRequests(api.state.me);
+  const reqs = box === "market" ? [] : dmRequests(api.state.me);
   if (reqs.length) {
     list.append(h("p", "label dm-reqh", "Message requests"));
     for (const who of reqs) {
@@ -155,32 +166,35 @@ async function paintInbox(list) {
     }
     if (convs.length) list.append(h("p", "label dm-reqh", "Messages"));
   }
-  if (!convs.length && !reqs.length) { list.append(h("p", "status", "No messages yet. Tap someone's picture in Social and choose Message.")); return; }
-  for (const [other, last] of convs) {
-    const row = h("button", "dm-row" + (last.t === api.state.me && last.at > (r[other] || 0) ? " unread" : ""));
+  if (!convs.length && !reqs.length) { list.append(h("p", "status", box === "market" ? "No Audio Market chats yet. Tap Message seller on a listing." : "No messages yet. Tap someone's picture in Social and choose Message.")); return; }
+  for (const [, last] of convs) {
+    const other = last.f === api.state.me ? last.t : last.f, l = last.l || "";
+    const row = h("button", "dm-row" + (l ? " dm-mk" : "") + (last.t === api.state.me && last.at > (r[readKey(other, l)] || 0) ? " unread" : ""));
     const av = api.avatarEl(46, "", nameOf(other)); api.showPicture(av, { by: other, user: nameOf(other), id: "" });
     const mid = h("span", "dm-mid"); const prev = h("small", "", "…");
-    mid.append(h("b", "", nameOf(other)), prev);
+    mid.append(h("b", "", nameOf(other)));
+    if (l) { const it = marketItem(l); mid.append(h("span", "dm-mktag", `Audio Market · ${it ? it.title : "a listing"}`)); }
+    mid.append(prev);
     row.append(av, mid, h("span", "dm-time", api.ago(last.at)));
-    row.onclick = () => openChat(other);
+    row.onclick = () => openChat(other, l);
     list.append(row);
     open(last).then((t) => { prev.textContent = (last.f === api.state.me ? "You: " : "") + (t || "🔒 a message"); });
   }
 }
 
 /** A conversation with another phone. */
-export async function openChat(other) {
+export async function openChat(other, l = "") {
   if (!other || !PHONE.test(other)) { toast("Can't message them yet: they need to open FifTeam Media once more."); return; }
   if (other === api.state.me) { toast("That's you"); return; }
   if (!api.state.name) { toast("Pick a username in Social first"); return; }
   // their choice: messages from everyone, by request, or nobody
   try { await api.ensureProfiles(); } catch {}
-  const st = dmState(api.state.me, other, talkedWith(other));
-  if (st !== "ok" && !wrote(other)) {
+  const st = l ? (blocked(api.state.me, other) ? "off" : "ok") : dmState(api.state.me, other, talkedWith(other));
+  if (st !== "ok" && (l || !wrote(other))) {
     toast(st === "off" ? `${nameOf(other)} isn't taking messages.` : st === "requested" ? `You've asked to message ${nameOf(other)}. They haven't said yes yet.` : `${nameOf(other)} takes messages by request: tap Ask to message on their page.`, 3500);
     return;
   }
-  D.chat = other;
+  D.chat = other; D.l = l;
   openSheet((p) => {
     p.classList.add("dm-panel");
     const head = h("div", "dm-head");
@@ -188,19 +202,28 @@ export async function openChat(other) {
     const av = api.avatarEl(36, "", nameOf(other)); api.showPicture(av, { by: other, user: nameOf(other), id: "" });
     head.append(back, av, h("b", "", nameOf(other)));
     const lock = h("p", "status dm-lock", "🔒 Only the two of you can read these messages.");
+    // an Audio Market chat: the listing it's about, on top (tap it to see it)
+    if (l) {
+      const it = marketItem(l), card = h("button", "dm-listing");
+      const ph = h("span", "dm-lph");
+      if (it) api.message(l).then((m) => { const f = api.fileOf(m, "photo0.jpg"); if (f) ph.style.backgroundImage = `url("${f.url}")`; }).catch(() => {});
+      const t = h("span", "dm-mid"); t.append(h("small", "dm-mktag", "Audio Market"), h("b", "", it ? it.title : "A listing"), h("small", "", it ? (it.price ? "$" + it.price.toLocaleString("en-US") : "Free") + (it.sold ? " · Sold" : "") : ""));
+      card.append(ph, t); card.onclick = () => openListing(l);
+      p.append(head, card);
+    }
     const msgs = h("div", "dm-msgs"); msgs.append(h("p", "status", "Loading…"));
     const f = h("form", "dm-form");
     const inp = h("input", "input"); inp.maxLength = 500; inp.placeholder = "Message"; inp.autocomplete = "off"; inp.setAttribute("aria-label", "Message");
     const go = h("button", "btn primary small", "Send"); go.type = "submit";
     f.append(inp, go);
-    f.onsubmit = (e) => { e.preventDefault(); const v = inp.value.trim(); if (v) { inp.value = ""; send(other, v); } };
-    p.append(head, lock, msgs, f);
+    f.onsubmit = (e) => { e.preventDefault(); const v = inp.value.trim(); if (v) { inp.value = ""; send(other, v, l); } };
+    if (l) p.append(lock, msgs, f); else p.append(head, lock, msgs, f);
   });
   try { await Promise.all([api.ensureProfiles(), load()]); } catch {}
   paintChat();
   clearInterval(D.poll);
   D.poll = setInterval(async () => {
-    if (D.chat !== other || !document.querySelector("#sheet.open .dm-msgs")) { clearInterval(D.poll); D.chat = null; return; }
+    if (D.chat !== other || D.l !== l || !document.querySelector("#sheet.open .dm-msgs")) { clearInterval(D.poll); D.chat = null; return; }
     if (document.visibilityState !== "visible") return;
     const before = D.msgs.length; try { await load(); } catch {}
     if (D.msgs.length !== before) paintChat();
@@ -209,27 +232,28 @@ export async function openChat(other) {
 async function paintChat() {
   const other = D.chat, box = document.querySelector("#sheet-panel .dm-msgs");
   if (!other || !box) return;
-  const list = mineOnly().filter((m) => m.f === other || m.t === other).sort((a, b) => a.at - b.at);
+  const l = D.l || "";
+  const list = mineOnly().filter((m) => (m.f === other || m.t === other) && (m.l || "") === l).sort((a, b) => a.at - b.at);
   const texts = await Promise.all(list.map(open));
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
   box.replaceChildren();
   if (!api.state.profiles[other] || !api.state.profiles[other].pk) box.append(h("p", "status", `${nameOf(other)} needs to open FifTeam Media once more before you can message them.`));
-  else if (!list.length) box.append(h("p", "status", "Say hi."));
+  else if (!list.length) box.append(h("p", "status", l ? "Ask about it: is it still available, the price, picking it up…" : "Say hi."));
   list.forEach((m, i) => {
     const b = h("div", "dm-bubble " + (m.f === api.state.me ? "me" : "them") + (m.sending ? " sending" : ""));
     b.append(h("span", "", texts[i] || "🔒 This message can't be opened on this phone."), h("small", "", api.ago(m.at)));
     box.append(b);
   });
   if (atBottom || list.length) box.scrollTop = box.scrollHeight;
-  markRead(other);
+  markRead(other, l);
 }
 const newId = () => Array.from(crypto.getRandomValues(new Uint8Array(14)), (b) => "abcdefghijklmnopqrstuvwxyz0123456789"[b % 36]).join("");
-async function send(other, text) {
+async function send(other, text, l = "") {
   let sealed;
   try { await api.ensureProfiles(); sealed = await seal(other, text.slice(0, 500)); }
   catch { toast(`${nameOf(other)} needs to open FifTeam Media once more before you can message them.`); return; }
-  if (dmState(api.state.me, other, talkedWith(other)) === "off") { toast(`${nameOf(other)} isn't taking messages any more.`); return; }
-  const m = { id: newId(), f: api.state.me, t: other, at: Date.now(), ...sealed };
+  if (l ? blocked(api.state.me, other) : dmState(api.state.me, other, talkedWith(other)) === "off") { toast(`${nameOf(other)} isn't taking messages any more.`); return; }
+  const m = { id: newId(), f: api.state.me, t: other, at: Date.now(), ...sealed, ...(l ? { l } : {}) };
   D.plain.set(m.id, text.slice(0, 500));
   D.msgs = [...D.msgs, { ...m, sending: true }];
   paintChat();
@@ -271,10 +295,11 @@ async function tellNew() {
   for (const m of fresh.slice(-4)) {
     if (m.at <= (r[m.f] || 0)) continue;
     const text = (await open(m)) || "New message", who = nameOf(m.f);
-    if (document.visibilityState === "visible") { if (D.chat !== m.f) toast(`${who}: ${text}`.slice(0, 90), 3000); continue; }
-    const opts = { body: text.slice(0, 160), tag: "fifteam-dm-" + m.f, renotify: true, icon: "icons/icon-192.png", badge: "icons/icon-192.png", data: { dm: m.f } };
-    try { const reg = await navigator.serviceWorker.ready; await reg.showNotification(who, opts); }
-    catch { try { const n = new Notification(who, opts); n.onclick = () => { window.focus(); openChat(m.f); n.close(); }; } catch {} }
+    const l = m.l || "", title = l ? `${who} · Audio Market` : who;
+    if (document.visibilityState === "visible") { if (D.chat !== m.f || (D.l || "") !== l) toast(`${title}: ${text}`.slice(0, 90), 3000); continue; }
+    const opts = { body: text.slice(0, 160), tag: "fifteam-dm-" + m.f + (l ? "-" + l : ""), renotify: true, icon: "icons/icon-192.png", badge: "icons/icon-192.png", data: { dm: m.f, l } };
+    try { const reg = await navigator.serviceWorker.ready; await reg.showNotification(title, opts); }
+    catch { try { const n = new Notification(title, opts); n.onclick = () => { window.focus(); openChat(m.f, l); n.close(); }; } catch {} }
   }
 }
 
@@ -298,7 +323,7 @@ export function initDms() {
     }
   } catch {}
   // a tap on a message notification: that conversation
-  if ("serviceWorker" in navigator) navigator.serviceWorker.addEventListener("message", (e) => { if (e.data && e.data.type === "open-dm" && PHONE.test(e.data.dm)) { location.hash = "#social"; openChat(e.data.dm); } });
+  if ("serviceWorker" in navigator) navigator.serviceWorker.addEventListener("message", (e) => { if (e.data && e.data.type === "open-dm" && PHONE.test(e.data.dm)) { location.hash = "#social"; openChat(e.data.dm, /^\d{5,25}$/.test(e.data.l || "") ? e.data.l : ""); } });
   const want = new URLSearchParams(location.search).get("dm");
   if (want && PHONE.test(want)) {
     history.replaceState(null, "", location.pathname + "#social");

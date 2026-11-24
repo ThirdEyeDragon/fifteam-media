@@ -10,6 +10,7 @@
 //   /devices           every phone that has used the app (the last half year), with its device; the full list as a file
 //   /tag-member, /tag-founder, /tag-developer <user>   the gradient tag next to their name (remove: True takes it off)
 //   /tags              who has which tag
+//   /listings [user], /delete-listing   Audio Market: the latest listings, and taking one down
 // And in the background, every half hour: every post's and profile picture's current file links in one store message
 // (social/config.json "links"), so a phone reads one file instead of asking for each post (much faster to load).
 // It reads and writes the app's store messages through the same webhook the app uses (social/config.json), and talks
@@ -203,7 +204,7 @@ export async function cmdPurge(user) {
   const f = await feedNow();
   const posts = f.posts.filter(t).map((x) => x.id);
   let comments = 0; for (const p of f.posts) if (!posts.includes(p.id)) for (const c of p.comments || []) if (t(c)) comments++;
-  if (!posts.length && !comments) return `**${clean(w.name)}** has no posts or comments.`;
+  if (!posts.length && !comments && !(await marketNow().catch(() => ({ items: [] }))).items.some(t)) return `**${clean(w.name)}** has no posts, comments or listings.`;
   const purge = (d) => {
     d.posts = d.posts.filter((x) => !t(x));
     for (const q of d.posts) { const gone = new Set(q.comments.filter(t).map((c) => c.id)); q.comments = q.comments.filter((c) => !gone.has(c.id) && !gone.has(c.re)); }
@@ -212,7 +213,13 @@ export async function cmdPurge(user) {
   await changeFeed(purge, ok);
   for (const id of posts) await hook(`/messages/${id}`, { method: "DELETE" }).catch(() => {});
   again(async () => { if (!ok(await feedNow())) await changeFeed(purge, ok); });
-  return `Removed ${posts.length} post${posts.length === 1 ? "" : "s"} and ${comments} comment${comments === 1 ? "" : "s"} by **${clean(w.name)}**.`;
+  // (and their Audio Market listings)
+  const mk = await marketNow().catch(() => ({ items: [] })), gone = mk.items.filter(t).map((x) => x.id);
+  if (gone.length) {
+    await changeStore("market", "market.json", MARKET_LABEL, () => ({ v: 1, items: [] }), (m) => { m.items = (m.items || []).filter((x) => !t(x)); }, (m) => !(m.items || []).some(t));
+    for (const id of gone) await hook(`/messages/${id}`, { method: "DELETE" }).catch(() => {});
+  }
+  return `Removed ${posts.length} post${posts.length === 1 ? "" : "s"}, ${comments} comment${comments === 1 ? "" : "s"}${gone.length ? ` and ${gone.length} Audio Market listing${gone.length === 1 ? "" : "s"}` : ""} by **${clean(w.name)}**.`;
 }
 export async function cmdClearProfile(user) {
   const w = await whoIs(user);
@@ -280,6 +287,7 @@ async function suggest(cmd, typed) {
   const low = String(typed || "").toLowerCase();
   if (cmd === "delete-post") return suggestPosts(low);
   if (cmd === "delete-comment") return suggestComments(low);
+  if (cmd === "delete-listing") { const d = await marketNow(); return d.items.filter((x) => !low || `${x.title} ${x.user} ${x.place}`.toLowerCase().includes(low)).slice(0, 25).map((x) => ({ name: `${x.title} · ${money(x.price)} · ${x.user}`.slice(0, 100), value: x.id })); }
   if (cmd === "unban") {
     const d = (await readStore("mod", "mod.json")) || { bans: {} };
     return Object.entries(d.bans || {}).filter(([k, v]) => !low || k.includes(low) || (v.name || "").toLowerCase().includes(low)).slice(0, 25).map(([k, v]) => ({ name: `${v.name || "(no username)"} · ${k}`.slice(0, 100), value: k }));
@@ -289,6 +297,29 @@ async function suggest(cmd, typed) {
     .slice(0, 25).map(([k, v]) => ({ name: `${v.name || "(no username)"} · ${v.device || "device unknown"} · ${k}`.slice(0, 100), value: k }));
 }
 
+// ---------------------------------------------------------------------------------------------------- Audio Market
+const MARKET_LABEL = "FifTeam Audio Market (the app keeps this message up to date; please don't delete it)";
+const marketNow = async () => { const d = (await readStore("market", "market.json")) || {}; return { items: Array.isArray(d.items) ? d.items : [] }; };
+const money = (p) => (+p ? "$" + (+p).toLocaleString("en-US") : "Free");
+export async function cmdListings(user) {
+  const d = await marketNow(), f = await feedNow();
+  let list = d.items;
+  if (user) { const w = await whoIs(user), t = mineTest(w.phones, w.name); list = list.filter(t); }
+  if (!list.length) return user ? `No listings from **${clean(user)}**.` : "Nothing on Audio Market yet.";
+  return [`**${user ? `${clean(user)}'s listings` : "Audio Market"}** (${list.length})`, ...list.slice(0, 15).map((x) => `• **${clean(x.title, 50)}** · ${money(x.price)}${x.sold ? " · sold" : ""} · ${clean(nameIn(f, x))} · ${clean(x.place || "", 30)} · ${ago(x.at)} · \`${x.id}\``),
+    "-# /delete-listing with the id in `code` takes one down."].join("\n");
+}
+export async function cmdDeleteListing(id) {
+  id = String(id || "").trim();
+  const d = await marketNow(), x = d.items.find((y) => y.id === id);
+  if (!x) return `There's no listing \`${clean(id)}\`. /listings lists them.`;
+  const gone = (m) => { m.items = (Array.isArray(m.items) ? m.items : []).filter((y) => y.id !== id); }, ok = (m) => !(m.items || []).some((y) => y.id === id);
+  await changeStore("market", "market.json", MARKET_LABEL, () => ({ v: 1, items: [] }), gone, ok);
+  await hook(`/messages/${id}`, { method: "DELETE" }).catch(() => {});
+  again(async () => { const now = (await readStore("market", "market.json")) || { items: [] }; if (!ok(now)) await changeStore("market", "market.json", MARKET_LABEL, () => ({ v: 1, items: [] }), gone, ok); });
+  return `Took down **${clean(x.title, 50)}** (${money(x.price)}) by **${clean(x.user)}**.`;
+}
+
 // ---------------------------------------------------------------------------------------------------- file links
 // File links expire after about a day and each post's are read from its own message; reading them all here, slowly,
 // and keeping them in one store saves every phone that work (phones still read any post that's missing or expired).
@@ -296,7 +327,8 @@ const LINKS_LABEL = "FifTeam file links (kept fresh by the FifTeam bot; please d
 export async function refreshLinks() {
   if (!cfg.links) return 0;
   const f = await feedNow();
-  const ids = [...new Set([...f.posts.filter((p) => p.image || p.video || p.song || p.avatar).map((p) => p.id), ...Object.values(f.profiles).map((v) => v && v.av).filter((x) => /^\d{5,25}$/.test(x || ""))])];
+  const mk = await marketNow().catch(() => ({ items: [] }));
+  const ids = [...new Set([...f.posts.filter((p) => p.image || p.video || p.song || p.avatar).map((p) => p.id), ...Object.values(f.profiles).map((v) => v && v.av).filter((x) => /^\d{5,25}$/.test(x || "")), ...mk.items.filter((x) => !x.sold).map((x) => x.id)])];
   const links = {};
   for (const id of ids) {
     try { const m = await hook(`/messages/${id}`); const a = (m.attachments || []).map(({ filename, url }) => ({ filename, url })); if (a.length) links[id] = a; } catch {}
@@ -326,6 +358,8 @@ const COMMANDS = [
   { name: "tag-founder", description: "Give someone the FifTeam Founder tag", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }, { type: 5, name: "remove", description: "Take the tag off instead", required: false }] },
   { name: "tag-developer", description: "Give someone the FifTeam Media Developer tag", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }, { type: 5, name: "remove", description: "Take the tag off instead", required: false }] },
   { name: "tags", description: "Who has which FifTeam tag", type: 1 },
+  { name: "listings", description: "The latest Audio Market listings (or one user's), with their ids", type: 1, options: [{ type: 3, name: "user", description: "Only this user's", required: false, autocomplete: true }] },
+  { name: "delete-listing", description: "Take an Audio Market listing down", type: 1, options: [{ type: 3, name: "listing", description: "Start typing its title or the seller", required: true, autocomplete: true }] },
   { name: "allow-picture", description: "Let a user have a profile picture again", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }] },
 ].map((c) => ({ ...c, default_member_permissions: "4", dm_permission: false }));   // (4: Ban Members; admins only)
 
@@ -365,6 +399,7 @@ async function answer(it, tok) {
         : name === "posts" ? await cmdPosts(v("user")) : name === "comments" ? await cmdComments(v("user"))
         : name === "delete-post" ? await cmdDeletePost(v("post")) : name === "delete-comment" ? await cmdDeleteComment(v("comment"))
         : name === "devices" ? await cmdDevices(v("user")) : name === "tags" ? await cmdTags()
+        : name === "listings" ? await cmdListings(v("user")) : name === "delete-listing" ? await cmdDeleteListing(v("listing"))
         : name === "tag-member" ? await cmdTag("member", v("user"), v("remove")) : name === "tag-founder" ? await cmdTag("founder", v("user"), v("remove")) : name === "tag-developer" ? await cmdTag("dev", v("user"), v("remove"))
         : name === "purge" ? await cmdPurge(v("user")) : name === "clear-profile" ? await cmdClearProfile(v("user")) : name === "allow-picture" ? await cmdAllowPicture(v("user"))
         : "Unknown command";
