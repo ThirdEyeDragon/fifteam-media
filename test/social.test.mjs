@@ -144,7 +144,7 @@ try {
   await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
   for (let i = 0; i < 40 && !storeNow(PRES).on[meNow]; i++) await sleep(250);
   console.log("who's online:", JSON.stringify(storeNow(PRES).on[meNow]));
-  check(!!storeNow(PRES).on[meNow] && storeNow(PRES).on[meNow].v === "2.4" && storeNow(PRES).on[meNow].d.length > 3, "this phone shows as online, with its device");
+  check(!!storeNow(PRES).on[meNow] && /^2\.\d/.test(storeNow(PRES).on[meNow].v) && storeNow(PRES).on[meNow].d.length > 3, "this phone shows as online, with its device");
   console.log("profile picture kept on the phone:", await ev(`localStorage.getItem('fifteam-social-avatar').length + ' characters'`));
   const meId = await ev(`localStorage.getItem('fifteam-social-me')`);
   for (let i = 0; i < 40 && !(profilesNow()[meId] && profilesNow()[meId].av); i++) await sleep(200);
@@ -389,6 +389,92 @@ try {
     console.log("tapping the reply:", await ev(`document.querySelector('#sheet-panel').className + ' | ' + [...document.querySelectorAll('#sheet-panel .cs-c p')].map(p => p.textContent).join(', ')`));
     check((await ev(`document.querySelector('#sheet-panel').classList.contains('cs-panel') && [...document.querySelectorAll('#sheet-panel .cs-c p')].some(p => p.textContent === 'agreed!')`)), "tapping it opens that post's comments");
     await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
+    // privacy, set in Alice's Settings: who can message her, and a private account
+    const benOpensAlice = async () => { await other.ev(`import('./js/meta.js').then((m) => m.loadMeta(0)).then(() => import('./js/profile.js')).then((m) => { m.openProfile({ by: '${meNow}', user: 'Alice' }); return 1; })`); await sleep(700); };
+    const benView = () => other.ev(`JSON.stringify({ msg: (document.querySelector('#sheet-panel .pf-msg') || {}).textContent, off: !!(document.querySelector('#sheet-panel .pf-msg') || {}).disabled, follow: (document.querySelector('#sheet-panel .pf-follow') || {}).textContent, locked: !!document.querySelector('#sheet-panel .pf-locked'), tabs: document.querySelectorAll('#sheet-panel .pf-seg button').length })`).then(JSON.parse);
+    const aliceSettings = async (fn) => { await ev(`document.getElementById('btn-settings').click(), 1`); await sleep(500); await ev(fn); await sleep(300); };
+    const prefsNow = () => (storeNow(META).prefs || {})[meNow] || { dm: "all", priv: 0 };
+    // "Nobody": Ben can't message her
+    await aliceSettings(`document.querySelector('#set-dm button[data-v="off"]').click(), 1`);
+    for (let i = 0; i < 40 && prefsNow().dm !== "off"; i++) await sleep(200);
+    console.log("Alice's privacy:", JSON.stringify(prefsNow()), "|", await ev(`document.getElementById('set-dm-why').textContent`));
+    await shot("d13_privacy");
+    await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
+    await benOpensAlice();
+    let seen = await benView();
+    console.log("messages off, Ben sees:", JSON.stringify(seen));
+    check(prefsNow().dm === "off" && seen.msg === "Not taking messages" && seen.off, "messages off: no Message button for others");
+    // "Requests": with no conversation between them yet, Ben asks; Alice says yes in her inbox
+    setStore(DM, { v: 1, msgs: [] });
+    await other.ev(`import('./js/dms.js').then((m) => m.dms.state.check()).then(() => 1)`);
+    await ev(`import('./js/dms.js').then((m) => m.dms.state.check()).then(() => 1)`);
+    await aliceSettings(`document.querySelector('#set-dm button[data-v="req"]').click(), 1`);
+    for (let i = 0; i < 40 && prefsNow().dm !== "req"; i++) await sleep(200);
+    await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
+    await benOpensAlice();
+    seen = await benView();
+    console.log("by request, Ben sees:", JSON.stringify(seen));
+    check(seen.msg === "Ask to message" && !seen.off, "by request: Ask to message");
+    await other.ev(`document.querySelector('#sheet-panel .pf-msg').click(), 1`);
+    for (let i = 0; i < 40 && !((storeNow(META).dmreq || {})[meNow] || []).includes(benPhone); i++) await sleep(200);
+    await sleep(300);
+    await benOpensAlice();
+    seen = await benView();
+    check(((storeNow(META).dmreq || {})[meNow] || []).includes(benPhone) && seen.msg === "Asked to message" && seen.off, "asked: shown as asked");
+    await ev(`import('./js/meta.js').then((m) => m.loadMeta(0)).then(() => 1)`);
+    await ev(`document.getElementById('btn-dms').click(), 1`); await sleep(1200);
+    console.log("Alice's inbox:", await ev(`document.querySelector('#sheet-panel .dm-list').textContent`), "| badge:", await ev(`document.getElementById('dm-badge').textContent`));
+    await shot("d14_dm_request");
+    await ev(`document.querySelector('#sheet-panel .dm-req .btn.primary').click(), 1`);
+    for (let i = 0; i < 40 && !((storeNow(META).dmok || {})[meNow] || []).includes(benPhone); i++) await sleep(200);
+    await sleep(300);
+    await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
+    await benOpensAlice();
+    seen = await benView();
+    console.log("accepted, Ben sees:", JSON.stringify(seen));
+    check(((storeNow(META).dmok || {})[meNow] || []).includes(benPhone) && seen.msg === "Message", "accepted: Ben can message her");
+    // a private account: Ben (already following) is kept; a new follower has to ask
+    await aliceSettings(`document.getElementById('set-priv').click(), 1`);
+    for (let i = 0; i < 40 && !prefsNow().priv; i++) await sleep(200);
+    await sleep(300);
+    await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
+    check(((storeNow(META).fok || {})[meNow] || []).includes(benPhone), "going private keeps the followers she had");
+    await benOpensAlice();
+    seen = await benView();
+    check(!seen.locked && seen.tabs === 2 && seen.follow === "Following", "an existing follower still sees her posts");
+    // Ben as a new follower: unfollowed and not let in (as if he'd never followed)
+    { const d = storeNow(META); d.follows[benPhone] = []; d.fok[meNow] = []; setStore(META, d); }
+    await benOpensAlice();
+    seen = await benView();
+    const benFeed = await other.ev(`import('./js/social.js').then((m) => { m.api.render(); return [...document.querySelectorAll('#so-body .so-post')].some(p => p.textContent.includes('Fresh one')); })`);
+    console.log("private, Ben (not let in) sees:", JSON.stringify(seen), "| her post in his feed:", benFeed);
+    check(seen.locked && seen.tabs === 0 && seen.follow === "Follow" && !benFeed, "private: her page locked and her posts out of his feed");
+    await shot("d15_private");
+    await other.ev(`document.querySelector('#sheet-panel .pf-follow').click(), 1`);
+    for (let i = 0; i < 40 && !((storeNow(META).freq || {})[meNow] || []).includes(benPhone); i++) await sleep(200);
+    await sleep(300);
+    await benOpensAlice();
+    seen = await benView();
+    check(seen.follow === "Requested" && seen.locked, "a follow request, waiting");
+    await ev(`import('./js/meta.js').then((m) => m.loadMeta(0)).then(() => import('./js/activity.js')).then((m) => { m.activityChanged(); return 1; })`);
+    await ev(`document.getElementById('btn-activity').click(), 1`); await sleep(500);
+    console.log("Alice's bell:", await ev(`[...document.querySelectorAll('#sheet-panel .act-req')].map(r => r.textContent).join(' | ')`));
+    await ev(`document.querySelector('#sheet-panel .act-req .btn.primary').click(), 1`);
+    for (let i = 0; i < 40 && !((storeNow(META).fok || {})[meNow] || []).includes(benPhone); i++) await sleep(200);
+    await sleep(300);
+    await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
+    await benOpensAlice();
+    seen = await benView();
+    const benFeed2 = await other.ev(`import('./js/social.js').then((m) => { m.api.render(); return [...document.querySelectorAll('#so-body .so-post')].some(p => p.textContent.includes('Fresh one')); })`);
+    console.log("accepted, Ben sees:", JSON.stringify(seen), "| her post in his feed:", benFeed2);
+    check(!seen.locked && seen.follow === "Following" && benFeed2, "let in: her page and posts open to him");
+    // back to public, messages from everyone
+    await aliceSettings(`(document.getElementById('set-priv').click(), document.querySelector('#set-dm button[data-v="all"]').click(), 1)`);
+    for (let i = 0; i < 40 && (prefsNow().priv || prefsNow().dm !== "all"); i++) await sleep(250);
+    await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
+    await other.ev(`document.getElementById('sheet').classList.remove('open'), 1`);
+    check(!prefsNow().priv && prefsNow().dm === "all", "back to public");
+
     // a ban (the bot's /ban): Ben's phone shut, even after reopening; his comments out of Alice's sight; lifted: open again
     setStore(MOD, { v: 1, bans: { [benPhone]: { at: Date.now(), name: "Ben" } } });
     await other.ev(`import('./js/ban.js').then((m) => m.checkBans()).then(() => 1)`);

@@ -12,8 +12,8 @@ import { fitJpeg, squareJpeg } from "./image.js";
 import { makeFile, sizeText } from "./export.js";
 import { myPublicKey, initDms } from "./dms.js";
 import { openProfile } from "./profile.js";
-import { loadMeta, votesOf, setVote, meta } from "./meta.js";
-import { bannedPhones } from "./ban.js";
+import { loadMeta, votesOf, setVote, meta, canSee } from "./meta.js";
+import { bannedPhones, noPicPhones } from "./ban.js";
 import { activityChanged, initActivity } from "./activity.js";
 
 const NAME_KEY = "fifteam-social-name", MINE_KEY = "fifteam-social-mine", ME_KEY = "fifteam-social-me", AV_KEY = "fifteam-social-avatar";
@@ -173,6 +173,8 @@ const NAME_OK = /^[\p{L}\p{N} _.\-]{2,24}$/u;
 /** Who wrote it, by their username now (a username changed later shows on their older posts and comments too). */
 const nameOf = (x) => (x.by && x.by === S.me && S.name) || (x.by && S.profiles[x.by] && S.profiles[x.by].name) || x.user;
 const hidden = (x) => !!(x.by && bannedPhones().has(x.by));
+/** A post this phone may see: not from a banned phone, and not from a private account that hasn't let it in. */
+const visible = (p) => !hidden(p) && canSee(S.me, p.by);
 const commentsOf = (p) => p.comments.filter((c) => !hidden(c));
 /** The rebassed song with the most votes from the last seven days (none until one has a vote). */
 function weekly(posts) {
@@ -232,7 +234,7 @@ function render() {
   }
   body.append(you);
   if (S.error) body.append(h("p", "status", S.error));
-  const all = S.feed.filter((p) => !S.gone.has(p.id) && !hidden(p));
+  const all = S.feed.filter((p) => !S.gone.has(p.id) && visible(p));
   // the rebass of the week, on top
   const top = weekly(all);
   S.weekId = top ? top.id : "";
@@ -271,7 +273,7 @@ function syncProfile(force) {
     await config();
     const pr = S.profiles[S.me];
     let sent = ""; try { sent = localStorage.getItem(AV_KEY + "-sent") || ""; } catch {}
-    const needPic = S.avatar && (force || !pr || !pr.av || sent !== (pr && pr.av));
+    const needPic = S.avatar && !noPicPhones().has(S.me) && (force || !pr || !pr.av || sent !== (pr && pr.av));
     const needName = S.name && pr && pr.name !== S.name;
     const pk = await myPublicKey(), needKey = pk && pr && pr.pk !== pk;
     if (!needPic && !needName && !needKey && pr) return;
@@ -302,6 +304,7 @@ function pictureFor(p) {
 }
 const mineAs = (p) => p.by === S.me || S.mine.has(p.id);
 async function showPicture(av, p) {
+  if (p.by && noPicPhones().has(p.by)) return;
   if (mineAs(p) && S.avatarUrl) { av.style.backgroundImage = `url("${S.avatarUrl}")`; return; }
   const id = pictureFor(p);
   if (!id) return;
@@ -439,10 +442,10 @@ async function vote(p, btn) {
   const job = setVote(p.id, on);
   document.querySelectorAll(`#so-body .so-post[data-id="${p.id}"]`).forEach((c) => paintCount(c, p));
   btn.classList.remove("pop"); void btn.offsetWidth; if (on) btn.classList.add("pop");
-  if ((weekly(S.feed.filter((x) => !S.gone.has(x.id) && !hidden(x))) || {}).id !== was) render();
+  if ((weekly(S.feed.filter((x) => !S.gone.has(x.id) && visible(x))) || {}).id !== was) render();
   if (!(await job)) toast("Couldn't save that vote. Try again.");
   document.querySelectorAll(`#so-body .so-post[data-id="${p.id}"]`).forEach((c) => paintCount(c, p));
-  if ((weekly(S.feed.filter((x) => !S.gone.has(x.id) && !hidden(x))) || {}).id !== S.weekId) render();
+  if ((weekly(S.feed.filter((x) => !S.gone.has(x.id) && visible(x))) || {}).id !== S.weekId) render();
 }
 /** Your post's menu. */
 function postMenu(p) {
@@ -901,15 +904,16 @@ async function refresh({ manual = false } = {}) {
   if (!S.error && (S.avatar || S.name)) syncProfile();
   if (S.cs && !S.loading) paintSheet();
   if (!S.error) activityChanged();
-  const week = (weekly(S.feed.filter((x) => !S.gone.has(x.id) && !hidden(x))) || {}).id || "";
-  if (manual || firstTime || sigIds(S.feed) !== S.ids || S.error !== S.shownError || JSON.stringify(S.profiles) !== before || week !== S.weekId || S.bansSig !== [...bannedPhones()].join()) { S.bansSig = [...bannedPhones()].join(); render(); }
+  const week = (weekly(S.feed.filter((x) => !S.gone.has(x.id) && visible(x))) || {}).id || "";
+  const seeSig = S.feed.filter(visible).length + "|" + [...noPicPhones()].join();
+  if (manual || firstTime || sigIds(S.feed) !== S.ids || S.error !== S.shownError || JSON.stringify(S.profiles) !== before || week !== S.weekId || S.bansSig !== [...bannedPhones()].join() || seeSig !== S.seeSig) { S.bansSig = [...bannedPhones()].join(); S.seeSig = seeSig; render(); }
   else for (const p of S.feed) {
     if (!S.liking.has(p.id)) document.querySelectorAll(`#so-body .so-like[data-id="${p.id}"]`).forEach((btn) => paintLike(btn, p));
     const card = document.querySelector(`#so-body .so-post[data-id="${p.id}"]`);
     if (card) paintCount(card, p);
   }
 }
-const sigIds = (feed) => feed.filter((p) => !S.gone.has(p.id) && !hidden(p)).map((p) => p.id).join(",");
+const sigIds = (feed) => feed.filter((p) => !S.gone.has(p.id) && visible(p)).map((p) => p.id).join(",");
 
 /** Pull the feed down to refresh it: the list follows the finger (with some weight), a ring turns as it comes, and
  * past the line it spins while the feed loads, then everything springs back. Transforms only, so it stays smooth. */
@@ -992,7 +996,7 @@ function findPhone(name) {
 function showPost(id) {
   closeSheet();
   if (location.hash !== "#social") location.hash = "#social";
-  const i = S.feed.filter((p) => !S.gone.has(p.id) && !hidden(p)).findIndex((p) => p.id === id);
+  const i = S.feed.filter((p) => !S.gone.has(p.id) && visible(p)).findIndex((p) => p.id === id);
   if (i >= S.shown) { S.shown = i + 10; render(); }
   setTimeout(() => {
     const card = document.querySelector(`#so-body .so-post[data-id="${id}"]`);
@@ -1002,5 +1006,5 @@ function showPost(id) {
   }, 350);
 }
 function editName() { closeSheet(); S.editingName = true; if (location.hash !== "#social") location.hash = "#social"; render(); setTimeout(() => { const i = document.querySelector("#so-body .so-nameform input"); if (i) { i.focus(); i.select(); } }, 120); }
-export const api = { state: S, config, dc, avatarEl, showPicture, ago, icon, findPhone, ensureProfiles, openComments, nameOf, hidden, songBlock, showPost, pickAvatar, editName, fileOf, message, viewImage, render };
+export const api = { visible, state: S, config, dc, avatarEl, showPicture, ago, icon, findPhone, ensureProfiles, openComments, nameOf, hidden, songBlock, showPost, pickAvatar, editName, fileOf, message, viewImage, render };
 export const social = { state: S, prepareVideo };

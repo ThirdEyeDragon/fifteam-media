@@ -8,6 +8,8 @@ import { demo } from "./demo.js";
 import { APP_VERSION } from "./app.js";
 import { canNotify, notifyWanted, setNotify } from "./dms.js";
 import { isIOS } from "./export.js";
+import { loadMeta, prefsOf, setPrefs } from "./meta.js";
+import { api } from "./social.js";
 
 const K_PW = "fifteam-lock", K_LOCKED = "fifteam-locked", K_AUTO = "fifteam-autolock", K_WAIT = "fifteam-lock-wait", K_FAILS = "fifteam-lock-fails";
 const ls = {
@@ -111,6 +113,37 @@ export function openSettings() {
       const pill = $("set-demo-pill"); pill.textContent = demo.on ? "On" : "Off"; pill.classList.toggle("on", demo.on);
       if (demo.on) { closeSheet(); location.hash = "#player"; toast("Demo mode on. Play a song.", 2200); }
     };
+
+    // privacy: who can message you, and whether your posts are for everyone or only followers you let in
+    const pvSec = el(`<div class="set-sec">
+      <div class="set-head"><svg><use href="#i-lock"/></svg>Privacy</div>
+      <span class="label">Who can message you</span>
+      <div class="seg" id="set-dm" role="radiogroup"><button data-v="all">Everyone</button><button data-v="req">Requests</button><button data-v="off">Nobody</button></div>
+      <span class="status" id="set-dm-why"></span>
+      <label class="switch"><span class="txt">Private account</span><input type="checkbox" id="set-priv"></label>
+      <span class="status" id="set-priv-why"></span>
+    </div>`);
+    p.append(pvSec);
+    const paintPv = () => {
+      const me = api.state.me, pr = prefsOf(me);
+      pvSec.querySelectorAll("#set-dm button").forEach((b) => { b.classList.toggle("on", b.dataset.v === pr.dm); b.setAttribute("aria-checked", String(b.dataset.v === pr.dm)); });
+      $("set-dm-why").textContent = pr.dm === "all" ? "Anyone can message you."
+        : pr.dm === "req" ? "People ask first, and you say yes or no in Messages. People you follow, and people you've written to, can always message you."
+        : "Nobody can message you, and messages sent to you aren't shown.";
+      $("set-priv").checked = !!pr.priv;
+      $("set-priv-why").textContent = pr.priv ? "Only followers you let in see your posts and your page. New followers ask first; answer them under the bell." : "Everyone sees your posts.";
+    };
+    paintPv();
+    loadMeta(15000).then(paintPv, () => {});
+    const savePv = async (next) => {
+      if (!api.state.name) { toast("Pick a username in Social first"); paintPv(); return; }
+      const job = setPrefs(next); paintPv();
+      if (!(await job)) toast("Couldn't save that. Are you online?");
+      paintPv();
+      api.render();
+    };
+    pvSec.querySelector("#set-dm").onclick = (e) => { const b = e.target.closest("button"); if (b && b.dataset.v !== prefsOf(api.state.me).dm) savePv({ dm: b.dataset.v }); };
+    $("set-priv").onchange = (e) => savePv({ priv: e.target.checked });
 
     // notifications for new messages
     const ntSec = el(`<div class="set-sec">

@@ -1,5 +1,7 @@
 // FifTeam Social's extras, each kept in a store message of its own on the feed service (social/config.json):
-//   meta:     votes on rebassed songs, who follows whom, and everyone's "about me"
+//   meta:     votes on rebassed songs, who follows whom, everyone's "about me", and privacy: who may message whom
+//             (everyone, by request, nobody; requests and who's been let in) and private accounts (only followers
+//             the owner approves see their posts; follow requests)
 //   presence: who has the app open right now, on what device (for the owner's /online)
 // They're kept apart from the feed list so that a phone still on an older version of the app (which rewrites the feed
 // list with only the fields it knows) can't wipe them.
@@ -56,8 +58,13 @@ export function jsonStore(key, file, label, clean) {
 // ---------------------------------------------------------------------------------------------------- votes, follows, about
 const phones = (a, n) => (Array.isArray(a) ? [...new Set(a.filter((x) => typeof x === "string" && PHONE.test(x)))].slice(0, n) : []);
 function cleanMeta(d) {
-  const out = { v: 1, votes: {}, follows: {}, about: {} };
+  const out = { v: 1, votes: {}, follows: {}, about: {}, prefs: {}, dmok: {}, dmreq: {}, fok: {}, freq: {} };
   if (!d || typeof d !== "object") return out;
+  for (const [k, v] of Object.entries(d.prefs || {}).slice(0, 5000)) if (PHONE.test(k) && v && typeof v === "object") {
+    const dm = v.dm === "req" || v.dm === "off" ? v.dm : "all", priv = v.priv ? 1 : 0;
+    if (dm !== "all" || priv) out.prefs[k] = { dm, priv };
+  }
+  for (const key of ["dmok", "dmreq", "fok", "freq"]) for (const [k, v] of Object.entries(d[key] || {}).slice(0, 5000)) if (PHONE.test(k)) { const l = phones(v, 2000).filter((x) => x !== k); if (l.length) out[key][k] = l; }
   // votes: the 800 newest posts that have any
   const vs = Object.entries(d.votes || {}).filter(([k]) => POST.test(k)).sort((a, b) => (BigInt(b[0]) > BigInt(a[0]) ? 1 : -1)).slice(0, 800);
   for (const [k, v] of vs) { const l = phones(v, 5000); if (l.length) out.votes[k] = l; }
@@ -85,9 +92,27 @@ async function metaChange(key, fn, check) {
 }
 
 export const votesOf = (post) => M.d.votes[post] || [];
-export const followingOf = (phone) => M.d.follows[phone] || [];
-export const followersOf = (phone) => Object.keys(M.d.follows).filter((k) => M.d.follows[k].includes(phone));
+export const prefsOf = (phone) => M.d.prefs[phone] || { dm: "all", priv: 0 };
+const list = (key, phone) => M.d[key][phone] || [];
+/** Whether one follows another: asked for, and (a private account) let in. */
+const approved = (who, owner) => !prefsOf(owner).priv || list("fok", owner).includes(who);
+export const followingOf = (phone) => list("follows", phone).filter((x) => approved(phone, x));
+export const followersOf = (phone) => Object.keys(M.d.follows).filter((k) => M.d.follows[k].includes(phone) && approved(k, phone));
+/** "following", "requested" (a private account that hasn't let them in yet) or "". */
+export function followState(who, owner) { if (!list("follows", who).includes(owner)) return ""; return approved(who, owner) ? "following" : "requested"; }
 export const aboutOf = (phone) => M.d.about[phone] || "";
+/** Whether a phone sees someone's posts: their own, a public account's, or a private one's that has let them in. */
+export const canSee = (viewer, owner) => !owner || viewer === owner || !prefsOf(owner).priv || list("fok", owner).includes(viewer);
+export const followRequests = (phone) => list("freq", phone).filter((x) => list("follows", x).includes(phone) && !list("fok", phone).includes(x));
+export const dmRequests = (phone) => list("dmreq", phone).filter((x) => !list("dmok", phone).includes(x));
+/** Whether `from` may write to `to`: "ok", "request" (they'd have to ask), "requested" (asked, not answered) or "off".
+ *  (talked: they've written to each other before, which always counts as let in unless messages are off) */
+export function dmState(from, to, talked) {
+  const pr = prefsOf(to);
+  if (pr.dm === "off") return "off";
+  if (pr.dm === "all" || talked || list("dmok", to).includes(from) || list("follows", to).includes(from)) return "ok";
+  return list("dmreq", to).includes(from) ? "requested" : "request";
+}
 
 /** Vote for a rebassed song, or take the vote back. */
 export function setVote(post, on) {
@@ -99,6 +124,35 @@ export function setFollow(phone, on) {
   const me = api.state.me;
   const fn = (d) => { const l = (d.follows[me] || []).filter((x) => x !== phone); if (on) l.push(phone); if (l.length) d.follows[me] = l; else delete d.follows[me]; };
   return metaChange("follow|" + phone, fn, (d) => (d.follows[me] || []).includes(phone) === on);
+}
+/** This phone's privacy: { dm: "all" | "req" | "off", priv: true/false }. Going private keeps the followers it has. */
+export function setPrefs(next) {
+  const me = api.state.me, cur = prefsOf(me), p = { dm: next.dm || cur.dm, priv: next.priv != null ? (next.priv ? 1 : 0) : cur.priv };
+  const keep = p.priv && !cur.priv ? followersOf(me) : null;
+  const fn = (d) => {
+    d.prefs = d.prefs || {}; d.fok = d.fok || {};
+    if (p.dm === "all" && !p.priv) delete d.prefs[me]; else d.prefs[me] = p;
+    if (keep) d.fok[me] = [...new Set([...(d.fok[me] || []), ...keep])];
+  };
+  return metaChange("prefs", fn, (d) => { const x = (d.prefs || {})[me] || { dm: "all", priv: 0 }; return x.dm === p.dm && !!x.priv === !!p.priv; });
+}
+const edit = (key, owner, who, on) => (d) => { d[key] = d[key] || {}; const l = (d[key][owner] || []).filter((x) => x !== who); if (on) l.push(who); if (l.length) d[key][owner] = l; else delete d[key][owner]; };
+const has = (key, owner, who) => (d) => ((d[key] || {})[owner] || []).includes(who);
+/** Ask a private account to let this phone follow it (Follow on their page does it), or take the request back. */
+export function setFollowRequest(owner, on) {
+  const me = api.state.me, a = edit("freq", owner, me, on), b = edit("follows", me, owner, on);
+  return metaChange("freq|" + owner, (d) => { a(d); b(d); }, (d) => has("freq", owner, me)(d) === on && has("follows", me, owner)(d) === on);
+}
+/** Someone's request to follow this (private) phone: let in or not. */
+export function answerFollow(who, yes) {
+  const me = api.state.me, a = edit("freq", me, who, false), b = edit("fok", me, who, yes);
+  return metaChange("fans|" + who, (d) => { a(d); b(d); }, (d) => !has("freq", me, who)(d) && has("fok", me, who)(d) === yes);
+}
+export function requestDm(to) { const me = api.state.me; return metaChange("dmreq|" + to, edit("dmreq", to, me, true), has("dmreq", to, me)); }
+/** Someone asking to message this phone: let in, or not. */
+export function answerDm(who, yes) {
+  const me = api.state.me, a = edit("dmreq", me, who, false), b = edit("dmok", me, who, yes);
+  return metaChange("dmans|" + who, (d) => { a(d); b(d); }, (d) => !has("dmreq", me, who)(d) && has("dmok", me, who)(d) === yes);
 }
 export function setAbout(text) {
   const me = api.state.me, t = String(text || "").trim().slice(0, 160);

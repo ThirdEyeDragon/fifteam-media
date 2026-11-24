@@ -3,6 +3,10 @@
 //   /ban <user>        bans a phone (by username or phone id) from FifTeam Media until /unban
 //   /unban <user>      lifts a ban
 //   /bans              the phones banned now
+//   /posts, /comments  the latest posts or comments (anyone's, or one user's), with their ids
+//   /delete-post, /delete-comment   take one down (a comment goes with its replies)
+//   /purge <user>      every post and comment of theirs, gone
+//   /clear-profile <user>   their picture and about me removed, and no new picture shown until /allow-picture
 // It reads and writes the app's store messages through the same webhook the app uses (social/config.json), and talks
 // to Discord over the gateway (a websocket), so it needs no web server: it runs on this PC (node 18+, no packages).
 //
@@ -54,21 +58,27 @@ async function writeStore(key, file, content, data) {
   await hook(`/messages/${cfg[key]}`, { method: "PATCH", body: f });
 }
 const MOD_LABEL = "FifTeam bans (kept by the FifTeam bot; please don't delete it)";
-async function changeBans(fn, check) {
+const FEED_LABEL = "FifTeam Social feed (the app keeps this message up to date; please don't delete it)";
+const META_LABEL = "FifTeam votes, follows and about (the app keeps this message up to date; please don't delete it)";
+const obj = (x) => (x && typeof x === "object" && !Array.isArray(x) ? x : {});
+async function changeStore(key, file, label, fresh, fn, check) {
   for (let i = 0; i < 3; i++) {
-    const d = (await readStore("mod", "mod.json")) || { v: 1, bans: {} };
-    d.bans = d.bans && typeof d.bans === "object" ? d.bans : {};
-    fn(d.bans);
-    await writeStore("mod", "mod.json", MOD_LABEL, { v: 1, bans: d.bans });
+    const d = (await readStore(key, file)) || fresh();
+    fn(d);
+    await writeStore(key, file, label, d);
     await new Promise((s) => setTimeout(s, 1500));          // (a read straight after a write can be a moment old)
-    const now = (await readStore("mod", "mod.json")) || { bans: {} };
-    if (check(now.bans || {})) return now.bans;
+    const now = (await readStore(key, file)) || fresh();
+    if (check(now)) return now;
   }
-  throw new Error("couldn't save the ban list");
+  throw new Error("couldn't save the change (the app was busy); try again");
 }
+const changeMod = (fn, check) => changeStore("mod", "mod.json", MOD_LABEL, () => ({ v: 1, bans: {}, nopic: {} }), (d) => { d.v = 1; d.bans = obj(d.bans); d.nopic = obj(d.nopic); fn(d); }, (d) => check({ bans: obj(d.bans), nopic: obj(d.nopic) }));
+const changeFeed = (fn, check) => changeStore("index", "feed.json", FEED_LABEL, () => ({ v: 1, posts: [], profiles: {} }), (d) => { d.posts = Array.isArray(d.posts) ? d.posts : []; d.profiles = obj(d.profiles); for (const q of d.posts) q.comments = Array.isArray(q.comments) ? q.comments : []; fn(d); }, (d) => check({ posts: Array.isArray(d.posts) ? d.posts : [], profiles: obj(d.profiles) }));
+const changeMeta = (fn, check) => changeStore("meta", "meta.json", META_LABEL, () => ({ v: 1, votes: {}, follows: {}, about: {} }), (d) => { d.votes = obj(d.votes); d.follows = obj(d.follows); d.about = obj(d.about); fn(d); }, (d) => check({ about: obj(d.about) }));
+const changeBans = (fn, check) => changeMod((d) => fn(d.bans), (d) => check(d.bans));
 
 // ---------------------------------------------------------------------------------------------------- the commands
-const clean = (s) => String(s || "").replace(/[\\*_~`|>#@<:\[\]()]/g, (c) => "\\" + c).slice(0, 40) || "(no username)";
+const clean = (s, n = 40) => String(s || "").slice(0, n).replace(/[\\*_~`|>#@<:\[\]()]/g, (c) => "\\" + c) || "(no username)";
 const ago = (t) => { const s = Math.max(0, (Date.now() - t) / 1000); return s < 60 ? "just now" : s < 3600 ? `${Math.floor(s / 60)} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : `${Math.floor(s / 86400)} d ago`; };
 /** Everyone the app knows: phone id -> { name, device, v, at } (from the profiles and who's been online). */
 async function people() {
@@ -124,8 +134,99 @@ export async function cmdBans() {
   const n = notes();
   return [`**${list.length} banned**`, ...list.slice(0, 40).map(([k, v]) => `• **${clean(v.name)}** · \`${k}\` · ${ago(v.at)}${n[k] && n[k].why ? ` · ${clean(n[k].why)}` : ""}`)].join("\n");
 }
+// ---------------------------------------------------------------------------------------------------- moderating
+const feedNow = async () => { const f = (await readStore("index", "feed.json")) || {}; return { posts: Array.isArray(f.posts) ? f.posts : [], profiles: obj(f.profiles) }; };
+const nameIn = (f, x) => (x.by && f.profiles[x.by] && f.profiles[x.by].name) || x.user || "someone";
+const short = (t, n = 50) => (t.length > n ? t.slice(0, n) + "…" : t);
+const what = (p) => (p.text ? `"${short(p.text)}"` : p.song ? `song: ${p.song.title || "a rebass"}` : p.video ? "a video" : p.image ? "a picture" : "a post");
+/** A user's posts and comments: by their phones, and (older posts, which don't say which phone) by their username. */
+function mineTest(phones, name) { const low = String(name || "").toLowerCase(); return (x) => (x.by && phones.includes(x.by)) || (!x.by && low && (x.user || "").toLowerCase() === low); }
+async function whoIs(target) {
+  const all = await people(), phones = resolve(target, all);
+  const name = phones.length ? (all[phones[0]] && all[phones[0]].name) || String(target) : String(target);
+  return { phones, name, all };
+}
+export async function cmdPosts(user) {
+  const f = await feedNow();
+  let list = f.posts;
+  if (user) { const w = await whoIs(user); list = list.filter(mineTest(w.phones, w.name)); }
+  if (!list.length) return user ? `No posts from **${clean(user)}**.` : "No posts.";
+  return [`**${user ? `${clean(user)}'s posts` : "Latest posts"}** (${list.length})`, ...list.slice(0, 15).map((p) => `• **${clean(nameIn(f, p))}** · ${ago(p.at)} · ${clean(what(p), 70)} · ♥ ${(p.likes || []).length} · 💬 ${(p.comments || []).length} · \`${p.id}\``),
+    "-# /delete-post with the id in `code` takes one down."].join("\n");
+}
+export async function cmdComments(user) {
+  const f = await feedNow();
+  let list = [];
+  for (const p of f.posts) for (const c of p.comments || []) list.push({ p, c });
+  if (user) { const w = await whoIs(user), t = mineTest(w.phones, w.name); list = list.filter((x) => t(x.c)); }
+  list.sort((a, b) => (b.c.at || 0) - (a.c.at || 0));
+  if (!list.length) return user ? `No comments from **${clean(user)}**.` : "No comments.";
+  return [`**${user ? `${clean(user)}'s comments` : "Latest comments"}** (${list.length})`, ...list.slice(0, 15).map(({ p, c }) => `• **${clean(nameIn(f, c))}** on ${clean(nameIn(f, p))}'s post: "${clean(short(c.text || "", 60), 70)}" · ${ago(c.at)} · \`${p.id}:${c.id}\``),
+    "-# /delete-comment with the id in `code` takes one down."].join("\n");
+}
+export async function cmdDeletePost(id) {
+  id = String(id || "").trim();
+  const f = await feedNow(), p = f.posts.find((x) => x.id === id);
+  if (!p) return `There's no post \`${clean(id)}\`. /posts lists them.`;
+  await changeFeed((d) => { d.posts = d.posts.filter((x) => x.id !== id); }, (d) => !d.posts.some((x) => x.id === id));
+  await hook(`/messages/${id}`, { method: "DELETE" }).catch(() => {});
+  return `Deleted **${clean(nameIn(f, p))}**'s post (${clean(what(p), 70)}). It's gone from everyone's feed the next time it refreshes.`;
+}
+export async function cmdDeleteComment(ref) {
+  const [pid, cid] = String(ref || "").trim().split(":");
+  const f = await feedNow(), p = f.posts.find((x) => x.id === pid), c = p && (p.comments || []).find((x) => x.id === cid);
+  if (!c) return `There's no comment \`${clean(ref)}\`. /comments lists them.`;
+  const replies = (p.comments || []).filter((x) => x.re === cid).length;
+  await changeFeed((d) => { const q = d.posts.find((x) => x.id === pid); if (q) q.comments = q.comments.filter((x) => x.id !== cid && x.re !== cid); }, (d) => { const q = d.posts.find((x) => x.id === pid); return !q || !q.comments.some((x) => x.id === cid); });
+  return `Deleted **${clean(nameIn(f, c))}**'s comment "${clean(short(c.text || "", 60), 70)}"${replies ? ` and the ${replies} repl${replies === 1 ? "y" : "ies"} to it` : ""}.`;
+}
+export async function cmdPurge(user) {
+  const w = await whoIs(user), t = mineTest(w.phones, w.name);
+  if (!w.phones.length && !String(user || "").trim()) return "Who? Give a username or phone id.";
+  const f = await feedNow();
+  const posts = f.posts.filter(t).map((x) => x.id);
+  let comments = 0; for (const p of f.posts) if (!posts.includes(p.id)) for (const c of p.comments || []) if (t(c)) comments++;
+  if (!posts.length && !comments) return `**${clean(w.name)}** has no posts or comments.`;
+  await changeFeed((d) => {
+    d.posts = d.posts.filter((x) => !t(x));
+    for (const q of d.posts) { const gone = new Set(q.comments.filter(t).map((c) => c.id)); q.comments = q.comments.filter((c) => !gone.has(c.id) && !gone.has(c.re)); }
+  }, (d) => !d.posts.some(t) && !d.posts.some((q) => q.comments.some(t)));
+  for (const id of posts) await hook(`/messages/${id}`, { method: "DELETE" }).catch(() => {});
+  return `Removed ${posts.length} post${posts.length === 1 ? "" : "s"} and ${comments} comment${comments === 1 ? "" : "s"} by **${clean(w.name)}**.`;
+}
+export async function cmdClearProfile(user) {
+  const w = await whoIs(user);
+  if (!w.phones.length) return `No phone goes by **${clean(user)}**.`;
+  const at = Date.now(), pics = [];
+  await changeMod((d) => { for (const p of w.phones) d.nopic[p] = at; }, (d) => w.phones.every((p) => d.nopic[p]));
+  await changeMeta((d) => { for (const p of w.phones) delete d.about[p]; }, (d) => w.phones.every((p) => !d.about[p]));
+  await changeFeed((d) => { for (const p of w.phones) if (d.profiles[p] && d.profiles[p].av) { pics.push(d.profiles[p].av); d.profiles[p].av = ""; } }, (d) => w.phones.every((p) => !d.profiles[p] || !d.profiles[p].av));
+  for (const id of pics) await hook(`/messages/${id}`, { method: "DELETE" }).catch(() => {});
+  return `Cleared **${clean(w.name)}**'s profile picture and about me. A new picture from ${w.phones.length === 1 ? "that phone" : "those phones"} won't show until /allow-picture.`;
+}
+export async function cmdAllowPicture(user) {
+  const d = (await readStore("mod", "mod.json")) || {};
+  const w = await whoIs(user), phones = w.phones.filter((p) => obj(d.nopic)[p]);
+  if (!phones.length) return `**${clean(user)}**'s picture isn't blocked.`;
+  await changeMod((x) => { for (const p of phones) delete x.nopic[p]; }, (x) => phones.every((p) => !x.nopic[p]));
+  return `**${clean(w.name)}** can have a profile picture again.`;
+}
+async function suggestPosts(low) {
+  const f = await feedNow();
+  return f.posts.filter((p) => !low || p.id.includes(low) || nameIn(f, p).toLowerCase().includes(low) || (p.text || "").toLowerCase().includes(low)).slice(0, 25)
+    .map((p) => ({ name: `${nameIn(f, p)} · ${ago(p.at)} · ${what(p)}`.slice(0, 100), value: p.id }));
+}
+async function suggestComments(low) {
+  const f = await feedNow(), list = [];
+  for (const p of f.posts) for (const c of p.comments || []) list.push({ p, c });
+  list.sort((a, b) => (b.c.at || 0) - (a.c.at || 0));
+  return list.filter(({ c }) => !low || nameIn(f, c).toLowerCase().includes(low) || (c.text || "").toLowerCase().includes(low)).slice(0, 25)
+    .map(({ p, c }) => ({ name: `${nameIn(f, c)}: ${c.text || ""} (${ago(c.at)})`.slice(0, 100), value: `${p.id}:${c.id}` }));
+}
 async function suggest(cmd, typed) {
   const low = String(typed || "").toLowerCase();
+  if (cmd === "delete-post") return suggestPosts(low);
+  if (cmd === "delete-comment") return suggestComments(low);
   if (cmd === "unban") {
     const d = (await readStore("mod", "mod.json")) || { bans: {} };
     return Object.entries(d.bans || {}).filter(([k, v]) => !low || k.includes(low) || (v.name || "").toLowerCase().includes(low)).slice(0, 25).map(([k, v]) => ({ name: `${v.name || "(no username)"} · ${k}`.slice(0, 100), value: k }));
@@ -140,9 +241,17 @@ const COMMANDS = [
   { name: "online", description: "Who has FifTeam Media open right now, and on what device", type: 1 },
   { name: "ban", description: "Ban a phone from FifTeam Media until it's unbanned", type: 1, options: [
     { type: 3, name: "user", description: "Their username, or the phone id from /online", required: true, autocomplete: true },
-    { type: 3, name: "reason", description: "Why (kept with the bot, shown in /bans)", required: false }] },
+    { type: 3, name: "reason", description: "Why (kept with the bot, shown in /bans)", required: false },
+    { type: 5, name: "delete_posts", description: "Also remove all their posts and comments", required: false }] },
   { name: "unban", description: "Lift a FifTeam Media ban", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }] },
   { name: "bans", description: "The phones banned from FifTeam Media", type: 1 },
+  { name: "posts", description: "The latest FifTeam posts (or one user's), with their ids", type: 1, options: [{ type: 3, name: "user", description: "Only this user's", required: false, autocomplete: true }] },
+  { name: "comments", description: "The latest comments (or one user's), with their ids", type: 1, options: [{ type: 3, name: "user", description: "Only this user's", required: false, autocomplete: true }] },
+  { name: "delete-post", description: "Take a post down", type: 1, options: [{ type: 3, name: "post", description: "Start typing a name or words from it", required: true, autocomplete: true }] },
+  { name: "delete-comment", description: "Take a comment down (and the replies to it)", type: 1, options: [{ type: 3, name: "comment", description: "Start typing a name or words from it", required: true, autocomplete: true }] },
+  { name: "purge", description: "Remove every post and comment by a user", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }] },
+  { name: "clear-profile", description: "Remove a user's profile picture and about me (and block new pictures)", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }] },
+  { name: "allow-picture", description: "Let a user have a profile picture again", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }] },
 ].map((c) => ({ ...c, default_member_permissions: "4", dm_permission: false }));   // (4: Ban Members; admins only)
 
 function token() {
@@ -174,8 +283,14 @@ async function answer(it, tok) {
     const name = it.data.name;
     let text;
     try {
-      text = name === "online" ? await cmdOnline() : name === "ban" ? await cmdBan(opt("user") && opt("user").value, opt("reason") && opt("reason").value, who.id)
-        : name === "unban" ? await cmdUnban(opt("user") && opt("user").value) : name === "bans" ? await cmdBans() : "Unknown command";
+      const v = (n) => (opt(n) ? opt(n).value : undefined);
+      text = name === "online" ? await cmdOnline()
+        : name === "ban" ? (await cmdBan(v("user"), v("reason"), who.id)) + (v("delete_posts") ? "\n" + (await cmdPurge(v("user"))) : "")
+        : name === "unban" ? await cmdUnban(v("user")) : name === "bans" ? await cmdBans()
+        : name === "posts" ? await cmdPosts(v("user")) : name === "comments" ? await cmdComments(v("user"))
+        : name === "delete-post" ? await cmdDeletePost(v("post")) : name === "delete-comment" ? await cmdDeleteComment(v("comment"))
+        : name === "purge" ? await cmdPurge(v("user")) : name === "clear-profile" ? await cmdClearProfile(v("user")) : name === "allow-picture" ? await cmdAllowPicture(v("user"))
+        : "Unknown command";
     } catch (e) { text = `Something went wrong: ${e.message}`; }
     log(`/${name} by ${who.username || who.id}`);
     await fetch(`${API}/webhooks/${it.application_id}/${it.token}/messages/@original`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: text.slice(0, 1990), allowed_mentions: { parse: [] } }) });
@@ -184,7 +299,8 @@ async function answer(it, tok) {
 async function run() {
   const tok = token();
   if (!tok) { log("No bot token. Run: node tools/bot/fifteam-bot.mjs --setup"); process.exit(1); }
-  try { const { app, guild } = await register(tok); log(`commands ready for ${app.name} in server ${guild}`); } catch (e) { log("couldn't register the commands:", e.message); }
+  const reg = async () => { try { const { app, guild } = await register(tok); log(`commands ready for ${app.name} in server ${guild}`); return true; } catch (e) { log("couldn't register the commands yet (is the bot in the server?):", e.message.slice(0, 160)); return false; } };
+  if (!(await reg())) { const t = setInterval(async () => { if (await reg()) clearInterval(t); }, 60e3); }
   let wait = 2000;
   for (;;) {
     try { await session(tok); wait = 2000; } catch (e) { log("gateway:", e.message); }
@@ -224,15 +340,18 @@ async function setup() {
   const me = await bot("/users/@me", tok);
   mkdirSync(HOME, { recursive: true });
   writeFileSync(join(HOME, "bot.json"), JSON.stringify({ token: tok }), { mode: 0o600 });
-  const { app, guild } = await register(tok);
-  console.log(`Token kept in ${join(HOME, "bot.json")}. Commands registered for ${me.username} in server ${guild}.`);
-  console.log(`(If the commands don't show in the server, invite the bot: https://discord.com/oauth2/authorize?client_id=${app.id}&scope=bot%20applications.commands&permissions=0)`);
+  const app = await bot("/oauth2/applications/@me", tok);
+  console.log(`Token kept in ${join(HOME, "bot.json")} for ${me.username}.`);
+  try { const { guild } = await register(tok); console.log(`Commands registered in server ${guild}.`); }
+  catch (e) { console.log("The commands go in once the bot is in the server (it keeps trying every minute)."); }
+  console.log(`Invite link: https://discord.com/oauth2/authorize?client_id=${app.id}&scope=bot%20applications.commands&permissions=0`);
   if (process.platform === "win32") {
     // start with Windows, out of sight
     const vbs = join(HOME, "start-bot.vbs");
     writeFileSync(vbs, `CreateObject("WScript.Shell").Run """${process.execPath}"" ""${fileURLToPath(import.meta.url)}""", 0, False\r\n`);
-    execFileSync("schtasks", ["/Create", "/F", "/TN", "FifTeam bot", "/SC", "ONLOGON", "/TR", `wscript.exe "${vbs}"`], { stdio: "inherit" });
-    execFileSync("schtasks", ["/Run", "/TN", "FifTeam bot"], { stdio: "inherit" });
+    // (the Startup folder: no administrator rights needed, unlike a scheduled task that runs at logon)
+    writeFileSync(join(process.env.APPDATA, "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "FifTeam bot.vbs"), readFileSync(vbs));
+    execFileSync("wscript.exe", [vbs]);
     console.log("The bot starts with Windows and is running now. Its log: " + join(HOME, "bot.log"));
   }
 }

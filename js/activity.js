@@ -1,9 +1,9 @@
 // FifTeam Social's activity (the bell, top right): who liked or commented on your posts, replied to your comments and
 // liked them, newest first, with a count of what's new since you last looked. Worked out from the feed itself; likes
 // carry no time, so this phone notes when it first saw each one (on the very first look everything counts as seen).
-import { $, openSheet } from "./ui.js";
+import { $, openSheet, toast } from "./ui.js";
 import { api } from "./social.js";
-import { followersOf } from "./meta.js";
+import { followersOf, followRequests, answerFollow } from "./meta.js";
 import { openProfile } from "./profile.js";
 
 const KEY = "fifteam-activity";
@@ -18,6 +18,8 @@ function items() {
   if (!me || !S.loadedAt) return null;
   const nameOf = (phone, fallback) => (S.profiles[phone] && S.profiles[phone].name) || fallback || "Someone";
   for (const f of followersOf(me)) if (!api.hidden({ by: f })) out.set(`f|${f}`, { kind: "follow", who: f, name: nameOf(f), post: null, at: 0 });
+  // (a private account: people asking to follow it, to say yes or no to)
+  for (const f of followRequests(me)) if (!api.hidden({ by: f })) out.set(`fr|${f}`, { kind: "freq", who: f, name: nameOf(f), post: null, at: 0 });
   for (const p of S.feed) {
     if (api.hidden(p)) continue;
     const mine = (p.by && p.by === me) || S.mine.has(p.id);
@@ -44,7 +46,7 @@ const isNew = (it, read) => it.seen > read;
 
 function paintBadge(list) {
   const b = $("act-badge"); if (!b) return;
-  const read = readAt(), n = (list || []).filter((it) => isNew(it, read)).length;
+  const read = readAt(), n = (list || []).filter((it) => isNew(it, read) || it.kind === "freq").length;   // (requests count until answered)
   b.textContent = n > 9 ? "9+" : String(n); b.hidden = !n;
 }
 /** The feed changed (fetched again, or something sent from here): the count on the bell, and the list if it's open. */
@@ -60,6 +62,19 @@ function paintList(box, list, read) {
   box.replaceChildren();
   if (!list.length) { box.append(h("p", "status", "Nothing yet. When people like or comment on your posts, it shows up here.")); return; }
   for (const it of list.slice(0, 100)) {
+    if (it.kind === "freq") {
+      const row = h("div", "dm-row act-row act-req" + (isNew(it, read) ? " unread" : ""));
+      const av = api.avatarEl(42, "", it.name); api.showPicture(av, { by: it.who, user: it.name, id: "" });
+      av.classList.add("tap"); av.onclick = () => openProfile({ by: it.who, user: it.name });
+      const mid = h("span", "dm-mid"), top = h("span", "act-what"); top.append(h("b", "", it.name), document.createTextNode(" wants to follow you"));
+      mid.append(top);
+      const yes = h("button", "btn small primary", "Accept"), no = h("button", "btn small", "Decline");
+      const go = (ok) => async () => { yes.disabled = no.disabled = true; if (!(await answerFollow(it.who, ok))) toast("Couldn't save that. Try again."); else toast(ok ? `${it.name} follows you now` : "Declined"); activityChanged(); };
+      yes.onclick = go(true); no.onclick = go(false);
+      row.append(av, mid, yes, no);
+      box.append(row);
+      continue;
+    }
     const row = h("button", "dm-row act-row" + (isNew(it, read) ? " unread" : ""));
     const av = api.avatarEl(42, "", it.name); api.showPicture(av, { by: it.who, user: it.name, id: "" });
     const mid = h("span", "dm-mid"), top = h("span", "act-what");

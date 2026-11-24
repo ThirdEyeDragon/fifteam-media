@@ -7,8 +7,11 @@ import { player } from "./player.js";
 const FLAG = "fifteam-ban", LIST = "fifteam-bans", ME = "fifteam-social-me";
 const ls = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch {} }, del(k) { try { localStorage.removeItem(k); } catch {} } };
 
-let list = new Set();
+let list = new Set(), nopic = new Set();
 try { list = new Set(JSON.parse(ls.get(LIST) || "[]")); } catch {}
+try { nopic = new Set(JSON.parse(ls.get(LIST + "-nopic") || "[]")); } catch {}
+/** The phones whose profile pictures the moderators took down (not shown, and not sent again). */
+export const noPicPhones = () => nopic;
 /** The phones that are banned (their posts and comments aren't shown). */
 export const bannedPhones = () => list;
 
@@ -53,6 +56,8 @@ export async function checkBans() {
     const d = await (await fetch(a.url, { cache: "no-store" })).json();
     const bans = d && d.bans && typeof d.bans === "object" ? Object.keys(d.bans).filter((k) => /^[a-z0-9]{6,16}$/.test(k)) : [];
     list = new Set(bans); ls.set(LIST, JSON.stringify(bans));
+    const np = d && d.nopic && typeof d.nopic === "object" ? Object.keys(d.nopic).filter((k) => /^[a-z0-9]{6,16}$/.test(k)) : [];
+    nopic = new Set(np); ls.set(LIST + "-nopic", JSON.stringify(np));
     const me = ls.get(ME) || "";
     if (me && list.has(me)) { await setFlag(true); show(); }
     else if (await flagged()) { await setFlag(false); hide(); }

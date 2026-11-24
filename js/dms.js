@@ -6,6 +6,7 @@
 //   The messages live in one store message of their own (social/config.json "dm": a dm.json attached to it).
 import { $, toast, openSheet, closeSheet } from "./ui.js";
 import { api } from "./social.js";
+import { dmState, dmRequests, answerDm } from "./meta.js";
 
 const KEY = "fifteam-dm-key", READ = "fifteam-dm-read", MAX = 2000;
 const D = { msgs: [], loadedAt: 0, loading: null, keys: new Map(), plain: new Map(), chat: null, poll: 0, queue: Promise.resolve() };
@@ -93,7 +94,12 @@ async function load() {
   })();
   return D.loading;
 }
-const mineOnly = () => D.msgs.filter((m) => m.f === api.state.me || m.t === api.state.me);
+/** This phone's conversations: what it sent, and what came from phones it takes messages from (Settings: everyone, by
+ * request, or nobody; someone it has written to, follows or let in always counts, unless messages are off). */
+const mineOnly = () => { const me = api.state.me; return D.msgs.filter((m) => m.f === me || (m.t === me && dmState(m.f, me, wrote(m.f)) === "ok")); };
+const wrote = (to) => D.msgs.some((m) => m.f === api.state.me && m.t === to);
+/** Whether someone has written to this phone (which lets this phone write back, whatever their settings say). */
+export const talkedWith = (phone) => D.msgs.some((m) => m.f === phone && m.t === api.state.me);
 function lastRead() { try { return JSON.parse(localStorage.getItem(READ) || "{}"); } catch { return {}; } }
 function markRead(phone) { const r = lastRead(); r[phone] = Date.now(); try { localStorage.setItem(READ, JSON.stringify(r)); } catch {} paintBadge(); }
 function unread() {
@@ -103,7 +109,7 @@ function unread() {
 }
 function paintBadge() {
   const b = $("dm-badge"); if (!b) return;
-  const n = unread();
+  const n = unread() + dmRequests(api.state.me).length;
   b.textContent = n > 9 ? "9+" : String(n);
   b.hidden = !n;
 }
@@ -133,7 +139,23 @@ async function paintInbox(list) {
   for (const m of mineOnly()) { const other = m.f === api.state.me ? m.t : m.f; if (!by.has(other) || by.get(other).at < m.at) by.set(other, m); }
   const convs = [...by.entries()].sort((a, b) => b[1].at - a[1].at), r = lastRead();
   list.replaceChildren();
-  if (!convs.length) { list.append(h("p", "status", "No messages yet. Tap someone's picture in Social and choose Message.")); return; }
+  // people asking to message this phone: yes or no
+  const reqs = dmRequests(api.state.me);
+  if (reqs.length) {
+    list.append(h("p", "label dm-reqh", "Message requests"));
+    for (const who of reqs) {
+      const row = h("div", "dm-row dm-req");
+      const av = api.avatarEl(46, "", nameOf(who)); api.showPicture(av, { by: who, user: nameOf(who), id: "" });
+      const mid = h("span", "dm-mid"); mid.append(h("b", "", nameOf(who)), h("small", "", "wants to message you"));
+      const yes = h("button", "btn small primary", "Accept"), no = h("button", "btn small", "Decline");
+      const go = (ok) => async () => { yes.disabled = no.disabled = true; if (!(await answerDm(who, ok))) toast("Couldn't save that. Try again."); else toast(ok ? `${nameOf(who)} can message you now` : "Declined"); paintInbox(list); paintBadge(); };
+      yes.onclick = go(true); no.onclick = go(false);
+      row.append(av, mid, yes, no);
+      list.append(row);
+    }
+    if (convs.length) list.append(h("p", "label dm-reqh", "Messages"));
+  }
+  if (!convs.length && !reqs.length) { list.append(h("p", "status", "No messages yet. Tap someone's picture in Social and choose Message.")); return; }
   for (const [other, last] of convs) {
     const row = h("button", "dm-row" + (last.t === api.state.me && last.at > (r[other] || 0) ? " unread" : ""));
     const av = api.avatarEl(46, "", nameOf(other)); api.showPicture(av, { by: other, user: nameOf(other), id: "" });
@@ -151,6 +173,13 @@ export async function openChat(other) {
   if (!other || !PHONE.test(other)) { toast("Can't message them yet: they need to open FifTeam Media once more."); return; }
   if (other === api.state.me) { toast("That's you"); return; }
   if (!api.state.name) { toast("Pick a username in Social first"); return; }
+  // their choice: messages from everyone, by request, or nobody
+  try { await api.ensureProfiles(); } catch {}
+  const st = dmState(api.state.me, other, talkedWith(other));
+  if (st !== "ok" && !wrote(other)) {
+    toast(st === "off" ? `${nameOf(other)} isn't taking messages.` : st === "requested" ? `You've asked to message ${nameOf(other)}. They haven't said yes yet.` : `${nameOf(other)} takes messages by request: tap Ask to message on their page.`, 3500);
+    return;
+  }
   D.chat = other;
   openSheet((p) => {
     p.classList.add("dm-panel");
@@ -199,6 +228,7 @@ async function send(other, text) {
   let sealed;
   try { await api.ensureProfiles(); sealed = await seal(other, text.slice(0, 500)); }
   catch { toast(`${nameOf(other)} needs to open FifTeam Media once more before you can message them.`); return; }
+  if (dmState(api.state.me, other, talkedWith(other)) === "off") { toast(`${nameOf(other)} isn't taking messages any more.`); return; }
   const m = { id: newId(), f: api.state.me, t: other, at: Date.now(), ...sealed };
   D.plain.set(m.id, text.slice(0, 500));
   D.msgs = [...D.msgs, { ...m, sending: true }];
