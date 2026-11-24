@@ -146,6 +146,10 @@ async function whoIs(target) {
   const name = phones.length ? (all[phones[0]] && all[phones[0]].name) || String(target) : String(target);
   return { phones, name, all };
 }
+// A phone that sent something in the last few seconds checks it again shortly after (in case another phone's copy of
+// the list landed on top of it) and puts it back if it's missing; so a removal is checked again a little later too.
+export const pending = new Set();
+function again(fn) { const t = setTimeout(async () => { try { await fn(); } catch (e) { log("second pass:", e.message); } pending.delete(t); }, 12000); pending.add(t); }
 export async function cmdPosts(user) {
   const f = await feedNow();
   let list = f.posts;
@@ -168,8 +172,10 @@ export async function cmdDeletePost(id) {
   id = String(id || "").trim();
   const f = await feedNow(), p = f.posts.find((x) => x.id === id);
   if (!p) return `There's no post \`${clean(id)}\`. /posts lists them.`;
-  await changeFeed((d) => { d.posts = d.posts.filter((x) => x.id !== id); }, (d) => !d.posts.some((x) => x.id === id));
+  const gone = (d) => { d.posts = d.posts.filter((x) => x.id !== id); }, ok = (d) => !d.posts.some((x) => x.id === id);
+  await changeFeed(gone, ok);
   await hook(`/messages/${id}`, { method: "DELETE" }).catch(() => {});
+  again(async () => { if (!ok(await feedNow())) await changeFeed(gone, ok); });
   return `Deleted **${clean(nameIn(f, p))}**'s post (${clean(what(p), 70)}). It's gone from everyone's feed the next time it refreshes.`;
 }
 export async function cmdDeleteComment(ref) {
@@ -177,7 +183,10 @@ export async function cmdDeleteComment(ref) {
   const f = await feedNow(), p = f.posts.find((x) => x.id === pid), c = p && (p.comments || []).find((x) => x.id === cid);
   if (!c) return `There's no comment \`${clean(ref)}\`. /comments lists them.`;
   const replies = (p.comments || []).filter((x) => x.re === cid).length;
-  await changeFeed((d) => { const q = d.posts.find((x) => x.id === pid); if (q) q.comments = q.comments.filter((x) => x.id !== cid && x.re !== cid); }, (d) => { const q = d.posts.find((x) => x.id === pid); return !q || !q.comments.some((x) => x.id === cid); });
+  const gone = (d) => { const q = d.posts.find((x) => x.id === pid); if (q) q.comments = q.comments.filter((x) => x.id !== cid && x.re !== cid); };
+  const ok = (d) => { const q = d.posts.find((x) => x.id === pid); return !q || !(q.comments || []).some((x) => x.id === cid); };
+  await changeFeed(gone, ok);
+  again(async () => { if (!ok(await feedNow())) await changeFeed(gone, ok); });
   return `Deleted **${clean(nameIn(f, c))}**'s comment "${clean(short(c.text || "", 60), 70)}"${replies ? ` and the ${replies} repl${replies === 1 ? "y" : "ies"} to it` : ""}.`;
 }
 export async function cmdPurge(user) {
@@ -187,11 +196,14 @@ export async function cmdPurge(user) {
   const posts = f.posts.filter(t).map((x) => x.id);
   let comments = 0; for (const p of f.posts) if (!posts.includes(p.id)) for (const c of p.comments || []) if (t(c)) comments++;
   if (!posts.length && !comments) return `**${clean(w.name)}** has no posts or comments.`;
-  await changeFeed((d) => {
+  const purge = (d) => {
     d.posts = d.posts.filter((x) => !t(x));
     for (const q of d.posts) { const gone = new Set(q.comments.filter(t).map((c) => c.id)); q.comments = q.comments.filter((c) => !gone.has(c.id) && !gone.has(c.re)); }
-  }, (d) => !d.posts.some(t) && !d.posts.some((q) => q.comments.some(t)));
+  };
+  const ok = (d) => !d.posts.some(t) && !d.posts.some((q) => (q.comments || []).some(t));
+  await changeFeed(purge, ok);
   for (const id of posts) await hook(`/messages/${id}`, { method: "DELETE" }).catch(() => {});
+  again(async () => { if (!ok(await feedNow())) await changeFeed(purge, ok); });
   return `Removed ${posts.length} post${posts.length === 1 ? "" : "s"} and ${comments} comment${comments === 1 ? "" : "s"} by **${clean(w.name)}**.`;
 }
 export async function cmdClearProfile(user) {

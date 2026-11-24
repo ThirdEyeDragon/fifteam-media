@@ -13,7 +13,7 @@ import { makeFile, sizeText } from "./export.js";
 import { myPublicKey, initDms } from "./dms.js";
 import { openProfile } from "./profile.js";
 import { loadMeta, votesOf, setVote, meta, canSee } from "./meta.js";
-import { bannedPhones, noPicPhones } from "./ban.js";
+import { bannedPhones, noPicPhones, checkBans } from "./ban.js";
 import { activityChanged, initActivity } from "./activity.js";
 
 const NAME_KEY = "fifteam-social-name", MINE_KEY = "fifteam-social-mine", ME_KEY = "fifteam-social-me", AV_KEY = "fifteam-social-avatar";
@@ -273,7 +273,9 @@ function syncProfile(force) {
     await config();
     const pr = S.profiles[S.me];
     let sent = ""; try { sent = localStorage.getItem(AV_KEY + "-sent") || ""; } catch {}
-    const needPic = S.avatar && !noPicPhones().has(S.me) && (force || !pr || !pr.av || sent !== (pr && pr.av));
+    let needPic = S.avatar && !noPicPhones().has(S.me) && (force || !pr || !pr.av || sent !== (pr && pr.av));
+    // (before sending a picture: the moderators' latest list, in case they've just taken this phone's down)
+    if (needPic) { await checkBans(); needPic = !noPicPhones().has(S.me); }
     const needName = S.name && pr && pr.name !== S.name;
     const pk = await myPublicKey(), needKey = pk && pr && pr.pk !== pk;
     if (!needPic && !needName && !needKey && pr) return;
