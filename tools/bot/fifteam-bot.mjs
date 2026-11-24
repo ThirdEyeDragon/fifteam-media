@@ -85,12 +85,15 @@ const changeBans = (fn, check) => changeMod((d) => fn(d.bans), (d) => check(d.ba
 // ---------------------------------------------------------------------------------------------------- the commands
 const clean = (s, n = 40) => String(s || "").slice(0, n).replace(/[\\*_~`|>#@<:\[\]()]/g, (c) => "\\" + c) || "(no username)";
 const ago = (t) => { const s = Math.max(0, (Date.now() - t) / 1000); return s < 60 ? "just now" : s < 3600 ? `${Math.floor(s / 60)} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : `${Math.floor(s / 86400)} d ago`; };
+/** Test phones (automated browsers say so when they check in; and the test usernames): never in the lists. */
+const isTest = (v) => !!(v && (v.t || /^FifTeam Test/i.test(v.n || v.name || "")));
 /** Everyone the app knows: phone id -> { name, device, v, at } (from the profiles and who's been online). */
 async function people() {
   const [feed, pres] = await Promise.all([readStore("index", "feed.json").catch(() => null), readStore("presence", "presence.json").catch(() => null)]);
   const out = {};
-  for (const [k, v] of Object.entries((feed && feed.profiles) || {})) if (PHONE.test(k)) out[k] = { name: v.name || "", at: 0, device: "", v: "" };
-  for (const [k, v] of Object.entries((pres && pres.on) || {})) if (PHONE.test(k)) out[k] = { ...(out[k] || {}), name: v.n || (out[k] && out[k].name) || "", device: v.d || "", v: v.v || "", at: +v.at || 0 };
+  const tests = new Set(Object.entries((pres && pres.on) || {}).filter(([, v]) => isTest(v)).map(([k]) => k));
+  for (const [k, v] of Object.entries((feed && feed.profiles) || {})) if (PHONE.test(k) && !tests.has(k) && !isTest(v)) out[k] = { name: v.name || "", at: 0, device: "", v: "" };
+  for (const [k, v] of Object.entries((pres && pres.on) || {})) if (PHONE.test(k) && !tests.has(k)) out[k] = { ...(out[k] || {}), name: v.n || (out[k] && out[k].name) || "", device: v.d || "", v: v.v || "", at: +v.at || 0 };
   return out;
 }
 /** The phones a /ban or /unban means: a phone id, or every phone that goes by that username. */

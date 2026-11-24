@@ -190,7 +190,7 @@ function cleanPresence(d) {
   const out = { v: 1, on: {} };
   const old = Date.now() - 183 * 86400e3;
   for (const [k, v] of Object.entries((d && d.on) || {}).slice(0, 5000)) if (PHONE.test(k) && v && +v.at > old)
-    out.on[k] = { n: String(v.n || "").slice(0, 24), d: String(v.d || "").slice(0, 60), v: String(v.v || "").slice(0, 12), at: +v.at };
+    out.on[k] = { n: String(v.n || "").slice(0, 24), d: String(v.d || "").slice(0, 60), v: String(v.v || "").slice(0, 12), at: +v.at, ...(v.t ? { t: 1 } : {}) };
   return out;
 }
 const presenceStore = jsonStore("presence", "presence.json", "FifTeam who's online", cleanPresence, true);
@@ -199,7 +199,7 @@ export async function heartbeat() {
   if (beating || document.visibilityState !== "visible" || !api.state.me || Date.now() - lastBeat < 4 * 60e3) return;
   beating = true;
   try {
-    const d = await deviceName(), me = api.state.me, entry = { n: api.state.name || "", d, v: APP_VERSION, at: Date.now() };
+    const d = await deviceName(), me = api.state.me, entry = { n: api.state.name || "", d, v: APP_VERSION, at: Date.now(), ...(navigator.webdriver ? { t: 1 } : {}) };
     await presenceStore.change((x) => { x.on[me] = entry; });
     lastBeat = Date.now();
   } catch {} finally { beating = false; }

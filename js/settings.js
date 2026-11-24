@@ -187,40 +187,6 @@ export function openSettings() {
       if (perm === "granted") toast("Message notifications on");
     };
 
-    // the bass separator: downloaded on the first rebass and kept (with the last few songs' separated basses)
-    const sepSec = el(`<div class="set-sec">
-      <div class="set-head"><svg><use href="#i-bass"/></svg>Bass separator<span class="pill" id="set-sep-pill">…</span></div>
-      <span class="status">51 MB, kept so rebassing works offline.</span>
-      <button class="btn small" id="set-sep-del" hidden>Remove from this phone</button>
-      <span class="status" id="set-light" hidden>This phone uses the lighter rebass (a rebass ran out of memory here).</span>
-      <button class="btn small" id="set-light-off" hidden>Try the full rebass again</button>
-    </div>`);
-    p.append(sepSec);
-    const paintSep = async () => {
-      let on = false;
-      try { on = (await (await caches.open("fifteam-sep-1")).keys()).length >= 3; } catch {}
-      const pill = $("set-sep-pill"); if (!pill) return;
-      pill.textContent = on ? "On this phone" : "Not downloaded"; pill.classList.toggle("on", on);
-      $("set-sep-del").hidden = !on;
-    };
-    paintSep();
-    const paintLight = () => {
-      let on = false; try { on = localStorage.getItem("fifteam-rebass-light") === "1"; } catch {}
-      $("set-light").hidden = $("set-light-off").hidden = !on;
-    };
-    paintLight();
-    sepSec.querySelector("#set-light-off").onclick = () => {
-      try { localStorage.removeItem("fifteam-rebass-light"); } catch {}
-      toast("The full rebass is back on. It starts with the next song you open.", 3000);
-      paintLight();
-    };
-    sepSec.querySelector("#set-sep-del").onclick = async () => {
-      try { await caches.delete("fifteam-sep-1"); } catch {}
-      try { indexedDB.deleteDatabase("fifteam-stems"); } catch {}
-      paintSep();
-      toast("Removed. It downloads again the next time you rebass.", 2600);
-    };
-
     p.append(el(`<p class="set-foot">FifTeam Media ${APP_VERSION}<br>Developed by Levi Newman</p>`));
   });
 }

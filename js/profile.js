@@ -130,7 +130,7 @@ function paint() {
     if (!media.length) { box.append(h("p", "status pf-none", self ? "Pictures and videos you post show up here." : "No pictures or videos yet.")); return; }
     const grid = h("div", "pf-grid");
     for (const x of media) {
-      const tile = h("button", "pf-tile" + (x.video ? " vid" : "")); tile.setAttribute("aria-label", x.text ? x.text.slice(0, 60) : x.video ? "A video" : "A picture");
+      const tile = h("button", "pf-tile" + (x.video ? " vid" : "") + (x.music ? " mus" : "")); tile.setAttribute("aria-label", x.text ? x.text.slice(0, 60) : x.video ? "A video" : "A picture");
       tile.onclick = () => api.openViewer({ post: x });   // (watched right here, over their page)
       api.message(x.id).then((m) => { const f = api.fileOf(m, x.video ? "poster.jpg" : "picture.jpg"); if (f) tile.style.backgroundImage = `url("${f.url}")`; }).catch(() => {});
       grid.append(tile);

@@ -128,7 +128,8 @@ function clean(list) {
       ? { id: c.id, by: /^[a-z0-9]{6,16}$/.test(c.by) ? c.by : "", user: str(c.user, 24) || "someone", text: str(c.text, 300), at: +c.at || 0,
           re: /^[a-z0-9]{6,20}$/.test(c.re) ? c.re : "", likes: Array.isArray(c.likes) ? [...new Set(c.likes.filter((x) => typeof x === "string" && /^[a-z0-9]{6,16}$/.test(x)))].slice(0, 2000) : [] } : null)).filter(Boolean);
     const video = p.video === "mp4" || p.video === "webm" ? p.video : "";
-    return { id: p.id, at: +p.at || 0, user: str(p.user, 24) || "someone", text: str(p.text, 500), image: !!p.image, avatar: !!p.avatar, song: s, likes, by: /^[a-z0-9]{6,16}$/.test(p.by) ? p.by : "", video, comments };
+    const music = p.image && p.music && typeof p.music === "object" ? { title: str(p.music.title, 120) || "Music", artist: str(p.music.artist, 80), len: Math.max(1, Math.min(60, +p.music.len || 0)) } : null;
+    return { id: p.id, at: +p.at || 0, user: str(p.user, 24) || "someone", text: str(p.text, 500), image: !!p.image, avatar: !!p.avatar, song: s, likes, by: /^[a-z0-9]{6,16}$/.test(p.by) ? p.by : "", video, comments, music };
   }).filter(Boolean);
 }
 /** A post's message (for its picture and song links), fetched once per load, a couple at a time. */
@@ -398,6 +399,7 @@ function postCard(p) {
   who.append(av, nm); head.append(who);
   if (S.mine.has(p.id)) { const d = h("button", "so-more"); d.setAttribute("aria-label", "More"); d.append(icon("i-more")); d.onclick = () => postMenu(p); head.append(d); }
   card.append(head);
+  if (p.music) card.append(musicRow(p));
   if (p.text) card.append(h("p", "so-text", p.text));
   let img = null, song = null, vid = null;
   if (p.image) { img = h("div", "so-img so-wait"); card.append(img); }
@@ -701,6 +703,7 @@ function paintPlay() {
   });
 }
 async function playSong(p, block) {
+  stopClip();
   if (!S.audio) { S.audio = new Audio(); S.audio.onended = () => { S.playing = null; paintPlay(); }; }
   if (S.playing === p.id) { S.audio.pause(); S.playing = null; paintPlay(); return; }
   const btn = block.querySelector(".so-play");
@@ -714,6 +717,42 @@ async function playSong(p, block) {
     await S.audio.play();
   } catch { toast("Couldn't play that song. Are you online?"); S.playing = null; }
   paintPlay();
+}
+// ---------------------------------------------------------------------------------------------------- a picture's music
+/** "♪ Title · Artist" under the poster's name: tap to play the clip (it loops), again to stop. */
+function musicRow(p) {
+  const mu = h("button", "so-music"); mu.dataset.id = p.id; mu.setAttribute("aria-label", `Play the music: ${p.music.title}`);
+  mu.append(icon(S.clipOn === p.id ? "i-pause" : "i-play"), h("span", "so-mt", `♪ ${p.music.title}${p.music.artist ? " · " + p.music.artist : ""}`), h("span", "so-eq", ""));
+  mu.onclick = (e) => { e.stopPropagation(); playClip(p); };
+  if ("IntersectionObserver" in window) {
+    S.clipObs = S.clipObs || new IntersectionObserver((es) => { for (const x of es) if (!x.isIntersecting && x.target.dataset.id === S.clipOn && !$("viewer")) stopClip(); }, { threshold: 0 });
+    S.clipObs.observe(mu);
+  }
+  return mu;
+}
+async function clipUrl(p) {
+  S.clips = S.clips || new Map();
+  if (S.clips.has(p.id)) return S.clips.get(p.id);
+  const m = await message(p.id), f = fileOf(m, "music.mp4");
+  if (!f) throw new Error("no music");
+  const r = await fetch(f.url, { cache: "no-store" });
+  if (!r.ok) throw new Error("download");
+  const u = URL.createObjectURL(new Blob([unscramble(await r.arrayBuffer())], { type: "audio/mpeg" }));
+  S.clips.set(p.id, u);
+  return u;
+}
+function paintClips() {
+  document.querySelectorAll(".so-music").forEach((b) => { const on = b.dataset.id === S.clipOn; b.classList.toggle("on", on); const u = b.querySelector("use"); if (u) u.setAttribute("href", on ? "#i-pause" : "#i-play"); });
+}
+function stopClip() { if (S.clip) S.clip.pause(); if (S.clipOn) { S.clipOn = null; paintClips(); } }
+async function playClip(p, keepOn) {
+  if (S.clipOn === p.id && !keepOn) { stopClip(); return; }
+  stopSong(); pauseVideos(); try { player.pause(); } catch {}
+  if (!S.clip) { S.clip = new Audio(); S.clip.loop = true; }
+  S.clipOn = p.id; paintClips();
+  try { S.clip.src = await clipUrl(p); if (S.clipOn === p.id) await S.clip.play(); }
+  catch { if (S.clipOn === p.id) { S.clipOn = null; toast("Couldn't play the music. Are you online?"); } }
+  paintClips();
 }
 function stopSong() { if (S.audio && S.playing) { S.audio.pause(); S.playing = null; paintPlay(); } }
 async function addToLibrary(p, block, btn) {
@@ -749,6 +788,7 @@ async function openViewer({ post, src }) {
   }
   v.onclick = (e) => { if (e.target === v || e.target === stage) closeViewer(); };
   document.body.append(v);
+  document.body.classList.add("viewing");   // (nothing behind it shows: the app and any open page are hidden meanwhile)
   addEventListener("keydown", viewerKey);
   stage.append(h("div", "viewer-spin"));
   try {
@@ -768,6 +808,7 @@ async function openViewer({ post, src }) {
       if (!url) throw new Error("gone");
       const i = h("img", ""); i.alt = (post && post.text) ? post.text.slice(0, 80) : "Picture"; i.decoding = "async"; i.src = url;
       stage.replaceChildren(i);
+      if (post && post.music) { stage.append(musicRow(post)); playClip(post, true); }
     }
   } catch { stage.replaceChildren(h("p", "status", "Couldn't load that. Are you online?")); }
 }
@@ -777,6 +818,8 @@ function closeViewer() {
   removeEventListener("keydown", viewerKey);
   v.querySelectorAll("video").forEach((x) => { x.pause(); x.removeAttribute("src"); x.load(); });
   v.remove();
+  document.body.classList.remove("viewing");
+  stopClip();
 }
 
 // ---------------------------------------------------------------------------------------------------- videos
@@ -871,7 +914,7 @@ async function prepareVideo(file, budget, say) {
 /** The new-post sheet. preset: { text, img, song: { title, artist, note, duration, cover (Blob), encode(kbps) -> File } } */
 function composer(preset) {
   if (!S.name) { toast("Pick a username first"); S.editingName = true; render(); setTimeout(() => { const i = document.querySelector("#so-body .so-nameform input"); if (i) i.focus(); }, 100); return; }
-  let img = preset.img || null, song = preset.song || null, video = preset.video || null;
+  let img = preset.img || null, song = preset.song || null, video = preset.video || null, music = preset.music || null;
   preset = { ...preset };
   openSheet((p) => {
     p.append(h("h3", "", "New post"));
@@ -880,7 +923,20 @@ function composer(preset) {
     const prev = h("div", "stack-sm");
     const paint = () => {
       prev.replaceChildren();
-      if (img) { const i = h("img", "so-img"); i.src = URL.createObjectURL(img); const x = h("button", "btn small", "Remove picture"); x.onclick = () => { img = null; paint(); }; prev.append(i, x); }
+      if (img) {
+        const i = h("img", "so-img"); i.src = URL.createObjectURL(img);
+        const x = h("button", "btn small", "Remove picture"); x.onclick = () => { img = null; music = null; paint(); };
+        // music on the picture: a part of a song from the library
+        const mb = h("button", "btn small so-addmusic"); mb.append(h("span", "", "♪"), music ? "Change music" : "Add music");
+        mb.onclick = () => pickMusic((m) => { music = m; composer({ img, song, music, text: text.value }); }, () => composer({ img, song, music, text: text.value }));
+        const row = h("div", "row wrap"); row.append(mb, x);
+        prev.append(i, row);
+        if (music) {
+          const chip = h("div", "so-mchip"); chip.append(h("span", "", `♪ ${music.track.title}${music.track.artist ? " · " + music.track.artist : ""} · ${fmtTime(music.start)}–${fmtTime(music.start + music.len)}`));
+          const rm = h("button", "cs-x", "×"); rm.setAttribute("aria-label", "No music"); rm.onclick = () => { music = null; paint(); };
+          chip.append(rm); prev.append(chip);
+        }
+      }
       if (video) {
         const v = document.createElement("video"); v.className = "so-img"; v.src = URL.createObjectURL(video.file); v.muted = true; v.playsInline = true; v.controls = true;
         const x = h("button", "btn small", "Remove video"); x.onclick = () => { video = null; paint(); };
@@ -905,14 +961,14 @@ function composer(preset) {
       } catch { toast("This phone can't play that video."); }
     };
     const as = h("button", "btn small"); as.append(icon("i-bass"), "Rebassed song");
-    as.onclick = () => { if (video) { toast("A post can have a video or a song"); return; } pickRebass((s) => composer({ song: s, text: text.value, img })); };
+    as.onclick = () => { if (video) { toast("A post can have a video or a song"); return; } pickRebass((s) => composer({ song: s, text: text.value, img, music })); };
     addRow.append(ai, av, as);
     const err = h("p", "set-err"), go = h("button", "btn primary block", "Post");
     go.onclick = async () => {
       if (!img && !song && !video && !text.value.trim()) { err.textContent = "Write something, or add a picture, a video or a song."; return; }
       go.disabled = true; err.textContent = "";
       try {
-        await post(text.value.trim(), img, song, (msg) => { go.textContent = msg; }, video);
+        await post(text.value.trim(), img, song, (msg) => { go.textContent = msg; }, video, img ? music : null);
         closeSheet(); toast("Posted"); render(); $("view-social").scrollTop = 0;
       } catch (e) { err.textContent = e.message === "setup" ? "FifTeam Social isn't switched on yet." : e.message || "Couldn't post."; go.disabled = false; go.textContent = "Post"; }
     };
@@ -923,6 +979,81 @@ function composer(preset) {
 }
 function pickAny(accept = "image/*") {
   return new Promise((res) => { const i = document.createElement("input"); i.type = "file"; i.accept = accept; i.onchange = () => res(i.files && i.files[0]); i.addEventListener("cancel", () => res(null)); i.click(); });
+}
+/** Music for a picture: a song or rebass from the library, then which part (15 or 30 seconds), heard before choosing. */
+function pickMusic(done, back) {
+  const list = library.all().filter((t) => (t.kind || "song") !== "tone").sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }));
+  openSheet((p) => {
+    p.append(h("h3", "", "Add music"));
+    if (!list.length) { p.append(h("p", "status", "Your library has no songs yet. Add some on the Library tab.")); const b = h("button", "btn block", "Back"); b.onclick = back; p.append(b); return; }
+    const q = h("input", "input"); q.type = "search"; q.placeholder = "Search your songs"; q.setAttribute("aria-label", "Search your songs");
+    const ul = h("ul", "list so-mlist");
+    const fill = () => {
+      ul.replaceChildren();
+      const w = q.value.trim().toLowerCase();
+      for (const t of list.filter((t) => !w || `${t.title} ${t.artist || ""}`.toLowerCase().includes(w)).slice(0, 200)) {
+        const li = h("li", "item"), th = h("div", "thumb");
+        (async () => { let u = null; if (t.hasArt) u = artUrl(t.id, await store.getArt(t.id)); th.style.backgroundImage = `url("${u || placeholderArt(t.title, t.kind || "song")}")`; })();
+        const m = h("div", "meta"); m.append(h("div", "t", t.title), h("div", "a", [t.kind === "rebass" ? "Rebass" : t.artist || "", fmtTime(t.duration)].filter(Boolean).join(" · ")));
+        li.append(th, m);
+        li.onclick = () => pickPart(t, done, () => pickMusic(done, back));
+        ul.append(li);
+      }
+    };
+    q.oninput = fill; fill();
+    const b = h("button", "btn small", "Back"); b.onclick = back;
+    p.append(q, ul, b);
+  });
+}
+function pickPart(t, done, back) {
+  const dur = Math.max(1, t.duration || 0);
+  let len = Math.min(30, dur), start = Math.max(0, Math.min(dur - len, dur * 0.3));
+  const au = new Audio(); let url = null, stopAt = 0;
+  const stop = () => { au.pause(); clearTimeout(stopAt); };
+  openSheet((p) => {
+    p.append(h("h3", "", "Which part?"));
+    p.append(h("p", "status", `${t.title}${t.artist ? " · " + t.artist : ""}`));
+    const seg = h("div", "seg");
+    for (const n of [15, 30]) { const b = h("button", "", `${n} seconds`); b.dataset.n = n; b.disabled = n > dur + 0.5 && n !== 15; seg.append(b); }
+    const range = h("input", ""); range.type = "range"; range.min = "0"; range.step = "0.5"; range.setAttribute("aria-label", "Where the part starts");
+    const lab = h("div", "row between so-plab");
+    const paint = () => {
+      len = Math.min(len, dur); start = Math.max(0, Math.min(start, dur - len));
+      range.max = String(Math.max(0, dur - len)); range.value = String(start); range.disabled = dur <= len;
+      seg.querySelectorAll("button").forEach((b) => b.classList.toggle("on", +b.dataset.n === len || (len < 15 && b.dataset.n === "15")));
+      lab.replaceChildren(h("span", "", `${fmtTime(start)} – ${fmtTime(start + len)}`), h("span", "status", `of ${fmtTime(dur)}`));
+    };
+    seg.onclick = (e) => { const b = e.target.closest("button"); if (!b || b.disabled) return; len = Math.min(+b.dataset.n, dur); paint(); };
+    range.oninput = () => { start = +range.value; paint(); };
+    const hear = h("button", "btn small"); hear.append(icon("i-play"), "Hear it");
+    hear.onclick = async () => {
+      try {
+        if (!url) { const blob = await store.getBlob(t.id); if (!blob) throw new Error("missing"); url = URL.createObjectURL(blob); au.src = url; }
+        stop(); player.pause(); stopSong(); stopClip();
+        au.currentTime = start; await au.play();
+        stopAt = setTimeout(stop, len * 1000);
+      } catch { toast("Couldn't play that song"); }
+    };
+    const use = h("button", "btn primary block", "Use this part");
+    use.onclick = () => { stop(); done({ track: t, start, len }); };
+    const b = h("button", "btn small", "Back"); b.onclick = () => { stop(); back(); };
+    const row = h("div", "row"); row.append(hear, b);
+    p.append(seg, range, lab, row, use);
+    paint();
+  });
+}
+/** The part of a library song chosen for a picture, as an MP3 (128 kb/s, a short fade at each end). */
+async function clipMp3(m) {
+  const blob = await store.getBlob(m.track.id);
+  if (!blob) throw new Error("That song's audio is missing.");
+  const ctx = getCtx(), buf = await ctx.decodeAudioData(await blob.arrayBuffer());
+  const sr = buf.sampleRate, i0 = Math.floor(m.start * sr), n = Math.min(buf.length - i0, Math.floor(m.len * sr)), fade = Math.min(Math.floor(0.4 * sr), Math.floor(n / 4));
+  const chs = [0, buf.numberOfChannels > 1 ? 1 : 0].map((c) => {
+    const x = buf.getChannelData(c).slice(i0, i0 + n);
+    for (let i = 0; i < fade; i++) { const g = i / fade; x[i] *= g; x[n - 1 - i] *= g; }
+    return x;
+  });
+  return (await makeFile(chs, sr, m.track.title, "mp3", ctx, null, { title: m.track.title, artist: m.track.artist || "", album: "FifTeam Social", kbps: 128 })).file;
 }
 /** One of the rebasses in the library. */
 function pickRebass(done) {
@@ -951,10 +1082,15 @@ async function libraryMp3(t, kbps) {
   const chs = [buf.getChannelData(0), buf.numberOfChannels > 1 ? buf.getChannelData(1) : buf.getChannelData(0)];
   return (await makeFile(chs, buf.sampleRate, t.title, "mp3", ctx, null, { title: t.title, artist: t.artist || "", album: "FifTeam Social", kbps })).file;
 }
-async function post(text, img, song, say, video) {
+async function post(text, img, song, say, video, music) {
   await config();
   const files = [];
   if (img) files.push(["picture.jpg", img]);
+  if (img && music) {
+    say("Getting the music ready…");
+    let clip; try { clip = await clipMp3(music); } catch { throw new Error("Couldn't read that song for the music. Try another one."); }
+    files.push(["music.mp4", await scramble(clip)]);
+  }
   let vtype = "";
   if (video) {
     const v = await prepareVideo(video.file, MAX_MSG - 160 * 1024, say);
@@ -974,10 +1110,11 @@ async function post(text, img, song, say, video) {
     files.push(["song.mp4", await scramble(f)]);
   }
   say(files.length ? `Uploading (${sizeText(files.reduce((a, [, b]) => a + b.size, 0))})…` : "Posting…");
-  const entry = { at: Date.now(), user: S.name, text: text.slice(0, 500), image: !!img, video: vtype, comments: [], avatar: false, by: S.me, likes: [], song: song ? { title: song.title.slice(0, 120), artist: (song.artist || "").slice(0, 80), note: (song.note || "").slice(0, 80), duration: Math.round(song.duration || 0) } : null };
+  const entry = { at: Date.now(), user: S.name, text: text.slice(0, 500), image: !!img, video: vtype, ...(img && music ? { music: { title: music.track.title.slice(0, 120), artist: (music.track.artist || "").slice(0, 80), len: Math.round(music.len) } } : {}), comments: [], avatar: false, by: S.me, likes: [], song: song ? { title: song.title.slice(0, 120), artist: (song.artist || "").slice(0, 80), note: (song.note || "").slice(0, 80), duration: Math.round(song.duration || 0) } : null };
   // the post's own message
   const lines = [`**${S.name}**`];
   if (entry.text) lines.push(entry.text);
+  if (entry.music) lines.push(`♪ ${entry.music.title}${entry.music.artist ? " · " + entry.music.artist : ""}`);
   if (entry.song) lines.push(`🎵 ${entry.song.title}${entry.song.artist ? " · " + entry.song.artist : ""}${entry.song.note ? " · " + entry.song.note : ""}`);
   const f = new FormData();
   f.append("payload_json", JSON.stringify({
@@ -1094,8 +1231,8 @@ function pullToRefresh() {
 }
 
 export function initSocial() {
-  bus.on("view", (v) => { if (v === "social") refresh(); else { stopSong(); pauseVideos(); } });
-  bus.on("music-playing", () => { stopSong(); if (!S.muted) setMuted(true); });
+  bus.on("view", (v) => { if (v === "social") refresh(); else { stopSong(); stopClip(); pauseVideos(); } });
+  bus.on("music-playing", () => { stopSong(); stopClip(); if (!S.muted) setMuted(true); });
   // a rebass made just now, posted from the Rebass screen
   bus.on("social-post", (song) => { location.hash = "#social"; setTimeout(() => composer({ song }), 50); });
   pullToRefresh();

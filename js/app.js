@@ -2,11 +2,11 @@
 import { $, bus, toast } from "./ui.js";
 import { player } from "./player.js";
 
-export const APP_VERSION = "2.7.1";
+export const APP_VERSION = "2.8";
 import * as store from "./store.js";
 import { initPlayer } from "./player.js";
 import { initLibrary, library, importFiles, openCode } from "./library.js";
-import { initRebass, rebass } from "./rebass.js";
+import { initRebass, rebass, checkLight } from "./rebass.js";
 import { initTones } from "./tones.js";
 import { initSettings } from "./settings.js";
 import { initDemo } from "./demo.js";
@@ -26,7 +26,32 @@ function route() {
   bus.emit("view", v);
 }
 
+/** The top bar (the name, your picture, the bell, messages, settings) slides away while scrolling down, to show more of
+ * the screen, and comes straight back at the smallest scroll up (or at the top). It sits over the screens, which keep
+ * its height clear at their top. */
+function topBar() {
+  const top = document.querySelector(".top");
+  if (!top) return;
+  const fit = () => document.documentElement.style.setProperty("--top-h", top.offsetHeight + "px");
+  fit();
+  if ("ResizeObserver" in window) new ResizeObserver(fit).observe(top); else addEventListener("resize", fit);
+  const last = new WeakMap();
+  const show = (on) => top.classList.toggle("hide", !on);
+  document.addEventListener("scroll", (e) => {
+    const v = e.target;
+    if (!(v instanceof Element) || !v.classList.contains("view") || !v.classList.contains("active")) return;
+    const y = v.scrollTop, prev = last.has(v) ? last.get(v) : y;
+    last.set(v, y);
+    top.classList.toggle("solid", y > 4);
+    if (y < 40) show(true);
+    else if (y - prev > 4) show(false);
+    else if (prev - y > 0.5) show(true);
+  }, { capture: true, passive: true });
+  bus.on("view", (name) => { show(true); const v = $("view-" + name); top.classList.toggle("solid", !!v && v.scrollTop > 4); });
+}
+
 async function boot() {
+  topBar();
   initBan();
   // (the download page offers "Open" rather than "Download" on a phone that has the app)
   try { if (matchMedia("(display-mode: standalone)").matches || navigator.standalone) localStorage.setItem("fifteam-installed", "1"); } catch {}
@@ -34,6 +59,7 @@ async function boot() {
   initPlayer();
   initLibrary();
   initRebass();
+  checkLight(APP_VERSION);
   initTones();
   initSettings();
   initDemo();

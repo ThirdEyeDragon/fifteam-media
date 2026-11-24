@@ -11,7 +11,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export async function browser({ flags = [], profile } = {}) {
   const port = 9600 + Math.floor(Math.random() * 300);
   const prof = profile || mkdtempSync(join(tmpdir(), "ft-"));
-  const proc = spawn(EDGE, ["--headless=new", `--remote-debugging-port=${port}`, `--user-data-dir=${prof}`, "--no-first-run",
+  const proc = spawn(EDGE, ["--headless=new", `--remote-debugging-port=${port}`, `--user-data-dir=${prof}`, "--no-first-run", "--enable-automation",
     "--autoplay-policy=no-user-gesture-required", "--window-size=390,844", ...flags, "about:blank"], { stdio: "ignore" });
   let page;
   for (let i = 0; i < 80 && !page; i++) { await sleep(200); try { page = (await (await fetch(`http://127.0.0.1:${port}/json`)).json()).find((t) => t.type === "page"); } catch {} }

@@ -257,9 +257,9 @@ async function send(other, text) {
 // look for them: open, or in the background before the phone puts it to sleep.
 const NOTIFY = "fifteam-dm-notify", TOLD = "fifteam-dm-told";
 export const canNotify = () => "Notification" in window;
-export const notifyOn = () => { try { return localStorage.getItem(NOTIFY) === "1" && canNotify() && Notification.permission === "granted"; } catch { return false; } };
+export const notifyOn = () => { try { return notifyWanted() && canNotify() && Notification.permission === "granted"; } catch { return false; } };
 export function setNotify(on) { try { localStorage.setItem(NOTIFY, on ? "1" : "0"); } catch {} }
-export const notifyWanted = () => { try { return localStorage.getItem(NOTIFY) === "1"; } catch { return false; } };
+export const notifyWanted = () => { try { return localStorage.getItem(NOTIFY) !== "0"; } catch { return true; } };
 async function tellNew() {
   const me = api.state.me, incoming = mineOnly().filter((m) => m.t === me && m.f !== me);
   let told = null; try { told = JSON.parse(localStorage.getItem(TOLD) || "null"); } catch {}
@@ -290,6 +290,13 @@ export function initDms() {
   setTimeout(tick, 2500);
   setInterval(tick, 45000);
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") tick(); });
+  // on by default: the phone's own question, once, at the first tap in the app (it only allows asking after a tap)
+  try {
+    if (canNotify() && Notification.permission === "default" && notifyWanted() && !localStorage.getItem(NOTIFY + "-asked")) {
+      const ask = () => { removeEventListener("click", ask, true); try { localStorage.setItem(NOTIFY + "-asked", "1"); } catch {} Notification.requestPermission().catch(() => {}); };
+      addEventListener("click", ask, true);
+    }
+  } catch {}
   // a tap on a message notification: that conversation
   if ("serviceWorker" in navigator) navigator.serviceWorker.addEventListener("message", (e) => { if (e.data && e.data.type === "open-dm" && PHONE.test(e.data.dm)) { location.hash = "#social"; openChat(e.data.dm); } });
   const want = new URLSearchParams(location.search).get("dm");

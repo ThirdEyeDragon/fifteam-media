@@ -57,6 +57,16 @@ try {
   if (localStorage.getItem(BUSY_KEY)) { localStorage.setItem(LIGHT_KEY, "1"); localStorage.removeItem(BUSY_KEY); }
   light = localStorage.getItem(LIGHT_KEY) === "1";
 } catch {}
+/** The lighter rebass, if this phone ran out of memory with the full one: a new version of the app (told here when it
+ * starts) tries the full one again, as it may well fit now. */
+export function checkLight(version) {
+  try {
+    const was = localStorage.getItem(LIGHT_KEY + "-v");
+    if (!light) { localStorage.removeItem(LIGHT_KEY + "-v"); return; }
+    if (!was) localStorage.setItem(LIGHT_KEY + "-v", version);
+    else if (was !== version) { localStorage.removeItem(LIGHT_KEY); localStorage.removeItem(LIGHT_KEY + "-v"); light = false; }
+  } catch {}
+}
 const busyMark = (on) => { try { on ? localStorage.setItem(BUSY_KEY, String(Date.now())) : localStorage.removeItem(BUSY_KEY); } catch {} };
 /** The rebass as heard and saved: the intro (if it's on and ready) and then the song. Returns { ob, k } (k: intro samples). */
 function compose(L, R, sr) {

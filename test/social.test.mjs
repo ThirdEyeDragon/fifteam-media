@@ -154,6 +154,7 @@ try {
   for (let i = 0; i < 40 && !storeNow(PRES).on[meNow]; i++) await sleep(250);
   console.log("who's online:", JSON.stringify(storeNow(PRES).on[meNow]));
   check(!!storeNow(PRES).on[meNow] && /^2\.\d/.test(storeNow(PRES).on[meNow].v) && storeNow(PRES).on[meNow].d.length > 3, "this phone shows as online, with its device");
+  check(storeNow(PRES).on[meNow].t === 1, "a test browser marks itself (so the owner's /online and /devices leave it out)");
   console.log("profile picture kept on the phone:", await ev(`localStorage.getItem('fifteam-social-avatar').length + ' characters'`));
   const meId = await ev(`localStorage.getItem('fifteam-social-me')`);
   for (let i = 0; i < 40 && !(profilesNow()[meId] && profilesNow()[meId].av); i++) await sleep(200);
@@ -300,9 +301,9 @@ try {
     // Alice switches message notifications on, in Settings
     await send("Browser.grantPermissions", { permissions: ["notifications"], origin: `http://127.0.0.1:${port}` });
     await ev(`document.getElementById('btn-settings').click(), 1`); await sleep(400);
-    await ev(`document.getElementById('set-nt').click(), 1`); await sleep(600);
+    await sleep(300);   // (on by default: nothing to switch, the phone said yes)
     console.log("notifications setting:", await ev(`document.getElementById('set-nt-pill').textContent + ' | ' + document.getElementById('set-nt-why').textContent`));
-    check((await ev(`document.getElementById('set-nt').checked && localStorage.getItem('fifteam-dm-notify') === '1'`)), "message notifications switched on");
+    check((await ev(`document.getElementById('set-nt').checked && localStorage.getItem('fifteam-dm-notify') === null`)), "message notifications on by default");
     await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
     // a private message: from the other phone to Alice, by tapping her picture
     await other.ev(`localStorage.setItem('fifteam-social-name', 'Ben'), 1`); await other.open(`http://127.0.0.1:${port}/?again#social`, 3500);
@@ -663,6 +664,58 @@ try {
   await until(`!!document.querySelector('#viewer img') && document.querySelector('#viewer img').naturalWidth > 0`, 8000, "a picture full screen");
   console.log("a feed picture, tapped:", await ev(`document.querySelector('#viewer .viewer-foot').textContent`));
   await ev(`document.querySelector('#viewer .viewer-x').click(), 1`); await sleep(300);
+
+  // music on a picture: a part of a song from her library, chosen and heard before posting; it plays in the feed
+  await ev(`document.querySelector('#so-body .so-qbtn').click(), 1`);   // (Photo: straight to choosing a picture)
+  await sleep(300);
+  {
+    await send("Page.setInterceptFileChooserDialog", { enabled: true });
+    const ch = new Promise((res) => b.on((m) => { if (m.method === "Page.fileChooserOpened") res(m.params); }));
+    await ev(`[...document.querySelectorAll('#sheet-panel .btn')].find(x => x.textContent.includes('Picture')).click(), 1`);
+    const fc = await ch;
+    await send("DOM.setFileInputFiles", { backendNodeId: fc.backendNodeId, files: [avPng] });
+    await send("Page.setInterceptFileChooserDialog", { enabled: false });
+  }
+  await until(`!!document.querySelector('#sheet-panel .so-addmusic')`, 6000, "Add music, once there's a picture");
+  await ev(`document.querySelector('#sheet-panel .so-addmusic').click(), 1`); await sleep(400);
+  console.log("music to choose from:", await ev(`[...document.querySelectorAll('#sheet-panel .so-mlist .t')].map(t => t.textContent).join(', ')`));
+  await ev(`[...document.querySelectorAll('#sheet-panel .so-mlist .item')].find(li => li.textContent.includes('Test Rebass')).click(), 1`); await sleep(400);
+  await ev(`document.querySelector('#sheet-panel .seg button[data-n="15"]').click(), 1`);
+  await ev(`(() => { const r = document.querySelector('#sheet-panel input[type=range]'); r.value = 5; r.dispatchEvent(new Event('input')); return 1; })()`);
+  console.log("the part:", await ev(`document.querySelector('#sheet-panel .so-plab').textContent`));
+  await ev(`[...document.querySelectorAll('#sheet-panel .btn')].find(x => x.textContent.includes('Hear it')).click(), 1`); await sleep(600);
+  await ev(`[...document.querySelectorAll('#sheet-panel .btn')].find(x => x.textContent === 'Use this part').click(), 1`); await sleep(500);
+  console.log("in the new post:", await ev(`document.querySelector('#sheet-panel .so-mchip').textContent`));
+  await ev(`(() => { document.querySelector('#sheet-panel textarea').value = 'Pic with music'; return 1; })()`);
+  const nPosted = posted.length;
+  await ev(`[...document.querySelectorAll('#sheet-panel .btn')].find(x => x.textContent === 'Post').click(), 1`);
+  await until(`[...document.querySelectorAll('#so-body .so-post')].some(p => p.textContent.includes('Pic with music')) || !!(document.querySelector('#sheet-panel .set-err') || {}).textContent`, 30000, "the picture with music posted");
+  const perr = await ev(`(document.querySelector('#sheet.open #sheet-panel .set-err') || {}).textContent || ''`); if (perr) console.log("posting said:", perr);
+  const pm = posted.slice(nPosted).find((x) => x.payload.content && x.payload.content.includes("Pic with music"));
+  const mus = pm && pm.files.find(([n]) => n === "music.mp4");
+  const entry = feedNow().find((x) => x.text === "Pic with music") || {};
+  console.log("posted:", pm ? pm.files.map(([n, b2]) => `${n} ${b2.length} bytes`).join(", ") : "nothing", "| on the feed:", JSON.stringify(entry.music), "| in the channel:", pm && pm.payload.content.split("\n").slice(-1)[0]);
+  check(mus && mus[1].subarray(0, 4).toString() === "FTS1" && entry.music && entry.music.len === 3 && entry.music.title === "Test Rebass", "the music clip went up with the picture (15 seconds asked, the whole 3-second song)");
+  const mcard = `[...document.querySelectorAll('#so-body .so-post')].find(p => p.textContent.includes('Pic with music'))`;
+  await ev(`${mcard}.querySelector('.so-music').click(), 1`);
+  await until(`${mcard}.querySelector('.so-music').classList.contains('on')`, 8000, "the music playing");
+  await sleep(800);
+  const playing = await ev(`import('./js/social.js').then((m) => { const a = m.social.state.clip; return !!a && !a.paused && a.currentTime > 0.2; })`);
+  console.log("the music, tapped:", await ev(`${mcard}.querySelector('.so-music').textContent`), "| playing:", playing);
+  check(playing, "the picture's music plays in the feed");
+  await shot("d18_music");
+  await ev(`${mcard}.querySelector('.so-music').click(), 1`); await sleep(300);
+  check(await ev(`import('./js/social.js').then((m) => m.social.state.clip.paused)`), "and stops again");
+
+  // the top bar slides away scrolling down, and comes back at the smallest scroll up
+  await ev(`(() => { const v = document.getElementById('view-social'); v.scrollTop = 0; return 1; })()`); await sleep(300);
+  await ev(`(() => { const v = document.getElementById('view-social'); let y = 0; const step = () => { y += 40; v.scrollTop = y; if (y < 400) requestAnimationFrame(step); }; step(); return 1; })()`); await sleep(900);
+  const hidden = await ev(`document.querySelector('.top').classList.contains('hide')`);
+  await ev(`(() => { const v = document.getElementById('view-social'); v.scrollTop = v.scrollTop - 2; return 1; })()`); await sleep(400);
+  const back = await ev(`!document.querySelector('.top').classList.contains('hide')`);
+  console.log("top bar: scrolled down, hidden:", hidden, "| 2 px back up, shown:", back);
+  check(hidden && back, "the top bar hides scrolling down and comes back at once scrolling up");
+  await ev(`document.getElementById('view-social').scrollTop = 0, 1`);
 
   // speed: opened again, the posts' files come from what the phone remembers (no request per post), pictures from its cache
   check(Object.keys(JSON.parse(await ev(`localStorage.getItem('fifteam-links') || '{}'`))).length >= 2, "file links remembered on the phone");

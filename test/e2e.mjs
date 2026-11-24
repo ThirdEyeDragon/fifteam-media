@@ -346,7 +346,7 @@ await shot("09_library_rebassed");
 
 // settings: set a password and lock the app
 await click('#btn-settings'); await sleep(800);
-console.log("settings, bass separator:", await ev(`document.getElementById('set-sep-pill').textContent`), "| remove button:", await ev(`!document.getElementById('set-sep-del').hidden`));
+console.log("settings: no bass separator section:", await ev(`!document.getElementById('set-sep-pill') && !/Bass separator/.test(document.getElementById('sheet-panel').textContent)`), "| sections:", await ev(`[...document.querySelectorAll('#sheet-panel .set-head')].map(h => h.textContent.replace(/(On|Off|Password set)$/, '').trim()).join(', ')`));
 await shot("10_settings");
 await ev(`(() => { const i = document.querySelectorAll('#set-lock input[type=password]'); i[0].value = 'blue42'; i[1].value = 'blue42'; [...document.querySelectorAll('#set-lock button')].find(b => b.textContent.includes('Set password')).click(); return 1; })()`);
 await until(`[...document.querySelectorAll('#set-lock button')].some(b => b.textContent.includes('Lock now'))`, 10000, "the password to be set");
