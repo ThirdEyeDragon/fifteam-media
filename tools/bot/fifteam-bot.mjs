@@ -7,6 +7,9 @@
 //   /delete-post, /delete-comment   take one down (a comment goes with its replies)
 //   /purge <user>      every post and comment of theirs, gone
 //   /clear-profile <user>   their picture and about me removed, and no new picture shown until /allow-picture
+//   /devices           every phone that has used the app (the last half year), with its device; the full list as a file
+//   /tag-member, /tag-founder, /tag-developer <user>   the gradient tag next to their name (remove: True takes it off)
+//   /tags              who has which tag
 // It reads and writes the app's store messages through the same webhook the app uses (social/config.json), and talks
 // to Discord over the gateway (a websocket), so it needs no web server: it runs on this PC (node 18+, no packages).
 //
@@ -72,7 +75,7 @@ async function changeStore(key, file, label, fresh, fn, check) {
   }
   throw new Error("couldn't save the change (the app was busy); try again");
 }
-const changeMod = (fn, check) => changeStore("mod", "mod.json", MOD_LABEL, () => ({ v: 1, bans: {}, nopic: {} }), (d) => { d.v = 1; d.bans = obj(d.bans); d.nopic = obj(d.nopic); fn(d); }, (d) => check({ bans: obj(d.bans), nopic: obj(d.nopic) }));
+const changeMod = (fn, check) => changeStore("mod", "mod.json", MOD_LABEL, () => ({ v: 1, bans: {}, nopic: {}, badges: {} }), (d) => { d.v = 1; d.bans = obj(d.bans); d.nopic = obj(d.nopic); d.badges = obj(d.badges); fn(d); }, (d) => check({ bans: obj(d.bans), nopic: obj(d.nopic), badges: obj(d.badges) }));
 const changeFeed = (fn, check) => changeStore("index", "feed.json", FEED_LABEL, () => ({ v: 1, posts: [], profiles: {} }), (d) => { d.posts = Array.isArray(d.posts) ? d.posts : []; d.profiles = obj(d.profiles); for (const q of d.posts) q.comments = Array.isArray(q.comments) ? q.comments : []; fn(d); }, (d) => check({ posts: Array.isArray(d.posts) ? d.posts : [], profiles: obj(d.profiles) }));
 const changeMeta = (fn, check) => changeStore("meta", "meta.json", META_LABEL, () => ({ v: 1, votes: {}, follows: {}, about: {} }), (d) => { d.votes = obj(d.votes); d.follows = obj(d.follows); d.about = obj(d.about); fn(d); }, (d) => check({ about: obj(d.about) }));
 const changeBans = (fn, check) => changeMod((d) => fn(d.bans), (d) => check(d.bans));
@@ -223,6 +226,39 @@ export async function cmdAllowPicture(user) {
   await changeMod((x) => { for (const p of phones) delete x.nopic[p]; }, (x) => phones.every((p) => !x.nopic[p]));
   return `**${clean(w.name)}** can have a profile picture again.`;
 }
+// ---------------------------------------------------------------------------------------------------- devices and tags
+const kindOf = (d) => (/^iPhone|^iPad|^iPod/.test(d) ? "iPhone / iPad" : /Android|Galaxy|Pixel|Samsung/.test(d) ? "Android" : d ? "Computer" : "Unknown (hasn't opened 2.4 or later yet)");
+export async function cmdDevices(user) {
+  const all = await people(), now = Date.now();
+  let list = Object.entries(all);
+  if (user) { const ph = resolve(user, all); list = list.filter(([k]) => ph.includes(k)); if (!list.length) return `No phone goes by **${clean(user)}**.`; }
+  list.sort((a, b) => b[1].at - a[1].at);
+  const kinds = {};
+  for (const [, v] of list) kinds[kindOf(v.device)] = (kinds[kindOf(v.device)] || 0) + 1;
+  const week = list.filter(([, v]) => now - v.at < 7 * 86400e3).length, day = list.filter(([, v]) => now - v.at < 86400e3).length;
+  const lines = list.slice(0, 12).map(([k, v]) => `• **${clean(v.name)}** · ${v.device ? clean(v.device, 60) : "device unknown"}${v.v ? ` · v${clean(v.v)}` : ""} · ${v.at ? ago(v.at) : "not seen since 2.4"} · \`${k}\``);
+  const text = [`**${list.length} phone${list.length === 1 ? "" : "s"}** ${user ? `for ${clean(user)}` : "have used FifTeam Media"} · ${day} today · ${week} this week`,
+    Object.entries(kinds).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k}: ${n}`).join(" · "), ...lines,
+    list.length > 12 ? `-# …and ${list.length - 12} more in the attached list.` : "-# The full list is attached."].join("\n");
+  const rows = [["Username", "Device", "App version", "Last seen", "Phone id"].join("\t"), ...list.map(([k, v]) => [v.name || "(no username)", v.device || "unknown", v.v || "", v.at ? new Date(v.at).toISOString().replace("T", " ").slice(0, 16) + " UTC" : "before 2.4", k].join("\t"))];
+  return { text, file: { name: "fifteam-devices.txt", data: rows.join("\n") + "\n" } };
+}
+const TAG_NAMES = { member: "FifTeam Member", founder: "FifTeam Founder", dev: "FifTeam Media Developer" };
+export async function cmdTag(kind, user, remove) {
+  const w = await whoIs(user);
+  if (!w.phones.length) return `No phone goes by **${clean(user)}**.`;
+  const on = !remove;
+  await changeMod((d) => { for (const p of w.phones) { const l = (Array.isArray(d.badges[p]) ? d.badges[p] : []).filter((x) => x !== kind); if (on) l.push(kind); if (l.length) d.badges[p] = l; else delete d.badges[p]; } },
+    (d) => w.phones.every((p) => (Array.isArray(d.badges[p]) && d.badges[p].includes(kind)) === on));
+  return on ? `**${clean(w.name)}** has the **${TAG_NAMES[kind]}** tag now. It shows next to their name the next time each phone checks (within 10 minutes, or when the app is opened).`
+    : `Took the **${TAG_NAMES[kind]}** tag off **${clean(w.name)}**.`;
+}
+export async function cmdTags() {
+  const d = (await readStore("mod", "mod.json")) || {}, all = await people();
+  const list = Object.entries(obj(d.badges)).filter(([, v]) => Array.isArray(v) && v.length);
+  if (!list.length) return "Nobody has a tag yet. Give one with /tag-member, /tag-founder or /tag-developer.";
+  return [`**Tags** (${list.length})`, ...list.map(([k, v]) => `• **${clean((all[k] && all[k].name) || k)}** · ${v.map((t) => TAG_NAMES[t] || t).join(", ")} · \`${k}\``)].join("\n");
+}
 async function suggestPosts(low) {
   const f = await feedNow();
   return f.posts.filter((p) => !low || p.id.includes(low) || nameIn(f, p).toLowerCase().includes(low) || (p.text || "").toLowerCase().includes(low)).slice(0, 25)
@@ -263,6 +299,11 @@ const COMMANDS = [
   { name: "delete-comment", description: "Take a comment down (and the replies to it)", type: 1, options: [{ type: 3, name: "comment", description: "Start typing a name or words from it", required: true, autocomplete: true }] },
   { name: "purge", description: "Remove every post and comment by a user", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }] },
   { name: "clear-profile", description: "Remove a user's profile picture and about me (and block new pictures)", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }] },
+  { name: "devices", description: "Every phone that has used FifTeam Media, with its device (the full list as a file)", type: 1, options: [{ type: 3, name: "user", description: "Only this user's", required: false, autocomplete: true }] },
+  { name: "tag-member", description: "Give someone the FifTeam Member tag (next to their name)", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }, { type: 5, name: "remove", description: "Take the tag off instead", required: false }] },
+  { name: "tag-founder", description: "Give someone the FifTeam Founder tag", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }, { type: 5, name: "remove", description: "Take the tag off instead", required: false }] },
+  { name: "tag-developer", description: "Give someone the FifTeam Media Developer tag", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }, { type: 5, name: "remove", description: "Take the tag off instead", required: false }] },
+  { name: "tags", description: "Who has which FifTeam tag", type: 1 },
   { name: "allow-picture", description: "Let a user have a profile picture again", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }] },
 ].map((c) => ({ ...c, default_member_permissions: "4", dm_permission: false }));   // (4: Ban Members; admins only)
 
@@ -301,11 +342,19 @@ async function answer(it, tok) {
         : name === "unban" ? await cmdUnban(v("user")) : name === "bans" ? await cmdBans()
         : name === "posts" ? await cmdPosts(v("user")) : name === "comments" ? await cmdComments(v("user"))
         : name === "delete-post" ? await cmdDeletePost(v("post")) : name === "delete-comment" ? await cmdDeleteComment(v("comment"))
+        : name === "devices" ? await cmdDevices(v("user")) : name === "tags" ? await cmdTags()
+        : name === "tag-member" ? await cmdTag("member", v("user"), v("remove")) : name === "tag-founder" ? await cmdTag("founder", v("user"), v("remove")) : name === "tag-developer" ? await cmdTag("dev", v("user"), v("remove"))
         : name === "purge" ? await cmdPurge(v("user")) : name === "clear-profile" ? await cmdClearProfile(v("user")) : name === "allow-picture" ? await cmdAllowPicture(v("user"))
         : "Unknown command";
     } catch (e) { text = `Something went wrong: ${e.message}`; }
     log(`/${name} by ${who.username || who.id}`);
-    await fetch(`${API}/webhooks/${it.application_id}/${it.token}/messages/@original`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: text.slice(0, 1990), allowed_mentions: { parse: [] } }) });
+    const url = `${API}/webhooks/${it.application_id}/${it.token}/messages/@original`;
+    if (text && typeof text === "object") {
+      const f = new FormData();
+      f.append("payload_json", JSON.stringify({ content: text.text.slice(0, 1990), allowed_mentions: { parse: [] }, attachments: [{ id: 0, filename: text.file.name }] }));
+      f.append("files[0]", new Blob([text.file.data], { type: "text/plain" }), text.file.name);
+      await fetch(url, { method: "PATCH", body: f });
+    } else await fetch(url, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: String(text).slice(0, 1990), allowed_mentions: { parse: [] } }) });
   } catch (e) { log("answer failed:", e.message); }
 }
 async function run() {

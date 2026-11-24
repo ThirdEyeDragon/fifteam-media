@@ -12,8 +12,8 @@ import { fitJpeg, squareJpeg } from "./image.js";
 import { makeFile, sizeText } from "./export.js";
 import { myPublicKey, initDms } from "./dms.js";
 import { openProfile } from "./profile.js";
-import { loadMeta, votesOf, setVote, meta, canSee } from "./meta.js";
-import { bannedPhones, noPicPhones, checkBans } from "./ban.js";
+import { loadMeta, votesOf, setVote, meta, canSee, blocked } from "./meta.js";
+import { bannedPhones, noPicPhones, checkBans, badgesOf } from "./ban.js";
 import { activityChanged, initActivity } from "./activity.js";
 
 const NAME_KEY = "fifteam-social-name", MINE_KEY = "fifteam-social-mine", ME_KEY = "fifteam-social-me", AV_KEY = "fifteam-social-avatar";
@@ -172,7 +172,25 @@ function ago(t) {
 const NAME_OK = /^[\p{L}\p{N} _.\-]{2,24}$/u;
 /** Who wrote it, by their username now (a username changed later shows on their older posts and comments too). */
 const nameOf = (x) => (x.by && x.by === S.me && S.name) || (x.by && S.profiles[x.by] && S.profiles[x.by].name) || x.user;
-const hidden = (x) => !!(x.by && bannedPhones().has(x.by));
+const hidden = (x) => !!(x.by && (bannedPhones().has(x.by) || blocked(S.me, x.by)));
+/** A name with the tags the FifTeam team gave them (FifTeam Founder, FifTeam Media Developer, FifTeam Member). */
+const TAGS = { founder: "FifTeam Founder", dev: "FifTeam Media Developer", member: "FifTeam Member" };
+function nameLine(name, phone) {
+  const w = h("span", "nline"); w.append(h("b", "", name));
+  for (const t of badgesOf(phone)) w.append(h("span", "tag tag-" + t, TAGS[t]));
+  return w;
+}
+/** The picture in the top bar (always there): your page, or first a username. */
+function paintMe() {
+  const b = $("btn-me"); if (!b) return;
+  const av = b.querySelector(".me-av");
+  av.style.backgroundImage = `url("${S.avatarUrl || placeholderArt(S.name || "?")}")`;
+  b.setAttribute("aria-label", S.name ? `Your profile (${S.name})` : "Your profile");
+}
+function openMe() {
+  if (!S.name) { location.hash = "#social"; S.editingName = true; render(); setTimeout(() => { const i = document.querySelector("#so-body .so-nameform input"); if (i) i.focus(); }, 150); toast("Pick a username first"); return; }
+  openProfile({ by: S.me, user: S.name });
+}
 /** A post this phone may see: not from a banned phone, and not from a private account that hasn't let it in. */
 const visible = (p) => !hidden(p) && canSee(S.me, p.by);
 const commentsOf = (p) => p.comments.filter((c) => !hidden(c));
@@ -195,6 +213,7 @@ function avatarEl(size, url, name) {
   return a;
 }
 function render() {
+  paintMe();
   const body = $("so-body");
   if (!body) return;
   S.ids = sigIds(S.feed); S.shownError = S.error;
@@ -324,7 +343,7 @@ function postCard(p) {
   const av = avatarEl(40, "", name);
   showPicture(av, p);
   av.classList.add("tap"); av.setAttribute("role", "button"); av.setAttribute("aria-label", `${name}'s profile`);
-  const nm = h("span", "so-name tap"); nm.append(h("b", "", name), h("small", "", ago(p.at)));
+  const nm = h("span", "so-name tap"); nm.append(nameLine(name, p.by), h("small", "", ago(p.at)));
   av.onclick = nm.onclick = () => openProfile({ by: p.by, user: p.user });
   who.append(av, nm); head.append(who);
   if (S.mine.has(p.id)) { const d = h("button", "so-more"); d.setAttribute("aria-label", "More"); d.append(icon("i-more")); d.onclick = () => postMenu(p); head.append(d); }
@@ -514,7 +533,7 @@ function commentRow(p, c, reply) {
   showPicture(av, { by: c.by, user: c.user, id: "" });
   av.classList.add("tap"); av.onclick = () => openProfile({ by: c.by, user: c.user });
   const body = h("div", "cs-body");
-  const top = h("div", "cs-name"); top.append(h("b", "", cname), h("small", "", ago(c.at)));
+  const top = h("div", "cs-name"); top.append(nameLine(cname, c.by), h("small", "", ago(c.at)));
   const acts = h("div", "cs-acts");
   const rp = h("button", "cs-act", "Reply"); rp.onclick = () => setReply(c);
   const lk = h("button", "cs-act cs-like" + (c.likes.includes(S.me) ? " on" : ""));
@@ -973,6 +992,9 @@ export function initSocial() {
   // a rebass made just now, posted from the Rebass screen
   bus.on("social-post", (song) => { location.hash = "#social"; setTimeout(() => composer({ song }), 50); });
   pullToRefresh();
+  paintMe();
+  const me = $("btn-me"); if (me) me.onclick = openMe;
+  addEventListener("fifteam-badges", () => { render(); });
   initDms();
   initActivity();
   // new posts and likes come in on their own while the feed is open
@@ -1008,5 +1030,5 @@ function showPost(id) {
   }, 350);
 }
 function editName() { closeSheet(); S.editingName = true; if (location.hash !== "#social") location.hash = "#social"; render(); setTimeout(() => { const i = document.querySelector("#so-body .so-nameform input"); if (i) { i.focus(); i.select(); } }, 120); }
-export const api = { visible, state: S, config, dc, avatarEl, showPicture, ago, icon, findPhone, ensureProfiles, openComments, nameOf, hidden, songBlock, showPost, pickAvatar, editName, fileOf, message, viewImage, render };
+export const api = { nameLine, visible, state: S, config, dc, avatarEl, showPicture, ago, icon, findPhone, ensureProfiles, openComments, nameOf, hidden, songBlock, showPost, pickAvatar, editName, fileOf, message, viewImage, render };
 export const social = { state: S, prepareVideo };

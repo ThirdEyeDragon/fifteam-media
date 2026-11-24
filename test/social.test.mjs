@@ -475,6 +475,52 @@ try {
     await other.ev(`document.getElementById('sheet').classList.remove('open'), 1`);
     check(!prefsNow().priv && prefsNow().dm === "all", "back to public");
 
+    // the picture in the top bar: your own page, from any tab
+    await ev(`location.hash = '#library', 1`); await sleep(300);
+    await ev(`document.getElementById('btn-me').click(), 1`); await sleep(500);
+    const mine = await ev(`document.querySelector('#sheet-panel .pf-name').textContent + ' | ' + document.querySelector('#sheet-panel .pf-likes').textContent`);
+    console.log("top-bar profile button (from the Library):", mine);
+    // her likes: on her posts and her comments, counted from the feed list
+    const likesShould = feedNow().reduce((n, x) => n + ((x.by === meNow ? (x.likes || []).length : 0) + (x.comments || []).filter((c) => c.by === meNow).reduce((m, c) => m + (c.likes || []).length, 0)), 0);
+    check(mine.startsWith("Alice") && mine.endsWith(`${likesShould} like${likesShould === 1 ? "" : "s"}`), `her own page, with her ${likesShould} likes`);
+    await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await ev(`location.hash = '#social', 1`); await sleep(400);
+
+    // tags from the bot (/tag-founder, /tag-member): next to her name, on her posts and her page
+    { const d = storeNow(MOD); d.badges = { [meNow]: ["member", "founder"] }; setStore(MOD, d); }
+    await ev(`import('./js/ban.js').then((m) => m.checkBans()).then(() => 1)`); await sleep(400);
+    const tags = await ev(`[...[...document.querySelectorAll('#so-body .so-post')].find(p => p.textContent.includes('Fresh one')).querySelectorAll('.so-name .tag')].map(t => t.textContent).join(', ')`);
+    console.log("tags on her post:", tags);
+    check(tags === "FifTeam Founder, FifTeam Member", "the tags next to her name (founder first)");
+    await ev(`[...document.querySelectorAll('#so-body .so-post')].find(p => p.textContent.includes('Fresh one')).scrollIntoView({ block: 'start' }), 1`); await sleep(400);
+    await shot("d16_tags");
+    await ev(`document.getElementById('view-social').scrollTop = 0, 1`);
+
+    // blocking: Alice blocks Ben from his page; neither sees the other; unblocked from Settings
+    await ev(`import('./js/profile.js').then((m) => { m.openProfile({ by: '${benPhone}', user: 'Ben' }); return 1; })`); await sleep(700);
+    await ev(`(() => { window.confirm = () => true; document.querySelector('#sheet-panel .pf-block').click(); return 1; })()`);
+    for (let i = 0; i < 40 && !((storeNow(META).blocks || {})[meNow] || []).includes(benPhone); i++) await sleep(200);
+    await sleep(400);
+    const herView = await ev(`document.querySelector('#sheet-panel .pf-head').textContent`);
+    console.log("Alice blocked Ben; his page:", herView);
+    check(((storeNow(META).blocks || {})[meNow] || []).includes(benPhone) && herView.includes("You've blocked Ben") && herView.includes("Unblock"), "blocked (saved), shown on his page");
+    await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
+    await ev(`[...document.querySelectorAll('#so-body .so-post')].find(p => p.textContent.includes('Fresh one')).querySelector('.so-cbtn').click(), 1`); await sleep(400);
+    const herComments = await ev(`[...document.querySelectorAll('#sheet-panel .cs-c p')].map(p => p.textContent).join(', ')`);
+    await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
+    await benOpensAlice();
+    const hisView = await benView();
+    const hisFeed = await other.ev(`import('./js/social.js').then((m) => { m.api.render(); return [...document.querySelectorAll('#so-body .so-post')].some(p => p.textContent.includes('Fresh one')); })`);
+    console.log("Alice's comments panel (Ben blocked):", herComments || "(none)", "| Ben's view of her page:", JSON.stringify(hisView), "| her post in his feed:", hisFeed);
+    check(!herComments.includes("Love this") && hisView.msg === "Not taking messages" && hisView.off && !hisFeed, "blocked: kept apart both ways");
+    await ev(`document.getElementById('btn-settings').click(), 1`); await sleep(500);
+    console.log("Settings, blocked people:", await ev(`document.getElementById('set-blocked').textContent`));
+    await ev(`document.querySelector('#set-blocked .btn').click(), 1`);
+    for (let i = 0; i < 40 && ((storeNow(META).blocks || {})[meNow] || []).includes(benPhone); i++) await sleep(200);
+    await sleep(300);
+    await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
+    check(!((storeNow(META).blocks || {})[meNow] || []).length, "unblocked from Settings");
+    await ev(`import('./js/social.js').then((m) => m.api.render()).then(() => 1)`);
+
     // a ban (the bot's /ban): Ben's phone shut, even after reopening; his comments out of Alice's sight; lifted: open again
     setStore(MOD, { v: 1, bans: { [benPhone]: { at: Date.now(), name: "Ben" } } });
     await other.ev(`import('./js/ban.js').then((m) => m.checkBans()).then(() => 1)`);

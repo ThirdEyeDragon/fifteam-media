@@ -4,7 +4,7 @@
 import { toast, openSheet } from "./ui.js";
 import { api } from "./social.js";
 import { openChat, talkedWith } from "./dms.js";
-import { loadMeta, followersOf, followingOf, aboutOf, setFollow, setAbout, votesOf, followState, setFollowRequest, canSee, prefsOf, dmState, requestDm } from "./meta.js";
+import { loadMeta, followersOf, followingOf, aboutOf, setFollow, setAbout, votesOf, followState, setFollowRequest, canSee, prefsOf, dmState, requestDm, blocksOf, blocked, setBlock } from "./meta.js";
 
 const PHONE = /^[a-z0-9]{6,16}$/;
 const h = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
@@ -32,7 +32,8 @@ function paint() {
   // who
   const head = h("div", "pf-head");
   const av = api.avatarEl(92, self ? S.avatarUrl : "", name); api.showPicture(av, { by: P.phone, user: name, id: "" });
-  head.append(av, h("h3", "pf-name", name));
+  const title = h("h3", "pf-name"); title.append(api.nameLine(name, P.phone));
+  head.append(av, title);
   if (P.phone && prefsOf(P.phone).priv) head.append(h("span", "pf-private", "🔒 Private account"));
   if (P.phone) {
     const fol = followersOf(P.phone).filter((x) => !api.hidden({ by: x })), ing = followingOf(P.phone);
@@ -43,6 +44,15 @@ function paint() {
     b.onclick = () => people(`${name} follows`, ing);
     counts.append(a, h("span", "pf-dot", "·"), b);
     head.append(counts);
+    // every like on their posts and comments
+    let likes = 0;
+    for (const x of S.feed) {
+      if (S.gone.has(x.id)) continue;
+      if (x.by === P.phone || (!x.by && x.user === name)) likes += x.likes.length;
+      for (const c of x.comments) if (c.by === P.phone) likes += c.likes.length;
+    }
+    const lk = h("div", "pf-likes"); lk.append(h("b", "", String(likes)), document.createTextNode(likes === 1 ? " like" : " likes"));
+    head.append(lk);
   }
   // about me
   const about = P.phone ? aboutOf(P.phone) : "";
@@ -88,11 +98,24 @@ function paint() {
       if (await requestDm(P.phone)) toast(`Asked ${name}. You can message them once they say yes.`); else toast("Couldn't send that. Try again.");
       paint();
     };
-    btns.append(fo, msg);
+    // blocking (either way keeps them apart)
+    const iBlocked = blocksOf(S.me).includes(P.phone), theyBlocked = !iBlocked && blocked(S.me, P.phone);
+    if (theyBlocked) { fo.disabled = true; }
+    const bl = h("button", "btn small pf-block" + (iBlocked ? "" : " danger"), iBlocked ? "Unblock" : "Block");
+    bl.onclick = async () => {
+      if (!iBlocked && !confirm(`Block ${name}? You won't see each other's posts or comments, and they can't message you or follow you.`)) return;
+      const job = setBlock(P.phone, !iBlocked); paint();
+      if (!(await job)) toast("Couldn't save that. Try again.");
+      else toast(iBlocked ? `Unblocked ${name}` : `Blocked ${name}`);
+      paint(); api.render();
+    };
+    if (iBlocked) { btns.append(bl); head.append(h("p", "pf-about dim", `You've blocked ${name}. They can't see your posts or message you.`)); }
+    else btns.append(fo, msg, bl);
   }
   if (btns.childElementCount) head.append(btns);
   box.append(head);
   // what they've posted (a private account: only for the followers it has let in)
+  if (P.phone && blocked(S.me, P.phone)) { box.append(h("p", "status pf-none", "No posts to show.")); return; }
   if (P.phone && !canSee(S.me, P.phone)) {
     const lock = h("div", "pf-locked"); lock.append(h("b", "", "🔒 This account is private"), h("p", "status", followState(S.me, P.phone) === "requested" ? "You've asked to follow. Their posts show here once they say yes." : "Follow them to ask to see their posts."));
     box.append(lock);

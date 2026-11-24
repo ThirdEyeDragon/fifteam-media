@@ -58,13 +58,13 @@ export function jsonStore(key, file, label, clean) {
 // ---------------------------------------------------------------------------------------------------- votes, follows, about
 const phones = (a, n) => (Array.isArray(a) ? [...new Set(a.filter((x) => typeof x === "string" && PHONE.test(x)))].slice(0, n) : []);
 function cleanMeta(d) {
-  const out = { v: 1, votes: {}, follows: {}, about: {}, prefs: {}, dmok: {}, dmreq: {}, fok: {}, freq: {} };
+  const out = { v: 1, votes: {}, follows: {}, about: {}, prefs: {}, dmok: {}, dmreq: {}, fok: {}, freq: {}, blocks: {} };
   if (!d || typeof d !== "object") return out;
   for (const [k, v] of Object.entries(d.prefs || {}).slice(0, 5000)) if (PHONE.test(k) && v && typeof v === "object") {
     const dm = v.dm === "req" || v.dm === "off" ? v.dm : "all", priv = v.priv ? 1 : 0;
     if (dm !== "all" || priv) out.prefs[k] = { dm, priv };
   }
-  for (const key of ["dmok", "dmreq", "fok", "freq"]) for (const [k, v] of Object.entries(d[key] || {}).slice(0, 5000)) if (PHONE.test(k)) { const l = phones(v, 2000).filter((x) => x !== k); if (l.length) out[key][k] = l; }
+  for (const key of ["dmok", "dmreq", "fok", "freq", "blocks"]) for (const [k, v] of Object.entries(d[key] || {}).slice(0, 5000)) if (PHONE.test(k)) { const l = phones(v, 2000).filter((x) => x !== k); if (l.length) out[key][k] = l; }
   // votes: the 800 newest posts that have any
   const vs = Object.entries(d.votes || {}).filter(([k]) => POST.test(k)).sort((a, b) => (BigInt(b[0]) > BigInt(a[0]) ? 1 : -1)).slice(0, 800);
   for (const [k, v] of vs) { const l = phones(v, 5000); if (l.length) out.votes[k] = l; }
@@ -101,15 +101,32 @@ export const followersOf = (phone) => Object.keys(M.d.follows).filter((k) => M.d
 /** "following", "requested" (a private account that hasn't let them in yet) or "". */
 export function followState(who, owner) { if (!list("follows", who).includes(owner)) return ""; return approved(who, owner) ? "following" : "requested"; }
 export const aboutOf = (phone) => M.d.about[phone] || "";
+/** Blocking: either one having blocked the other keeps them apart (posts, comments, messages, follows). */
+export const blocksOf = (phone) => list("blocks", phone);
+export const blocked = (a, b) => !!a && !!b && (list("blocks", a).includes(b) || list("blocks", b).includes(a));
+export function setBlock(phone, on) {
+  const me = api.state.me;
+  const fn = (d) => {
+    d.blocks = d.blocks || {};
+    const l = (d.blocks[me] || []).filter((x) => x !== phone); if (on) l.push(phone);
+    if (l.length) d.blocks[me] = l; else delete d.blocks[me];
+    // (blocked: no longer following each other, and nothing waiting from them)
+    if (on) for (const [k, a, b] of [["follows", me, phone], ["follows", phone, me], ["fok", me, phone], ["freq", me, phone], ["dmreq", me, phone], ["dmok", me, phone]]) {
+      if (!d[k] || !d[k][a]) continue;
+      d[k][a] = d[k][a].filter((x) => x !== b); if (!d[k][a].length) delete d[k][a];
+    }
+  };
+  return metaChange("block|" + phone, fn, (d) => ((d.blocks || {})[me] || []).includes(phone) === on);
+}
 /** Whether a phone sees someone's posts: their own, a public account's, or a private one's that has let them in. */
-export const canSee = (viewer, owner) => !owner || viewer === owner || !prefsOf(owner).priv || list("fok", owner).includes(viewer);
+export const canSee = (viewer, owner) => !owner || viewer === owner || (!blocked(viewer, owner) && (!prefsOf(owner).priv || list("fok", owner).includes(viewer)));
 export const followRequests = (phone) => list("freq", phone).filter((x) => list("follows", x).includes(phone) && !list("fok", phone).includes(x));
 export const dmRequests = (phone) => list("dmreq", phone).filter((x) => !list("dmok", phone).includes(x));
 /** Whether `from` may write to `to`: "ok", "request" (they'd have to ask), "requested" (asked, not answered) or "off".
  *  (talked: they've written to each other before, which always counts as let in unless messages are off) */
 export function dmState(from, to, talked) {
   const pr = prefsOf(to);
-  if (pr.dm === "off") return "off";
+  if (pr.dm === "off" || blocked(from, to)) return "off";
   if (pr.dm === "all" || talked || list("dmok", to).includes(from) || list("follows", to).includes(from)) return "ok";
   return list("dmreq", to).includes(from) ? "requested" : "request";
 }
@@ -162,10 +179,10 @@ export function setAbout(text) {
 
 // ---------------------------------------------------------------------------------------------------- who's online
 // Every few minutes while the app is on screen: this phone's username, device and app version, with the time. Entries
-// older than two days are dropped. (Nothing else: no place, no contacts.)
+// older than half a year are dropped (the owner's /devices lists them). (Nothing else: no place, no contacts.)
 function cleanPresence(d) {
   const out = { v: 1, on: {} };
-  const old = Date.now() - 2 * 86400e3;
+  const old = Date.now() - 183 * 86400e3;
   for (const [k, v] of Object.entries((d && d.on) || {}).slice(0, 5000)) if (PHONE.test(k) && v && +v.at > old)
     out.on[k] = { n: String(v.n || "").slice(0, 24), d: String(v.d || "").slice(0, 60), v: String(v.v || "").slice(0, 12), at: +v.at };
   return out;

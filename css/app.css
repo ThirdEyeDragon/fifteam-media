@@ -660,3 +660,27 @@ a.btn { color: inherit; text-decoration: none; }
 .dm-reqh { margin: 6px 4px 0; }
 .dm-req .btn, .act-req .btn { flex: none; height: 32px; padding: 0 12px; }
 .dm-req .dm-mid b::after, .act-req .dm-mid b::after { content: none; }
+
+/* ---------------------------------------------------------------------------- 2.6: tags, the profile button, likes, blocking */
+.nline { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; max-width: 100%; }
+.nline b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.tag { display: inline-block; flex: none; padding: 2px 7px 2px; border-radius: 999px; font: 700 10px/1.35 var(--font-body); letter-spacing: 0.02em; color: #fff; white-space: nowrap;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25); }
+.tag-member { background: linear-gradient(90deg, #2f78ff, #7a4bff 55%, #bb4dff); }
+.tag-founder { background: linear-gradient(90deg, #ff9a3d, #ffcf5a 45%, #ff5fa2); color: #2a1300; text-shadow: none; }
+.tag-dev { background: linear-gradient(90deg, #00c2ff, #3ee0a5 50%, #7a4bff); }
+.pf-name .nline { justify-content: center; }
+.pf-name .tag { font-size: 11px; }
+.pf-likes { color: var(--muted); font-size: 14px; margin-top: -2px; }
+.pf-likes b { color: var(--ink); }
+.btn.danger { color: #ff8a9a; border-color: rgba(255, 138, 154, 0.35); }
+.set-blockrow { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; }
+.set-blockrow span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#set-blocked { display: flex; flex-direction: column; gap: 2px; }
+#set-blocked:empty { display: none; }
+/* your picture in the top bar */
+.me-btn { padding: 0; overflow: hidden; }
+.me-av { width: 34px; height: 34px; border-radius: 50%; background: var(--grad) center / cover; box-shadow: 0 0 0 2px rgba(122, 75, 255, 0.6); }
+/* five buttons up top: a little tighter on phones, and the words of the name hidden on the narrowest */
+@media (max-width: 440px) { .top-act { gap: 6px; } .top-act .icon-btn { width: 40px; height: 40px; } .me-av { width: 31px; height: 31px; } }
+@media (max-width: 380px) { .brand > span:last-child { display: none; } }

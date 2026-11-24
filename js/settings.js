@@ -8,7 +8,7 @@ import { demo } from "./demo.js";
 import { APP_VERSION } from "./app.js";
 import { canNotify, notifyWanted, setNotify } from "./dms.js";
 import { isIOS } from "./export.js";
-import { loadMeta, prefsOf, setPrefs } from "./meta.js";
+import { loadMeta, prefsOf, setPrefs, blocksOf, setBlock } from "./meta.js";
 import { api } from "./social.js";
 
 const K_PW = "fifteam-lock", K_LOCKED = "fifteam-locked", K_AUTO = "fifteam-autolock", K_WAIT = "fifteam-lock-wait", K_FAILS = "fifteam-lock-fails";
@@ -122,6 +122,7 @@ export function openSettings() {
       <span class="status" id="set-dm-why"></span>
       <label class="switch"><span class="txt">Private account</span><input type="checkbox" id="set-priv"></label>
       <span class="status" id="set-priv-why"></span>
+      <div id="set-blocked"></div>
     </div>`);
     p.append(pvSec);
     const paintPv = () => {
@@ -131,6 +132,19 @@ export function openSettings() {
         : pr.dm === "req" ? "People ask first, and you say yes or no in Messages. People you follow, and people you've written to, can always message you."
         : "Nobody can message you, and messages sent to you aren't shown.";
       $("set-priv").checked = !!pr.priv;
+      // the people this phone has blocked: unblock from here (or from their page)
+      const bx = $("set-blocked"); bx.replaceChildren();
+      const bl = blocksOf(me);
+      if (bl.length) {
+        const lab = document.createElement("span"); lab.className = "label"; lab.textContent = "Blocked people"; bx.append(lab);
+        for (const ph of bl) {
+          const row = document.createElement("div"); row.className = "set-blockrow";
+          const nm = document.createElement("span"); nm.textContent = (api.state.profiles[ph] && api.state.profiles[ph].name) || "Someone";
+          const un = document.createElement("button"); un.className = "btn small"; un.textContent = "Unblock";
+          un.onclick = async () => { un.disabled = true; if (!(await setBlock(ph, false))) toast("Couldn't save that. Try again."); paintPv(); api.render(); };
+          row.append(nm, un); bx.append(row);
+        }
+      }
       $("set-priv-why").textContent = pr.priv ? "Only followers you let in see your posts and your page. New followers ask first; answer them under the bell." : "Everyone sees your posts.";
     };
     paintPv();

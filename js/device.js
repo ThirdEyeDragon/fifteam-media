@@ -2,7 +2,7 @@
 // "iPhone 15 Pro / 16 · iOS 18.1", "Windows PC · Edge". Android phones say their model; an iPhone doesn't, so its
 // screen size gives the family.
 const SAMSUNG = {
-  "SM-S938": "Galaxy S25 Ultra", "SM-S936": "Galaxy S25+", "SM-S931": "Galaxy S25", "SM-S937": "Galaxy S25 Edge",
+  "SM-S948": "Galaxy S26 Ultra", "SM-S938": "Galaxy S25 Ultra", "SM-S936": "Galaxy S25+", "SM-S931": "Galaxy S25", "SM-S937": "Galaxy S25 Edge",
   "SM-S928": "Galaxy S24 Ultra", "SM-S926": "Galaxy S24+", "SM-S921": "Galaxy S24", "SM-S721": "Galaxy S24 FE",
   "SM-S918": "Galaxy S23 Ultra", "SM-S916": "Galaxy S23+", "SM-S911": "Galaxy S23", "SM-S711": "Galaxy S23 FE",
   "SM-S908": "Galaxy S22 Ultra", "SM-S906": "Galaxy S22+", "SM-S901": "Galaxy S22",

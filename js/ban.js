@@ -10,6 +10,11 @@ const ls = { get(k) { try { return localStorage.getItem(k); } catch { return nul
 let list = new Set(), nopic = new Set();
 try { list = new Set(JSON.parse(ls.get(LIST) || "[]")); } catch {}
 try { nopic = new Set(JSON.parse(ls.get(LIST + "-nopic") || "[]")); } catch {}
+let badges = {};
+try { badges = JSON.parse(ls.get(LIST + "-badges") || "{}") || {}; } catch {}
+const BADGES = ["founder", "dev", "member"];
+/** The tags the FifTeam team gave a phone (set with the bot): "founder", "dev", "member", in that order. */
+export const badgesOf = (phone) => (phone && badges[phone]) || [];
 /** The phones whose profile pictures the moderators took down (not shown, and not sent again). */
 export const noPicPhones = () => nopic;
 /** The phones that are banned (their posts and comments aren't shown). */
@@ -58,6 +63,11 @@ export async function checkBans() {
     list = new Set(bans); ls.set(LIST, JSON.stringify(bans));
     const np = d && d.nopic && typeof d.nopic === "object" ? Object.keys(d.nopic).filter((k) => /^[a-z0-9]{6,16}$/.test(k)) : [];
     nopic = new Set(np); ls.set(LIST + "-nopic", JSON.stringify(np));
+    const bg = {};
+    for (const [k, v] of Object.entries((d && d.badges) || {})) if (/^[a-z0-9]{6,16}$/.test(k) && Array.isArray(v)) { const l = BADGES.filter((b) => v.includes(b)); if (l.length) bg[k] = l; }
+    const changed = JSON.stringify(bg) !== JSON.stringify(badges);
+    badges = bg; ls.set(LIST + "-badges", JSON.stringify(bg));
+    if (changed) window.dispatchEvent(new Event("fifteam-badges"));
     const me = ls.get(ME) || "";
     if (me && list.has(me)) { await setFlag(true); show(); }
     else if (await flagged()) { await setFlag(false); hide(); }
