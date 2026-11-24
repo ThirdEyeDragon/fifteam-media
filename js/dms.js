@@ -221,21 +221,6 @@ async function send(other, text) {
   for (const ms of [3000, 10000]) setTimeout(() => { D.queue = D.queue.then(async () => { if (!(await readStore()).some((x) => x.id === m.id)) { await put(); paintChat(); } }).catch(() => {}); }, ms);
 }
 
-/** Who someone is (from a tap on their picture): their picture and name, and Message. */
-export function openPerson({ by, user }) {
-  const phone = by && PHONE.test(by) ? by : api.findPhone(user);
-  const name = (phone && api.state.profiles[phone] && api.state.profiles[phone].name) || user || "Someone";
-  openSheet((p) => {
-    p.classList.add("dm-person");
-    const av = api.avatarEl(96, "", name); api.showPicture(av, { by: phone, user: name, id: "" });
-    p.append(av, h("h3", "", name));
-    if (phone && phone === api.state.me) { p.append(h("p", "status", "That's you.")); return; }
-    const go = h("button", "btn primary block"); go.append(api.icon("i-chat"), "Message");
-    go.onclick = () => (phone ? openChat(phone) : toast("Can't message them yet: they need to open FifTeam Media once more."));
-    p.append(go);
-  });
-}
-
 // ---------------------------------------------------------------------------------------------------- notifications
 // New messages to this phone, when switched on in Settings: a notification while the app is in the background, a
 // banner while it's open (unless that conversation is the one open). With no server, the app has to be running to

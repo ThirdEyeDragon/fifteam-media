@@ -25,5 +25,18 @@ g.append("files[0]", new Blob([JSON.stringify({ v: 1, msgs: [] })], { type: "app
 const r2 = await fetch(base + "?wait=true", { method: "POST", body: g });
 if (!r2.ok) { console.log("Couldn't post the messages' store:", r2.status); process.exit(1); }
 const cfg = { hook, key: Buffer.from(token.split("").reverse().join("")).toString("base64"), index: msg.id, dm: (await r2.json()).id };
+// votes / follows / about, who's online, and bans (written by tools/bot/fifteam-bot.mjs)
+for (const [k, content, file, data] of [
+  ["meta", "FifTeam votes, follows and about (the app keeps this message up to date; please don't delete it)", "meta.json", { v: 1, votes: {}, follows: {}, about: {} }],
+  ["presence", "FifTeam who's online (the app keeps this message up to date; please don't delete it)", "presence.json", { v: 1, on: {} }],
+  ["mod", "FifTeam bans (kept by the FifTeam bot; please don't delete it)", "mod.json", { v: 1, bans: {} }],
+]) {
+  const g2 = new FormData();
+  g2.append("payload_json", JSON.stringify({ content, username: "FifTeam", attachments: [{ id: 0, filename: file }], allowed_mentions: { parse: [] } }));
+  g2.append("files[0]", new Blob([JSON.stringify(data)], { type: "application/json" }), file);
+  const r3 = await fetch(base + "?wait=true", { method: "POST", body: g2 });
+  if (!r3.ok) { console.log(`Couldn't post the ${k} store:`, r3.status); process.exit(1); }
+  cfg[k] = (await r3.json()).id;
+}
 writeFileSync(new URL("../social/config.json", import.meta.url), JSON.stringify(cfg, null, 2) + "\n");
 console.log("feed message", msg.id, "posted; social/config.json written. Publish the app to switch Social on.");

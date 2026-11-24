@@ -2,7 +2,7 @@
 import { $, bus, toast } from "./ui.js";
 import { player } from "./player.js";
 
-export const APP_VERSION = "2.3";
+export const APP_VERSION = "2.4";
 import * as store from "./store.js";
 import { initPlayer } from "./player.js";
 import { initLibrary, library, importFiles, openCode } from "./library.js";
@@ -11,6 +11,8 @@ import { initTones } from "./tones.js";
 import { initSettings } from "./settings.js";
 import { initDemo } from "./demo.js";
 import { initSocial } from "./social.js";
+import { initBan } from "./ban.js";
+import { initPresence } from "./meta.js";
 
 const VIEWS = ["player", "library", "rebass", "social", "tones"];
 function route() {
@@ -25,6 +27,7 @@ function route() {
 }
 
 async function boot() {
+  initBan();
   // (the download page offers "Open" rather than "Download" on a phone that has the app)
   try { if (matchMedia("(display-mode: standalone)").matches || navigator.standalone) localStorage.setItem("fifteam-installed", "1"); } catch {}
   addEventListener("appinstalled", () => { try { localStorage.setItem("fifteam-installed", "1"); } catch {} });
@@ -35,6 +38,7 @@ async function boot() {
   initSettings();
   initDemo();
   initSocial();
+  initPresence();
   await library.refresh().catch(() => toast("This browser is blocking storage, so songs won't be kept after you close the app."));
   addEventListener("hashchange", route);
   if (!location.hash) location.replace(library.songs().length ? "#player" : "#library");

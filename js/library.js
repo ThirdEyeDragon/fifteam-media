@@ -6,15 +6,18 @@ import { player } from "./player.js";
 import { sizeText, isIOS } from "./export.js";
 import { pickImage } from "./image.js";
 import { lockedPart, askUnlock, openCodeSheet, describeRecipe, fingerprint } from "./share.js";
+import { categories, coverUrl, newCategory, chooseCategories, editCategory } from "./categories.js";
 
 let tracks = [];
 let kind = "song";
+let cat = null;   // the category open in Rebassed (null: all of them)
 
 export const library = {
   all: () => tracks,
   songs: () => tracks.filter((t) => (t.kind || "song") === "song").sort(byTitle),
   async refresh() {
     tracks = await store.listTracks();
+    categories.prune(new Set(tracks.map((t) => t.id)));
     player.setTracks(tracks);
     render();
   },
@@ -136,9 +139,53 @@ async function paintThumb(el, t) {
   el.style.backgroundImage = `url("${u || placeholderArt(t.title, t.kind || "song")}")`;
 }
 
+/** The rebasses' categories: a row of covers to open one (and a tile to make one); an open one, its name and menu. */
+function paintCats() {
+  const box = $("lib-cats");
+  box.hidden = kind !== "rebass";
+  if (box.hidden) return;
+  if (cat && !categories.get(cat)) cat = null;
+  box.replaceChildren();
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  if (cat) {
+    const c = categories.get(cat);
+    const head = el("div", "cat-open");
+    const back = el("button", "btn small", "‹ All"); back.onclick = () => { cat = null; render(); };
+    const th = el("span", "cat-th big"); coverUrl(c).then((u) => { th.style.backgroundImage = `url("${u}")`; });
+    const nm = el("span", "cat-cn"); nm.append(el("b", "", c.name), el("small", "", `${c.ids.length} song${c.ids.length === 1 ? "" : "s"}`));
+    const more = el("button", "icon-btn more"); more.setAttribute("aria-label", `${c.name}: rename, cover, delete`); more.innerHTML = `<svg><use href="#i-more"/></svg>`;
+    more.onclick = () => editCategory(c, (x) => { if (x === null) cat = null; render(); });
+    head.append(back, th, nm, more);
+    box.append(head);
+    return;
+  }
+  const strip = el("div", "cat-strip");
+  const add = el("button", "cat-tile cat-new"); add.append(el("span", "cat-cov", "+"), el("b", "", "New"), el("small", "", "category"));
+  add.onclick = () => newCategory(() => render());
+  strip.append(add);
+  for (const c of categories.all()) {
+    const tile = el("button", "cat-tile"); tile.dataset.cat = c.id;
+    const cov = el("span", "cat-cov"); coverUrl(c).then((u) => { cov.style.backgroundImage = `url("${u}")`; });
+    tile.append(cov, el("b", "", c.name), el("small", "", `${c.ids.length} song${c.ids.length === 1 ? "" : "s"}`));
+    tile.onclick = () => { cat = c.id; render(); };
+    strip.append(tile);
+  }
+  box.append(strip);
+}
+/** What the list shows: this kind, the open category (in Rebassed), and the search. */
+function shownList() {
+  const q = $("lib-search").value.trim().toLowerCase();
+  const inCat = kind === "rebass" && cat ? new Set((categories.get(cat) || { ids: [] }).ids) : null;
+  return tracks.filter((t) => (t.kind || "song") === kind)
+    .filter((t) => !inCat || inCat.has(t.id))
+    .filter((t) => !q || `${t.title} ${t.artist} ${t.album}`.toLowerCase().includes(q))
+    .sort(kind === "song" ? byTitle : (a, b) => b.added - a.added);
+}
 function render() {
+  paintCats();
   const q = $("lib-search").value.trim().toLowerCase();
   const list = tracks.filter((t) => (t.kind || "song") === kind)
+    .filter((t) => !(kind === "rebass" && cat) || (categories.get(cat) || { ids: [] }).ids.includes(t.id))
     .filter((t) => !q || `${t.title} ${t.artist} ${t.album}`.toLowerCase().includes(q))
     .sort(kind === "song" ? byTitle : (a, b) => b.added - a.added);
   const ul = $("lib-list");
@@ -166,12 +213,12 @@ function render() {
       rebass: ["No rebasses yet", "Make one on the Rebass tab, then tap Add to my library to keep it here."],
       tone: ["No saved tones yet", "Build a tone on the Tones tab and add it to your library to keep it here."],
     };
-    const [h, p] = q ? ["Nothing matches", `No ${kind === "song" ? "songs" : kind === "rebass" ? "rebasses" : "tones"} match "${q}".`] : msgs[kind];
+    const [h, p] = kind === "rebass" && cat && !q ? [`Nothing in ${(categories.get(cat) || {}).name || "this category"} yet`, "Tap the dots next to a rebass and choose Categories to put it here."] : q ? ["Nothing matches", `No ${kind === "song" ? "songs" : kind === "rebass" ? "rebasses" : "tones"} match "${q}".`] : msgs[kind];
     $("lib-empty-h").textContent = h; $("lib-empty-p").textContent = p;
     $("lib-add-2").hidden = $("lib-add-dir").hidden = kind !== "song" || !!q;
   }
   const n = tracks.filter((t) => (t.kind || "song") === "song").length;
-  store.storageUse().then((u) => { $("lib-foot").textContent = (n || u ? `${n} song${n === 1 ? "" : "s"} · ${sizeText(u)} kept on this device · ` : "") + "FifTeam Media 2.3"; });
+  store.storageUse().then((u) => { $("lib-foot").textContent = (n || u ? `${n} song${n === 1 ? "" : "s"} · ${sizeText(u)} kept on this device · ` : "") + "FifTeam Media 2.4"; });
 }
 
 function menu(t) {
@@ -185,6 +232,7 @@ function menu(t) {
     add("i-play", "Play", () => playIn(t));
     add("i-queue", "Play next", () => { player.playNext(t.id); toast("Plays next"); });
     if ((t.kind || "song") !== "tone") add("i-bass", "Rebass this song", () => bus.emit("rebass", t));
+    if (t.kind === "rebass") add("i-folder", categories.of(t.id).length ? `Categories: ${categories.of(t.id).map((c) => c.name).join(", ")}`.slice(0, 60) : "Add to a category", () => chooseCategories(t, render));
     add("i-image", t.hasArt ? "Change cover image" : "Add a cover image", async () => {
       const b = await pickImage(); if (!b) return;
       await store.putArt(t.id, b);
@@ -200,7 +248,9 @@ function menu(t) {
 }
 
 function playIn(t) {
-  const ids = tracks.filter((x) => (x.kind || "song") === (t.kind || "song")).sort(kind === "song" ? byTitle : (a, b) => b.added - a.added).map((x) => x.id);
+  // (from what's on screen: the open category, or every one of this kind)
+  const shown = shownList().filter((x) => (x.kind || "song") === (t.kind || "song"));
+  const ids = (shown.some((x) => x.id === t.id) ? shown : tracks.filter((x) => (x.kind || "song") === (t.kind || "song")).sort(kind === "song" ? byTitle : (a, b) => b.added - a.added)).map((x) => x.id);
   player.playFrom(ids, t.id);
 }
 
@@ -214,7 +264,7 @@ export function initLibrary() {
   dirIn.onchange = () => importFiles(dirIn.files);
   if (!("webkitdirectory" in document.createElement("input")) || isIOS()) $("lib-add-dir").hidden = true;
   $("lib-search").addEventListener("input", render);
-  onSeg($("lib-seg"), (k) => { kind = k; render(); });
+  onSeg($("lib-seg"), (k) => { kind = k; if (k !== "rebass") cat = null; render(); });
   $("lib-list").addEventListener("click", (e) => {
     const li = e.target.closest(".item"); if (!li) return;
     const t = tracks.find((x) => x.id === li.dataset.id); if (!t) return;

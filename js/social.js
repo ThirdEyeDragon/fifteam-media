@@ -10,7 +10,10 @@ import { library } from "./library.js";
 import { player } from "./player.js";
 import { fitJpeg, squareJpeg } from "./image.js";
 import { makeFile, sizeText } from "./export.js";
-import { openPerson, myPublicKey, initDms } from "./dms.js";
+import { myPublicKey, initDms } from "./dms.js";
+import { openProfile } from "./profile.js";
+import { loadMeta, votesOf, setVote, meta } from "./meta.js";
+import { bannedPhones } from "./ban.js";
 import { activityChanged, initActivity } from "./activity.js";
 
 const NAME_KEY = "fifteam-social-name", MINE_KEY = "fifteam-social-mine", ME_KEY = "fifteam-social-me", AV_KEY = "fifteam-social-avatar";
@@ -38,7 +41,7 @@ async function config() {
   const c = await r.json();
   if (!c.hook || !c.key || !c.index) throw new Error("setup");
   // (the key is kept reversed in the file, so robots that search code for links don't pick it up)
-  S.cfg = { base: `https://discord.com/api/v10/webhooks/${c.hook}/${atob(c.key).split("").reverse().join("")}`, index: c.index, dm: c.dm || "" };
+  S.cfg = { base: `https://discord.com/api/v10/webhooks/${c.hook}/${atob(c.key).split("").reverse().join("")}`, index: c.index, dm: c.dm || "", meta: c.meta || "", presence: c.presence || "", mod: c.mod || "" };
   return S.cfg;
 }
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -167,6 +170,21 @@ function ago(t) {
   return new Date(t).toLocaleDateString(undefined, { day: "numeric", month: "short" });
 }
 const NAME_OK = /^[\p{L}\p{N} _.\-]{2,24}$/u;
+/** Who wrote it, by their username now (a username changed later shows on their older posts and comments too). */
+const nameOf = (x) => (x.by && x.by === S.me && S.name) || (x.by && S.profiles[x.by] && S.profiles[x.by].name) || x.user;
+const hidden = (x) => !!(x.by && bannedPhones().has(x.by));
+const commentsOf = (p) => p.comments.filter((c) => !hidden(c));
+/** The rebassed song with the most votes from the last seven days (none until one has a vote). */
+function weekly(posts) {
+  const since = Date.now() - 7 * 86400e3, banned = bannedPhones();
+  let best = null, bv = 0;
+  for (const p of posts) {
+    if (!p.song || p.at < since) continue;
+    const v = votesOf(p.id).filter((x) => !banned.has(x)).length;
+    if (v > bv || (v && v === bv && p.likes.length > best.likes.length)) { best = p; bv = v; }
+  }
+  return best;
+}
 
 let seen = null;
 function avatarEl(size, url, name) {
@@ -179,21 +197,29 @@ function render() {
   if (!body) return;
   S.ids = sigIds(S.feed); S.shownError = S.error;
   body.replaceChildren();
-  // you: your picture and your username
+  // you: your picture (your profile) and "what's on your mind", or first of all a username
   const you = h("div", "card so-you");
-  const pic = h("button", "so-avbtn"); pic.setAttribute("aria-label", "Profile picture"); pic.append(avatarEl(48, S.avatarUrl, S.name || "?"));
-  pic.onclick = pickAvatar;
   if (S.name && !S.editingName) {
-    const r = h("div", "so-yourow");
-    const t = h("span", "so-yourname"); t.append(h("b", "", S.name));
-    const c = h("button", "btn small", "Change"); c.onclick = () => { S.editingName = true; render(); };
-    r.append(pic, t, c); you.append(r);
+    const row = h("div", "so-compose-row");
+    const me = h("button", "so-avbtn"); me.setAttribute("aria-label", "Your profile"); me.append(avatarEl(42, S.avatarUrl, S.name));
+    me.onclick = () => openProfile({ by: S.me, user: S.name });
+    const pill = h("button", "so-pill so-new", `What's on your mind, ${S.name.split(" ")[0]}?`); pill.onclick = () => composer({});
+    row.append(me, pill);
+    const quick = h("div", "so-quick");
+    const q = (ic, label, fn) => { const x = h("button", "so-qbtn"); x.append(icon(ic), h("span", "", label)); x.onclick = fn; quick.append(x); };
+    q("i-image", "Photo", () => composer({ pick: "image" }));
+    q("i-video", "Video", () => composer({ pick: "video" }));
+    q("i-bass", "Rebass", () => pickRebass((song) => composer({ song })));
+    you.append(row, quick);
   } else {
+    const pic = h("button", "so-avbtn so-avpick"); pic.setAttribute("aria-label", "Profile picture"); pic.append(avatarEl(48, S.avatarUrl, S.name || "?"));
+    pic.onclick = pickAvatar;
     const f = h("form", "so-nameform");
     const inp = h("input", "input"); inp.maxLength = 24; inp.placeholder = "Pick a username"; inp.value = S.name; inp.setAttribute("aria-label", "Username"); inp.autocomplete = "off";
     const go = h("button", "btn primary", "Save"); go.type = "submit";
     const err = h("p", "set-err");
     f.append(pic, inp, go); you.append(f, err);
+    if (S.name) { const x = h("button", "btn small", "Cancel"); x.type = "button"; x.onclick = () => { S.editingName = false; render(); }; f.append(x); }
     f.onsubmit = (e) => {
       e.preventDefault();
       const v = inp.value.trim().replace(/\s+/g, " ");
@@ -205,18 +231,20 @@ function render() {
     };
   }
   body.append(you);
-  const nb = h("button", "btn primary block so-new"); nb.append(icon("i-plus"), "New post");
-  nb.onclick = () => composer({});
-  body.append(nb);
   if (S.error) body.append(h("p", "status", S.error));
-  const posts = S.feed.filter((p) => !S.gone.has(p.id));
-  if (!posts.length) {
+  const all = S.feed.filter((p) => !S.gone.has(p.id) && !hidden(p));
+  // the rebass of the week, on top
+  const top = weekly(all);
+  S.weekId = top ? top.id : "";
+  const posts = all.filter((p) => p !== top);
+  if (!all.length) {
     const e = h("div", "card so-empty");
     e.append(h("b", "", S.loading ? "Loading…" : "Nothing here yet"), h("p", "status", S.loading ? "" : "Be the first to post."));
     body.append(e); return;
   }
   if (seen) seen.disconnect();
   seen = "IntersectionObserver" in window ? new IntersectionObserver((es) => { for (const x of es) if (x.isIntersecting) { seen.unobserve(x.target); x.target._fill && x.target._fill(); } }, { rootMargin: "400px" }) : null;
+  if (top) { const w = h("section", "so-week"); const t = h("div", "so-week-h"); t.append(h("span", "so-trophy", "🏆"), h("b", "", "Rebass of the week"), h("small", "", "top votes · 7 days")); w.append(t, postCard(top)); body.append(w); }
   for (const p of posts.slice(0, S.shown)) body.append(postCard(p));
   if (posts.length > S.shown) { const m = h("button", "btn block", "Show more"); m.onclick = () => { S.shown += 30; render(); }; body.append(m); }
 }
@@ -282,31 +310,48 @@ async function showPicture(av, p) {
 function postCard(p) {
   const card = h("article", "card so-post");
   card.dataset.id = p.id;
+  // (a gentle fade in, the first time a post shows; not again when the list is redrawn)
+  S.shownCards = S.shownCards || new Set();
+  if (!S.shownCards.has(p.id)) { S.shownCards.add(p.id); card.classList.add("so-enter"); }
+  const name = nameOf(p);
   const head = h("div", "so-head");
   const who = h("div", "so-who");
-  const av = avatarEl(40, "", p.user);
+  const av = avatarEl(40, "", name);
   showPicture(av, p);
-  av.classList.add("tap"); av.setAttribute("role", "button"); av.setAttribute("aria-label", `${p.user}: message`);
-  av.onclick = () => openPerson({ by: p.by, user: p.user });
-  const nm = h("span", "so-name"); nm.append(h("b", "", p.user), h("small", "", ago(p.at)));
+  av.classList.add("tap"); av.setAttribute("role", "button"); av.setAttribute("aria-label", `${name}'s profile`);
+  const nm = h("span", "so-name tap"); nm.append(h("b", "", name), h("small", "", ago(p.at)));
+  av.onclick = nm.onclick = () => openProfile({ by: p.by, user: p.user });
   who.append(av, nm); head.append(who);
-  if (S.mine.has(p.id)) { const d = h("button", "btn small so-del", "Delete"); d.onclick = () => removePost(p); head.append(d); }
+  if (S.mine.has(p.id)) { const d = h("button", "so-more"); d.setAttribute("aria-label", "More"); d.append(icon("i-more")); d.onclick = () => postMenu(p); head.append(d); }
   card.append(head);
   if (p.text) card.append(h("p", "so-text", p.text));
   let img = null, song = null, vid = null;
   if (p.image) { img = h("div", "so-img so-wait"); card.append(img); }
   if (p.video) { vid = videoBlock(p); card.append(vid); }
   if (p.song) { song = songBlock(p); card.append(song); }
-  // the like and the comments
+  // the counts, then Like, Comment and (a rebassed song) Vote
+  const stats = h("div", "so-stats");
+  const sl = h("span", "so-slikes"), sv = h("span", "so-svotes"), sc = h("button", "so-scom");
+  sc.onclick = () => openComments(p.id);
+  const left = h("span", "so-sleft"); left.append(sl, sv);
+  stats.append(left, sc);
+  card.append(stats);
   const bar = h("div", "so-bar");
   const lk = h("button", "so-like"); lk.dataset.id = p.id;
-  lk.append(h("span", "so-heart", "♥"), h("span", "so-count", ""));
-  paintLike(lk, p);
+  lk.append(h("span", "so-heart", "♥"), h("span", "so-lbl", "Like"));
   lk.onclick = () => like(p, lk);
   const cm = h("button", "so-cbtn"); cm.dataset.id = p.id; cm.setAttribute("aria-label", "Comments");
-  cm.append(icon("i-chat"), h("span", "so-count", ""));
+  cm.append(icon("i-chat"), h("span", "so-lbl", "Comment"));
   cm.onclick = () => openComments(p.id);
-  bar.append(lk, cm); card.append(bar);
+  bar.append(lk, cm);
+  if (p.song) {
+    const vt = h("button", "so-vote"); vt.dataset.id = p.id;
+    vt.append(h("span", "so-fire", "🔥"), h("span", "so-lbl", "Vote"));
+    vt.onclick = () => vote(p, vt);
+    bar.append(vt);
+  }
+  card.append(bar);
+  paintLike(lk, p);
   paintCount(card, p);
   // the pictures, video and song links, from the post's own message, once it is near the screen
   if (p.image || p.song || p.avatar || p.video) {
@@ -315,7 +360,7 @@ function postCard(p) {
         const m = await message(p.id);
         const pic = fileOf(m, "picture.jpg"), mp3 = songOf(m), cov = fileOf(m, "cover.jpg"), face = fileOf(m, "avatar.jpg");
         if (face && !pictureFor(p) && !(mineAs(p) && S.avatarUrl)) av.style.backgroundImage = `url("${face.url}")`;
-        if (img && pic) { const i = h("img", "so-img"); i.alt = p.text ? p.text.slice(0, 80) : "A picture"; i.decoding = "async"; i.src = pic.url; i.onclick = () => viewImage(pic.url); img.replaceWith(i); }
+        if (img && pic) { const i = h("img", "so-img"); i.alt = p.text ? p.text.slice(0, 80) : "A picture"; i.decoding = "async"; i.onload = () => i.classList.add("in"); i.onerror = () => i.classList.add("in"); i.src = pic.url; i.onclick = () => viewImage(pic.url); img.replaceWith(i); }
         if (song) { song._url = mp3 && mp3.url; if (cov) song.querySelector(".so-cover").style.backgroundImage = `url("${cov.url}")`; }
         if (vid) { const f = fileOf(m, "video." + p.video), po = fileOf(m, "poster.jpg"); vid._attach(f && f.url, po && po.url); }
       } catch (e) {
@@ -374,10 +419,39 @@ function videoObserver() {
 }
 function pauseVideos() { document.querySelectorAll("#so-body .so-vid video").forEach((v) => v.pause()); }
 
-/** The number on a post's comments button. */
+/** A post's counts: likes and votes on the left, comments on the right; and whether this phone has voted. */
 function paintCount(card, p) {
-  const btn = card.querySelector(".so-cbtn");
-  if (btn) btn.querySelector(".so-count").textContent = p.comments.length ? String(p.comments.length) : "";
+  const n = p.likes.length, v = votesOf(p.id).filter((x) => !bannedPhones().has(x)).length, c = commentsOf(p).length;
+  const sl = card.querySelector(".so-slikes"), sv = card.querySelector(".so-svotes"), sc = card.querySelector(".so-scom");
+  if (sl) sl.textContent = n ? `♥ ${n}` : "";
+  if (sv) sv.textContent = p.song && v ? `🔥 ${v} vote${v === 1 ? "" : "s"}` : "";
+  if (sc) sc.textContent = c ? `${c} comment${c === 1 ? "" : "s"}` : "";
+  card.classList.toggle("so-nostats", !n && !c && !(p.song && v));
+  const vt = card.querySelector(".so-vote");
+  if (vt) { const on = votesOf(p.id).includes(S.me); vt.classList.toggle("on", on); vt.setAttribute("aria-pressed", String(on)); vt.querySelector(".so-lbl").textContent = on ? "Voted" : "Vote"; }
+}
+/** Vote for a rebassed song (or take it back): shown at once; the rebass of the week follows. */
+async function vote(p, btn) {
+  if (!S.me) return;
+  if (!S.name) { toast("Pick a username first"); S.editingName = true; render(); return; }
+  const on = !votesOf(p.id).includes(S.me);
+  const was = S.weekId;
+  const job = setVote(p.id, on);
+  document.querySelectorAll(`#so-body .so-post[data-id="${p.id}"]`).forEach((c) => paintCount(c, p));
+  btn.classList.remove("pop"); void btn.offsetWidth; if (on) btn.classList.add("pop");
+  if ((weekly(S.feed.filter((x) => !S.gone.has(x.id) && !hidden(x))) || {}).id !== was) render();
+  if (!(await job)) toast("Couldn't save that vote. Try again.");
+  document.querySelectorAll(`#so-body .so-post[data-id="${p.id}"]`).forEach((c) => paintCount(c, p));
+  if ((weekly(S.feed.filter((x) => !S.gone.has(x.id) && !hidden(x))) || {}).id !== S.weekId) render();
+}
+/** Your post's menu. */
+function postMenu(p) {
+  openSheet((panel) => {
+    panel.append(h("h3", "", "Your post"));
+    const d = h("button", "menu-item danger so-del"); d.append(icon("i-trash"), h("span", "", "Delete post"));
+    d.onclick = () => { closeSheet(); removePost(p); };
+    panel.append(d);
+  });
 }
 const postNow = (id) => S.feed.find((x) => x.id === id);
 /** A post's comments, in a panel: each with its replies under it, likes, Reply; your own can be deleted. */
@@ -410,7 +484,7 @@ function setReply(c) {
   to.replaceChildren();
   if (c) {
     const x = h("button", "cs-x", "×"); x.type = "button"; x.setAttribute("aria-label", "Not replying"); x.onclick = () => setReply(null);
-    to.append(h("span", "", `Replying to ${c.user}`), x);
+    to.append(h("span", "", `Replying to ${nameOf(c)}`), x);
     const inp = document.querySelector("#sheet-panel .cs-form input"); if (inp) inp.focus();
   }
 }
@@ -420,20 +494,22 @@ function paintSheet() {
   const p = postNow(S.cs.id);
   list.replaceChildren();
   if (!p) { list.append(h("p", "status", "That post is gone.")); return; }
-  const tops = p.comments.filter((c) => !c.re || !p.comments.some((x) => x.id === c.re)).sort((a, b) => a.at - b.at);
+  const shown = commentsOf(p);
+  const tops = shown.filter((c) => !c.re || !shown.some((x) => x.id === c.re)).sort((a, b) => a.at - b.at);
   if (!tops.length) list.append(h("p", "status cs-none", "No comments yet. Be the first."));
   for (const c of tops) {
     list.append(commentRow(p, c, false));
-    for (const r of p.comments.filter((x) => x.re === c.id).sort((a, b) => a.at - b.at)) list.append(commentRow(p, r, true));
+    for (const r of shown.filter((x) => x.re === c.id).sort((a, b) => a.at - b.at)) list.append(commentRow(p, r, true));
   }
 }
 function commentRow(p, c, reply) {
   const row = h("div", "cs-c" + (reply ? " reply" : "") + (c.sending ? " sending" : ""));
-  const av = avatarEl(reply ? 28 : 34, "", c.user);
+  const cname = nameOf(c);
+  const av = avatarEl(reply ? 28 : 34, "", cname);
   showPicture(av, { by: c.by, user: c.user, id: "" });
-  av.classList.add("tap"); av.onclick = () => openPerson({ by: c.by, user: c.user });
+  av.classList.add("tap"); av.onclick = () => openProfile({ by: c.by, user: c.user });
   const body = h("div", "cs-body");
-  const top = h("div", "cs-name"); top.append(h("b", "", c.user), h("small", "", ago(c.at)));
+  const top = h("div", "cs-name"); top.append(h("b", "", cname), h("small", "", ago(c.at)));
   const acts = h("div", "cs-acts");
   const rp = h("button", "cs-act", "Reply"); rp.onclick = () => setReply(c);
   const lk = h("button", "cs-act cs-like" + (c.likes.includes(S.me) ? " on" : ""));
@@ -483,11 +559,12 @@ function likeComment(id, cid) {
 }
 
 function paintLike(btn, p) {
-  const mine = p.likes.includes(S.me), n = p.likes.length;
+  const mine = p.likes.includes(S.me);
   btn.classList.toggle("on", mine);
   btn.setAttribute("aria-pressed", String(mine));
   btn.setAttribute("aria-label", mine ? "Unlike" : "Like");
-  btn.querySelector(".so-count").textContent = n ? String(n) : "";
+  btn.querySelector(".so-lbl").textContent = mine ? "Liked" : "Like";
+  const card = btn.closest(".so-post"); if (card) paintCount(card, p);
 }
 /** Like or unlike: shown at once, saved to the feed (the last tap wins if it's tapped again while saving). */
 async function like(p, btn) {
@@ -542,7 +619,7 @@ async function songBlob(p, block) {
   return b;
 }
 function paintPlay() {
-  document.querySelectorAll("#so-body .so-play").forEach((b) => {
+  document.querySelectorAll(".so-play").forEach((b) => {
     const on = b.dataset.id === S.playing;
     b.querySelector("use").setAttribute("href", on ? "#i-pause" : "#i-play");
     b.setAttribute("aria-label", on ? "Pause" : "Play");
@@ -573,7 +650,7 @@ async function addToLibrary(p, block, btn) {
     let cover = null;
     try { const m = await message(p.id), c = fileOf(m, "cover.jpg"); if (c) cover = await (await fetch(c.url, { cache: "no-store" })).blob(); } catch {}
     const file = new File([audio], `${s.title}.mp3`.replace(/[\\/:*?"<>|]+/g, " "), { type: "audio/mpeg" });
-    await library.add({ id: store.newId(), kind: "rebass", title: s.title, artist: s.artist || p.user, album: "FifTeam Social", note: s.note || `from ${p.user}`,
+    await library.add({ id: store.newId(), kind: "rebass", title: s.title, artist: s.artist || nameOf(p), album: "FifTeam Social", note: s.note || `from ${nameOf(p)}`,
       duration: s.duration, size: file.size, type: file.type, fileName: file.name, added: Date.now(), hasArt: !!cover, from: "social" }, file, cover);
     btn.classList.remove("busy"); btn.classList.add("done"); toast("Added to your library, under Rebassed");
   } catch { btn.disabled = false; btn.classList.remove("busy"); toast("Couldn't download that song. Are you online?"); }
@@ -673,6 +750,7 @@ async function prepareVideo(file, budget, say) {
 function composer(preset) {
   if (!S.name) { toast("Pick a username first"); S.editingName = true; render(); setTimeout(() => { const i = document.querySelector("#so-body .so-nameform input"); if (i) i.focus(); }, 100); return; }
   let img = preset.img || null, song = preset.song || null, video = preset.video || null;
+  preset = { ...preset };
   openSheet((p) => {
     p.append(h("h3", "", "New post"));
     const text = h("textarea", "input so-compose"); text.rows = 3; text.maxLength = 500; text.placeholder = "Say something"; text.setAttribute("aria-label", "Your post");
@@ -718,6 +796,7 @@ function composer(preset) {
     };
     p.append(text, addRow, prev, err, go);
     paint();
+    if (preset.pick === "image") ai.click(); else if (preset.pick === "video") av.click();
   });
 }
 function pickAny(accept = "image/*") {
@@ -809,7 +888,11 @@ async function refresh({ manual = false } = {}) {
   const firstTime = !S.loadedAt;
   S.loading = (async () => {
     S.error = "";
-    try { await config(); if (manual) S.msgs.clear(); const list = await readIndex(); S.profiles = list.profiles; S.feed = keepGone(list); S.loadedAt = Date.now(); }
+    try {
+      await config(); if (manual) S.msgs.clear();
+      const [list] = await Promise.all([readIndex(), loadMeta(0).catch(() => null)]);
+      S.profiles = list.profiles; S.feed = keepGone(list); S.loadedAt = Date.now();
+    }
     catch (e) { S.error = e.message === "setup" || e instanceof SyntaxError ? "Social isn't available yet." : e.message; }
   })();
   if (firstTime) render();
@@ -818,14 +901,15 @@ async function refresh({ manual = false } = {}) {
   if (!S.error && (S.avatar || S.name)) syncProfile();
   if (S.cs && !S.loading) paintSheet();
   if (!S.error) activityChanged();
-  if (manual || firstTime || sigIds(S.feed) !== S.ids || S.error !== S.shownError || JSON.stringify(S.profiles) !== before) render();
+  const week = (weekly(S.feed.filter((x) => !S.gone.has(x.id) && !hidden(x))) || {}).id || "";
+  if (manual || firstTime || sigIds(S.feed) !== S.ids || S.error !== S.shownError || JSON.stringify(S.profiles) !== before || week !== S.weekId || S.bansSig !== [...bannedPhones()].join()) { S.bansSig = [...bannedPhones()].join(); render(); }
   else for (const p of S.feed) {
     if (!S.liking.has(p.id)) document.querySelectorAll(`#so-body .so-like[data-id="${p.id}"]`).forEach((btn) => paintLike(btn, p));
     const card = document.querySelector(`#so-body .so-post[data-id="${p.id}"]`);
     if (card) paintCount(card, p);
   }
 }
-const sigIds = (feed) => feed.filter((p) => !S.gone.has(p.id)).map((p) => p.id).join(",");
+const sigIds = (feed) => feed.filter((p) => !S.gone.has(p.id) && !hidden(p)).map((p) => p.id).join(",");
 
 /** Pull the feed down to refresh it: the list follows the finger (with some weight), a ring turns as it comes, and
  * past the line it spins while the feed loads, then everything springs back. Transforms only, so it stays smooth. */
@@ -893,7 +977,7 @@ async function ensureProfiles(fresh) {
   await config();
   if (!S.loadedAt || Date.now() - S.loadedAt > (fresh ? 5000 : 40000)) {
     // (the feed too: the bell's activity comes from it; the Social screen redraws from it the next time it refreshes)
-    const list = await readIndex(); S.profiles = list.profiles; S.feed = keepGone(list); S.loadedAt = Date.now();
+    const [list] = await Promise.all([readIndex(), loadMeta(0).catch(() => null)]); S.profiles = list.profiles; S.feed = keepGone(list); S.loadedAt = Date.now();
     activityChanged();
   }
   if (S.name) syncProfile();
@@ -904,5 +988,19 @@ function findPhone(name) {
   for (const [k, v] of Object.entries(S.profiles || {})) if (v.name && v.name === name && (!best || v.at > best[1].at)) best = [k, v];
   return best ? best[0] : "";
 }
-export const api = { state: S, config, dc, avatarEl, showPicture, ago, icon, findPhone, ensureProfiles, openComments };
+/** A post on the Social screen: scrolled to and lit up (shown further down the list if it has to be). */
+function showPost(id) {
+  closeSheet();
+  if (location.hash !== "#social") location.hash = "#social";
+  const i = S.feed.filter((p) => !S.gone.has(p.id) && !hidden(p)).findIndex((p) => p.id === id);
+  if (i >= S.shown) { S.shown = i + 10; render(); }
+  setTimeout(() => {
+    const card = document.querySelector(`#so-body .so-post[data-id="${id}"]`);
+    if (!card) { toast("That post is gone."); return; }
+    card.scrollIntoView({ behavior: "smooth", block: "center" });
+    card.classList.remove("flash"); void card.offsetWidth; card.classList.add("flash");
+  }, 350);
+}
+function editName() { closeSheet(); S.editingName = true; if (location.hash !== "#social") location.hash = "#social"; render(); setTimeout(() => { const i = document.querySelector("#so-body .so-nameform input"); if (i) { i.focus(); i.select(); } }, 120); }
+export const api = { state: S, config, dc, avatarEl, showPicture, ago, icon, findPhone, ensureProfiles, openComments, nameOf, hidden, songBlock, showPost, pickAvatar, editName, fileOf, message, viewImage, render };
 export const social = { state: S, prepareVideo };

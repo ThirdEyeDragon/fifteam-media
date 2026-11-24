@@ -45,6 +45,7 @@ export const listTracks = () => tx(["tracks"], "readonly", (t) => req(t.getAll()
 export const getBlob = (id) => tx(["blobs"], "readonly", (b) => req(b.get(id)));
 export const getArt = (id) => tx(["art"], "readonly", (a) => req(a.get(id)));
 export const putArt = (id, blob) => tx(["art"], "readwrite", (a) => { a.put(blob, id); });
+export const deleteArt = (id) => tx(["art"], "readwrite", (a) => { a.delete(id); });
 export const updateTrack = (meta) => tx(["tracks"], "readwrite", (t) => { t.put(meta); });
 export const deleteTrack = (id) => tx(["tracks", "blobs", "art"], "readwrite", (t, b, a) => { t.delete(id); b.delete(id); a.delete(id); });
 

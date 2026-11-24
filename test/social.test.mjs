@@ -31,6 +31,11 @@ const bobPic = "900000000000000201";
 msgs.set(bobPic, { id: bobPic, content: "", attachments: [attach(bobPic, "avatar.jpg", tinyJpeg, "image/jpeg")] });
 const seedProfiles = { bobphone001: { name: seedFeed[0].user, av: bobPic, at: Date.now() - 86400e3 } };
 const DM = "900000000000000002";
+const META = "900000000000000003", PRES = "900000000000000004", MOD = "900000000000000005";
+for (const [id, file, d] of [[META, "meta.json", { v: 1, votes: {}, follows: {}, about: {} }], [PRES, "presence.json", { v: 1, on: {} }], [MOD, "mod.json", { v: 1, bans: {} }]])
+  msgs.set(id, { id, content: file, attachments: [attach(id, file, Buffer.from(JSON.stringify(d)), "application/json")] });
+const storeNow = (id) => JSON.parse(cdn.get(msgs.get(id).attachments[0].url.split("?")[0]).bytes.toString());
+const setStore = (id, d) => msgs.set(id, { id, content: "x", attachments: [attach(id, msgs.get(id).attachments[0].filename, Buffer.from(JSON.stringify(d)), "application/json")] });
 msgs.set(DM, { id: DM, content: "FifTeam messages", attachments: [attach(DM, "dm.json", Buffer.from(JSON.stringify({ v: 1, msgs: [] })), "application/json")] });
 const dmNow = () => JSON.parse(cdn.get(msgs.get(DM).attachments[0].url.split("?")[0]).bytes.toString()).msgs;
 msgs.set(INDEX, { id: INDEX, content: "FifTeam Social feed", attachments: [attach(INDEX, "feed.json", Buffer.from(JSON.stringify({ v: 1, posts: seedFeed, profiles: seedProfiles })), "application/json")] });
@@ -55,7 +60,7 @@ let clobber = null;
 function discord(method, url, headers, body) {
   const u = new URL(url);
   if (u.host === "cdn.discordapp.com") { const f = cdn.get(url.split("?")[0]); return f ? { status: 200, type: f.type, body: f.bytes } : { status: 404, type: "text/plain", body: Buffer.from("no") }; }
-  if (u.pathname.endsWith("/social/config.json")) return json({ hook: HOOK, key: Buffer.from(TOKEN.split("").reverse().join("")).toString("base64"), index: INDEX, dm: DM });
+  if (u.pathname.endsWith("/social/config.json")) return json({ hook: HOOK, key: Buffer.from(TOKEN.split("").reverse().join("")).toString("base64"), index: INDEX, dm: DM, meta: META, presence: PRES, mod: MOD });
   const base = `/api/v10/webhooks/${HOOK}/${TOKEN}`;
   if (!u.pathname.startsWith(base)) return json({ message: "Unknown Webhook", code: 10015 }, 404);
   const rest = u.pathname.slice(base.length), m = /^\/messages\/(\d+)$/.exec(rest);
@@ -105,6 +110,7 @@ try {
   check((await ev(`document.querySelectorAll('#so-body .so-post').length`)) === 2, "two good posts (the one with a bad id dropped)");
   check(!(await ev(`!!window.__pwned`)) && !(await ev(`!!document.querySelector('#so-body img[src="x"], #so-body script')`)), "markup in a post stays text");
   await until(`!!document.querySelector('#so-body img.so-img') && document.querySelector('#so-body img.so-img').naturalWidth > 0`, 8000, "the picture");
+  await until(`document.querySelector('#so-body img.so-img').classList.contains('in')`, 4000, "the picture faded in");
   await shot("d1_feed");
   await until(`/cdn\.discordapp\.com.*avatar\.jpg/.test(document.querySelector('#so-body .so-post .so-av').style.backgroundImage)`, 8000, "Bob's picture on his post (from his profile)");
   console.log("Bob's picture on his older post:", await ev(`/avatar\.jpg/.test(document.querySelector('#so-body .so-post .so-av').style.backgroundImage)`));
@@ -115,18 +121,30 @@ try {
   console.log("too short a name:", await text("#so-body .so-you .set-err"));
   await setName("Alice"); await sleep(300);
   console.log("name set:", await text("#so-body .so-you"), "| kept:", await ev(`localStorage.getItem('fifteam-social-name')`));
-  check((await text("#so-body .so-yourname")) === "Alice", "username set");
+  check((await text("#so-body .so-pill")) === "What's on your mind, Alice?", "username set (it greets you on the post box)");
 
   // a profile picture (goes with each post)
   await send("Page.setInterceptFileChooserDialog", { enabled: true });
   const avChooser = new Promise((res) => b.on((m) => { if (m.method === "Page.fileChooserOpened") res(m.params); }));
-  await ev(`document.querySelector('#so-body .so-avbtn').click(), 1`);
+  await ev(`document.querySelector('#so-body .so-avbtn').click(), 1`); await sleep(400);
+  console.log("my page:", await ev(`document.querySelector('#sheet-panel .pf-head').textContent`));
+  await ev(`[...document.querySelectorAll('#sheet-panel .pf-btns .btn')].find(b => b.textContent === 'Change picture').click(), 1`);
   const avFc = await avChooser;
   const avPng = join(mkdtempSync(join(tmpdir(), "ft-av-")), "me.png");
   writeFileSync(avPng, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGP4z8DAwMDAxMDAwMDAAAANHQEDK+mmyAAAAABJRU5ErkJggg==", "base64"));
   await send("DOM.setFileInputFiles", { backendNodeId: avFc.backendNodeId, files: [avPng] });
   await send("Page.setInterceptFileChooserDialog", { enabled: false });
   await until(`(localStorage.getItem('fifteam-social-avatar') || '').startsWith('data:image/jpeg')`, 8000, "the profile picture");
+  await ev(`[...document.querySelectorAll('#sheet-panel .pf-btns .btn')].find(b => b.textContent === 'Add about me').click(), 1`); await sleep(200);
+  await ev(`(() => { const f = document.querySelector('#sheet-panel .pf-aboutform'); f.querySelector('textarea').value = 'Bass head from Ohio'; f.requestSubmit(); return 1; })()`);
+  const meNow = await ev(`localStorage.getItem('fifteam-social-me')`);
+  for (let i = 0; i < 40 && !storeNow(META).about[meNow]; i++) await sleep(200);
+  console.log("about me saved:", JSON.stringify(storeNow(META).about), "| my page:", await ev(`document.querySelector('#sheet-panel .pf-about').textContent`));
+  check(storeNow(META).about[meNow] === "Bass head from Ohio", "about me saved");
+  await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
+  for (let i = 0; i < 40 && !storeNow(PRES).on[meNow]; i++) await sleep(250);
+  console.log("who's online:", JSON.stringify(storeNow(PRES).on[meNow]));
+  check(!!storeNow(PRES).on[meNow] && storeNow(PRES).on[meNow].v === "2.4" && storeNow(PRES).on[meNow].d.length > 3, "this phone shows as online, with its device");
   console.log("profile picture kept on the phone:", await ev(`localStorage.getItem('fifteam-social-avatar').length + ' characters'`));
   const meId = await ev(`localStorage.getItem('fifteam-social-me')`);
   for (let i = 0; i < 40 && !(profilesNow()[meId] && profilesNow()[meId].av); i++) await sleep(200);
@@ -137,16 +155,38 @@ try {
   // a like on Eve's post: shown at once, saved to the feed list under this phone; again: gone
   const eveLikes = () => (feedNow().find((x) => x.id === eve) || {}).likes || [];
   await ev(`document.querySelector('#so-body .so-like[data-id="${eve}"]').click(), 1`);
-  console.log("like shown at once:", await ev(`document.querySelector('#so-body .so-like[data-id="${eve}"]').textContent`));
+  console.log("like shown at once:", await ev(`document.querySelector('#so-body .so-like[data-id="${eve}"]').textContent + ' / ' + document.querySelector('#so-body .so-post[data-id="${eve}"] .so-slikes').textContent`));
+  check((await ev(`document.querySelector('#so-body .so-post[data-id="${eve}"] .so-slikes').textContent`)) === "♥ 1" && (await ev(`document.querySelector('#so-body .so-like[data-id="${eve}"]').classList.contains('on')`)), "like shown at once");
   for (let i = 0; i < 40 && !eveLikes().length; i++) await sleep(200);
   const me = await ev(`localStorage.getItem('fifteam-social-me')`);
   console.log("like saved:", JSON.stringify(eveLikes()), "| this phone:", me);
   check(eveLikes().length === 1 && eveLikes()[0] === me, "the like is in the feed list");
   await ev(`document.querySelector('#so-body .so-like[data-id="${eve}"]').click(), 1`);
   for (let i = 0; i < 40 && eveLikes().length; i++) await sleep(200);
-  check(eveLikes().length === 0 && (await ev(`document.querySelector('#so-body .so-like[data-id="${eve}"]').textContent`)) === "♥", "unliked");
+  check(eveLikes().length === 0 && (await ev(`document.querySelector('#so-body .so-post[data-id="${eve}"] .so-slikes').textContent`)) === "", "unliked");
   await ev(`document.querySelector('#so-body .so-like[data-id="${eve}"]').click(), 1`);
   for (let i = 0; i < 40 && !eveLikes().length; i++) await sleep(200);
+
+  // votes: Alice votes for Bob's rebassed song, which makes it the rebass of the week, on top
+  const bobCard = `document.querySelector('#so-body .so-post[data-id="${bob}"]')`;
+  check(!(await ev(`!!document.querySelector('#so-body .so-week')`)), "no rebass of the week before any votes");
+  await ev(`${bobCard}.querySelector('.so-vote').click(), 1`);
+  for (let i = 0; i < 40 && !(storeNow(META).votes[bob] || []).length; i++) await sleep(200);
+  await sleep(300);
+  console.log("votes saved:", JSON.stringify(storeNow(META).votes), "| button:", await ev(`${bobCard}.querySelector('.so-vote').textContent`), "| counts:", await ev(`${bobCard}.querySelector('.so-stats').textContent`));
+  check((storeNow(META).votes[bob] || [])[0] === me, "the vote is saved");
+  const week = await ev(`(() => { const w = document.querySelector('#so-body .so-week'); return w ? w.querySelector('.so-week-h').textContent + ' | ' + w.querySelector('.so-post').dataset.id + ' | on top: ' + (document.getElementById('so-body').children[1] === w) : 'none'; })()`);
+  console.log("rebass of the week:", week);
+  check(week.includes(bob) && week.endsWith("on top: true"), "the voted song is the rebass of the week, on top");
+  check((await ev(`document.querySelectorAll('#so-body .so-post[data-id="${bob}"]').length`)) === 1, "shown once (not again further down)");
+  await shot("d10_week");
+  // taken back: no rebass of the week; voted again
+  await ev(`${bobCard}.querySelector('.so-vote').click(), 1`);
+  for (let i = 0; i < 40 && (storeNow(META).votes[bob] || []).length; i++) await sleep(200);
+  await sleep(300);
+  check(!(storeNow(META).votes[bob] || []).length && !(await ev(`!!document.querySelector('#so-body .so-week')`)), "vote taken back: no rebass of the week");
+  await ev(`${bobCard}.querySelector('.so-vote').click(), 1`);
+  for (let i = 0; i < 40 && !(storeNow(META).votes[bob] || []).length; i++) await sleep(200);
 
   // comments: only in their panel (the comments button); a comment, a reply to it, a like on it, then deleted
   const eveComments = () => (feedNow().find((x) => x.id === eve) || {}).comments || [];
@@ -186,7 +226,7 @@ try {
   check(lost && eveComments().some((c) => c.text === "Second thought") && eveComments().some((c) => c.text === "Nice one"), "a comment written over by another phone comes back");
   clobber = null;
   await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
-  console.log("count on the post:", await ev(`${eveCard}.querySelector('.so-cbtn').textContent`));
+  console.log("count on the post:", await ev(`${eveCard}.querySelector('.so-scom').textContent`));
 
   // someone's song: play it and keep it
   await ev(`document.querySelector('#so-body .so-song .so-play').click(), 1`); await sleep(800);
@@ -227,7 +267,7 @@ try {
   check(p0.files.some(([n]) => n === "picture.jpg") && p0.files.some(([n, b]) => n === "song.mp4" && b.subarray(0, 4).toString() === "FTS1" && /^(ID3|\xff)/.test(unmix(b).subarray(0, 3).toString("latin1"))), "picture and MP3 sent (scrambled)");
   check(feedNow()[0].id === p0.id && feedNow()[0].user === "Alice", "the feed list has the new post first");
   check(feedNow()[0].by === meId && !p0.files.some(([n]) => n === "avatar.jpg"), "the post says whose it is (the picture comes from the profile)");
-  await until(`document.querySelector('#so-body .so-post .so-av').style.backgroundImage.startsWith('url("data:image/jpeg')`, 8000, "my picture on my post");
+  await until(`[...document.querySelectorAll('#so-body .so-post')].find(p => p.textContent.includes('Fresh one')).querySelector('.so-av').style.backgroundImage.startsWith('url("data:image/jpeg')`, 8000, "my picture on my post");
   // another phone sees Alice's picture on her post, from her profile
   {
     const other = await browser();
@@ -259,6 +299,18 @@ try {
     await other.ev(`new Promise(r => { const t = Date.now(); (function w() { [...document.querySelectorAll('#so-body .so-post')].some(p => p.textContent.includes('Fresh one')) || Date.now() - t > 15000 ? r(1) : setTimeout(w, 200); })(); })`);
     await other.ev(`[...document.querySelectorAll('#so-body .so-post')].find(p => p.textContent.includes('Fresh one')).querySelector('.so-av').click(), 1`); await sleep(400);
     console.log("tapping Alice's picture:", await other.ev(`document.querySelector('#sheet-panel').textContent.replace(/\\s+/g, ' ').trim()`));
+    const benPhone = await other.ev(`localStorage.getItem('fifteam-social-me')`);
+    const page = JSON.parse(await other.ev(`JSON.stringify({ about: (document.querySelector('#sheet-panel .pf-about') || {}).textContent, tiles: document.querySelectorAll('#sheet-panel .pf-tile').length, tabs: [...document.querySelectorAll('#sheet-panel .pf-seg button')].map(b => b.textContent) })`));
+    console.log("Alice's page, seen by Ben:", JSON.stringify(page));
+    check(page.about === "Bass head from Ohio" && page.tiles === 1 && page.tabs.join() === "Pics & videos · 1,Rebassed songs · 1", "her page: about me, her picture post, her song post");
+    await other.ev(`document.querySelectorAll('#sheet-panel .pf-seg button')[1].click(), 1`); await sleep(200);
+    check((await other.ev(`document.querySelectorAll('#sheet-panel .pf-song .so-song').length`)) === 1, "her rebassed songs tab");
+    await other.ev(`document.querySelector('#sheet-panel .pf-follow').click(), 1`);
+    for (let i = 0; i < 40 && !(storeNow(META).follows[benPhone] || []).length; i++) await sleep(200);
+    await sleep(300);
+    const after = await other.ev(`document.querySelector('#sheet-panel .pf-counts').textContent + ' | ' + document.querySelector('#sheet-panel .pf-follow').textContent`);
+    console.log("Ben follows Alice:", JSON.stringify(storeNow(META).follows), "|", after);
+    check((storeNow(META).follows[benPhone] || []).includes(meNow) && after.startsWith("1 follower") && after.endsWith("Following"), "following, and her follower count");
     await other.ev(`[...document.querySelectorAll('#sheet-panel .btn')].find(b => b.textContent.includes('Message')).click(), 1`); await sleep(1500);
     console.log("after Message:", await other.ev(`JSON.stringify({ name: localStorage.getItem('fifteam-social-name'), toast: (document.querySelector('.toast, #toast') || {}).textContent, sheet: document.querySelector('#sheet-panel').className, text: document.querySelector('#sheet-panel').textContent.slice(0, 200) })`));
     await other.ev(`(() => { const f = document.querySelector('#sheet-panel .dm-form'); f.querySelector('input').value = 'hey Alice, sick rebass'; f.requestSubmit(); return 1; })()`);
@@ -325,30 +377,66 @@ try {
     await ev(`import('./js/social.js').then((m) => m.api.ensureProfiles(true)).then(() => 1)`);
     await sleep(300);
     console.log("Alice's bell:", await ev(`document.getElementById('act-badge').hidden ? 'none' : document.getElementById('act-badge').textContent`));
-    check((await ev(`document.getElementById('act-badge').textContent`)) === "4" && !(await ev(`document.getElementById('act-badge').hidden`)), "the bell counts 4 new");
+    check((await ev(`document.getElementById('act-badge').textContent`)) === "5" && !(await ev(`document.getElementById('act-badge').hidden`)), "the bell counts 5 new");
     await ev(`document.getElementById('btn-activity').click(), 1`); await sleep(500);
     const acts = await ev(`[...document.querySelectorAll('#sheet-panel .act-row')].map(r => (r.classList.contains('unread') ? '* ' : '') + r.querySelector('.act-what').textContent + ' / ' + r.querySelector('small').textContent).join(' | ')`);
     console.log("Alice's activity:", acts);
-    const want = ["Ben liked your post", "Ben commented: \u201cLove this\u201d", "Ben replied to your comment: \u201cagreed!\u201d", "Ben liked your comment \u201cNice one\u201d"];
-    check(want.every((t) => acts.includes(t)) && acts.split("* ").length - 1 === 4, "activity lists the likes, the comment and the reply, all new");
+    const want = ["Ben started following you", "Ben liked your post", "Ben commented: \u201cLove this\u201d", "Ben replied to your comment: \u201cagreed!\u201d", "Ben liked your comment \u201cNice one\u201d"];
+    check(want.every((t) => acts.includes(t)) && acts.split("* ").length - 1 === 5, "activity lists the follow, the likes, the comment and the reply, all new");
     check((await ev(`document.getElementById('act-badge').hidden`)), "the bell's count cleared once looked at");
     await shot("d9_activity");
     await ev(`[...document.querySelectorAll('#sheet-panel .act-row')].find(r => r.textContent.includes('replied')).click(), 1`); await sleep(500);
     console.log("tapping the reply:", await ev(`document.querySelector('#sheet-panel').className + ' | ' + [...document.querySelectorAll('#sheet-panel .cs-c p')].map(p => p.textContent).join(', ')`));
     check((await ev(`document.querySelector('#sheet-panel').classList.contains('cs-panel') && [...document.querySelectorAll('#sheet-panel .cs-c p')].some(p => p.textContent === 'agreed!')`)), "tapping it opens that post's comments");
     await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
+    // a ban (the bot's /ban): Ben's phone shut, even after reopening; his comments out of Alice's sight; lifted: open again
+    setStore(MOD, { v: 1, bans: { [benPhone]: { at: Date.now(), name: "Ben" } } });
+    await other.ev(`import('./js/ban.js').then((m) => m.checkBans()).then(() => 1)`);
+    const shut = await other.ev(`document.getElementById('ban') && document.getElementById('app').inert ? document.getElementById('ban').textContent : ''`);
+    console.log("Ben's phone, banned:", shut);
+    check(shut.includes("banned"), "a banned phone is shut");
+    await other.open(`http://127.0.0.1:${port}/?again2#social`, 600);
+    check(await other.ev(`!!document.getElementById('ban')`), "and stays shut when the app is opened again");
+    await ev(`import('./js/ban.js').then((m) => m.checkBans()).then(() => import('./js/social.js')).then((m) => { m.api.render(); return 1; })`); await sleep(300);
+    await ev(`[...document.querySelectorAll('#so-body .so-post')].find(p => p.textContent.includes('Fresh one')).querySelector('.so-cbtn').click(), 1`); await sleep(400);
+    const seenComments = await ev(`[...document.querySelectorAll('#sheet-panel .cs-c p')].map(p => p.textContent).join(', ')`);
+    console.log("Alice's comments panel with Ben banned:", seenComments || "(none)");
+    check(!seenComments.includes("Love this"), "a banned phone's comments aren't shown");
+    await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
+    setStore(MOD, { v: 1, bans: {} });
+    await other.ev(`import('./js/ban.js').then((m) => m.checkBans()).then(() => 1)`);
+    check(await other.ev(`!document.getElementById('ban') && !document.getElementById('app').inert`), "ban lifted: the app opens again");
+    await ev(`import('./js/ban.js').then((m) => m.checkBans()).then(() => import('./js/social.js')).then((m) => { m.api.render(); return 1; })`);
     other.close();
   }
   check(eveLikes().length === 1, "the earlier like survived the new post");
   await ev(`document.getElementById('view-social').scrollTop = 0, 1`); await sleep(300);
   await shot("d3_posted");
+  await ev(`[...document.querySelectorAll('#so-body .so-post')].find(p => p.textContent.includes('Fresh one')).scrollIntoView({ block: 'start' }), 1`); await sleep(500);
+  await shot("d3b_post");
+  await ev(`document.getElementById('view-social').scrollTop = 0, 1`);
+
+  // a new username: on this phone's older posts too (the post itself still says who it was sent as)
+  const rename = async (v) => {
+    await ev(`document.querySelector('#so-body .so-avbtn').click(), 1`); await sleep(400);
+    await ev(`[...document.querySelectorAll('#sheet-panel .pf-btns .btn')].find(b => b.textContent === 'Change username').click(), 1`); await sleep(300);
+    await setName(v);
+    for (let i = 0; i < 40 && (profilesNow()[meId] || {}).name !== v; i++) await sleep(200);
+    await sleep(300);
+  };
+  await rename("Alicia");
+  const shownAs = await ev(`[...document.querySelectorAll('#so-body .so-post')].find(p => p.textContent.includes('Fresh one')).querySelector('.so-name b').textContent`);
+  console.log("renamed: her older post shows", shownAs, "| profile:", profilesNow()[meId].name, "| the post was sent as:", (feedNow().find((x) => x.id === p0.id) || {}).user);
+  check(shownAs === "Alicia" && profilesNow()[meId].name === "Alicia", "the new username on the older post");
+  await rename("Alice");
 
   // deleting it
-  await ev(`(() => { window.confirm = () => true; [...document.querySelectorAll('#so-body .so-post')].find(p => p.textContent.includes('Fresh one')).querySelector('.so-del').click(); return 1; })()`);
+  await ev(`(() => { window.confirm = () => true; [...document.querySelectorAll('#so-body .so-post')].find(p => p.textContent.includes('Fresh one')).querySelector('.so-more').click(); return 1; })()`); await sleep(300);
+  await ev(`document.querySelector('#sheet-panel .so-del').click(), 1`);
   await until(`![...document.querySelectorAll('#so-body .so-post')].some(p => p.textContent.includes('Fresh one'))`, 10000, "the post deleted");
   for (let i = 0; i < 30 && feedNow().some((x) => x.id === p0.id); i++) await sleep(200);
   check(!msgs.has(p0.id) && !feedNow().some((x) => x.id === p0.id), "deleted from Discord and from the feed list");
-  check(!(await ev(`!!document.querySelector('#so-body .so-post .so-del')`)), "Delete only on your own posts");
+  check(!(await ev(`!!document.querySelector('#so-body .so-post .so-more')`)), "the Delete menu only on your own posts");
 
   // a post deleted in Discord by the owner: gone from the feed
   msgs.delete(bob);
@@ -422,6 +510,39 @@ try {
     return JSON.stringify({ was: f.size, budget, now: out.blob.size, ext: out.ext, still: !!out.poster }); })()`));
   console.log("made smaller:", JSON.stringify(small));
   check(small.now <= small.budget && small.now > 1000 && small.still, "a big video made smaller to fit");
+
+  // categories for rebassed songs: one made with a cover, a song put in it, opened, then deleted
+  await ev(`location.hash = '#library', 1`); await sleep(400);
+  await ev(`document.querySelector('#lib-seg [data-k="rebass"]').click(), 1`); await sleep(300);
+  check(!(await ev(`document.getElementById('lib-cats').hidden`)), "the categories row on Rebassed");
+  await ev(`document.querySelector('#lib-cats .cat-new').click(), 1`); await sleep(300);
+  await send("Page.setInterceptFileChooserDialog", { enabled: true });
+  const catChooser = new Promise((res) => b.on((m) => { if (m.method === "Page.fileChooserOpened") res(m.params); }));
+  await ev(`document.querySelector('#sheet-panel .cat-pick').click(), 1`);
+  const catFc = await catChooser;
+  await send("DOM.setFileInputFiles", { backendNodeId: catFc.backendNodeId, files: [avPng] });
+  await send("Page.setInterceptFileChooserDialog", { enabled: false });
+  await until(`document.querySelector('#sheet-panel .cat-pick-l').textContent === 'Change cover'`, 6000, "the category's cover");
+  await ev(`(() => { const f = document.querySelector('#sheet-panel .cat-form'); f.querySelector('input').value = 'Car bangers'; f.requestSubmit(); return 1; })()`); await sleep(600);
+  let cats = JSON.parse(await ev(`localStorage.getItem('fifteam-cats')`));
+  console.log("categories:", JSON.stringify(cats));
+  check(cats.length === 1 && cats[0].name === "Car bangers" && cats[0].cover, "a category, with its cover");
+  await ev(`[...document.querySelectorAll('#lib-list .item')].find(li => li.textContent.includes('Test Rebass')).querySelector('.more').click(), 1`); await sleep(300);
+  await ev(`[...document.querySelectorAll('#sheet-panel .menu-item')].find(x => x.textContent.includes('category')).click(), 1`); await sleep(400);
+  await ev(`document.querySelector('#sheet-panel .cat-check').click(), 1`); await sleep(200);
+  cats = JSON.parse(await ev(`localStorage.getItem('fifteam-cats')`));
+  check(cats[0].ids.length === 1, "the song put in it");
+  await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
+  await shot("d11_categories");
+  await ev(`document.querySelector('#lib-cats .cat-tile[data-cat]').click(), 1`); await sleep(400);
+  const open1 = await ev(`document.getElementById('lib-cats').textContent + ' | ' + [...document.querySelectorAll('#lib-list .item .t')].map(t => t.textContent).join(', ')`);
+  console.log("the category open:", open1);
+  check(open1.includes("Car bangers") && open1.endsWith("| Test Rebass"), "opened: just its songs");
+  await shot("d12_category_open");
+  await ev(`(() => { window.confirm = () => true; document.querySelector('#lib-cats .more').click(); return 1; })()`); await sleep(300);
+  await ev(`[...document.querySelectorAll('#sheet-panel .menu-item')].find(x => x.textContent.includes('Delete')).click(), 1`); await sleep(400);
+  check(JSON.parse(await ev(`localStorage.getItem('fifteam-cats')`)).length === 0 && (await ev(`document.querySelectorAll('#lib-list .item').length`)) >= 2, "category deleted; its songs still in the library");
+  await ev(`location.hash = '#social', 1`); await sleep(300);
 
   // the knob lock
   await ev(`location.hash = '#player'`); await sleep(500);
