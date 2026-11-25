@@ -401,9 +401,35 @@ export class Hub extends DurableObject {
     if (first) {
       const feed = this.data(await this.load("index")) || {}, nm = (obj(feed.profiles)[phone] || {}).name || phone;
       const clean = String(nm).replace(/[\\*_~`|>#@<:\[\]()]/g, (c) => "\\" + c);
-      await this.hook("", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "FifTeam", allowed_mentions: { parse: [] }, content: `💸 **${clean}** wants unlimited rebassing ($10). Check PayPal for a $10 payment with "${clean}" in the note, then use /premium ${clean}.` }) }).catch(() => {});
+      await this.tellPayments(`💸 **${clean}** wants unlimited rebassing ($10). Check PayPal for a $10 payment with "${clean}" in the note, then use /premium ${clean}.`).catch(() => {});
     }
     return first;
+  }
+  /** The server's #payments channel (found by its name; looked for again every few minutes until it's made). */
+  async paymentsChannel() {
+    if (this.payCh && Date.now() - this.payCh.at < (this.payCh.id ? 3600e3 : 300e3)) return this.payCh.id;
+    let id = "";
+    const tok = this.env.BOT_TOKEN;
+    if (tok) {
+      const w = await this.hook("");
+      const r = await fetch(`${this.apiBase()}/guilds/${w.guild_id}/channels`, { headers: { Authorization: `Bot ${tok}` } });
+      const ch = r.ok ? (await r.json()).find((x) => x.type === 0 && /^payments?$/i.test(x.name)) : null;
+      id = ch ? ch.id : "";
+    }
+    this.payCh = { at: Date.now(), id };
+    return id;
+  }
+  /** Payment news for the owner: in #payments (or, until there is one, the app's own channel). */
+  async tellPayments(content) {
+    const id = await this.paymentsChannel().catch(() => "");
+    if (id) {
+      const r = await fetch(`${this.apiBase()}/channels/${id}/messages`, { method: "POST", headers: { Authorization: `Bot ${this.env.BOT_TOKEN}`, "Content-Type": "application/json" }, body: JSON.stringify({ content, allowed_mentions: { parse: [] } }) });
+      if (r.ok) return true;
+      console.log("#payments:", r.status);
+      this.payCh = null;
+    }
+    await this.hook("", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "FifTeam", allowed_mentions: { parse: [] }, content }) });
+    return false;
   }
   async premiumAsks() { return obj(await this.ctx.storage.get("premium-asks")); }
   async premiumDone(phones) { const asks = obj(await this.ctx.storage.get("premium-asks")); for (const p of phones) delete asks[p]; await this.ctx.storage.put("premium-asks", asks); }

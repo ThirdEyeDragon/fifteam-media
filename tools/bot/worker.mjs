@@ -65,7 +65,7 @@ async function botFor(env) {
       throw new Error("couldn't save the change (busy); try again");
     },
     put: async (k, d) => { await hub.write(k, null, JSON.stringify(d), "bot"); },
-    premiumAsks: () => hub.premiumAsks(), premiumDone: (phones) => hub.premiumDone(phones),
+    premiumAsks: () => hub.premiumAsks(), premiumDone: (phones) => hub.premiumDone(phones), tellPayments: (text) => hub.tellPayments(text),
   };
   const bot = makeBot({ cfg, priv, notes, stores, token: env.BOT_TOKEN || "", log: (...a) => console.log(...a) });
   made = { at: Date.now(), bot };

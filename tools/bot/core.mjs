@@ -424,12 +424,14 @@ export function makeBot({ cfg, priv, notes, token = "", log = () => {}, stores =
   }
 
   // ---------------------------------------------------------------------------------------------------- premium
-  async function cmdPremium(user, remove) {
+  async function cmdPremium(user, remove, by) {
     const w = await whoIs(user);
     if (!w.phones.length) return `No phone goes by **${clean(user)}**. Try /premiums for who has asked.`;
     const on = !remove, at = Date.now();
     await changeMod((d) => { d.premium = obj(d.premium); for (const p of w.phones) { if (on) d.premium[p] = { at, name: (w.all[p] && w.all[p].name) || String(user).slice(0, 24) }; else delete d.premium[p]; } }, () => true);
     if (on && stores && stores.premiumDone) await stores.premiumDone(w.phones).catch(() => {});
+    // (a record in #payments)
+    if (stores && stores.tellPayments) await stores.tellPayments(on ? `✅ Unlocked unlimited rebassing for **${clean(w.name)}**${by ? ` (by <@${by}>)` : ""}.` : `↩️ Took unlimited rebassing away from **${clean(w.name)}**${by ? ` (by <@${by}>)` : ""}.`).catch(() => {});
     return on ? `**${clean(w.name)}** has unlimited rebassing now. It unlocks on their phone the next time it checks (straight away if the app is open, or when it's opened).`
       : `Took unlimited rebassing away from **${clean(w.name)}**.`;
   }
@@ -525,7 +527,7 @@ export function makeBot({ cfg, priv, notes, token = "", log = () => {}, stores =
         : name === "accounts" ? await cmdAccounts() : name === "ban-email" ? await cmdBanEmail(v("email"), true, who.id) : name === "unban-email" ? await cmdBanEmail(v("email"), false)
         : name === "listings" ? await cmdListings(v("user")) : name === "delete-listing" ? await cmdDeleteListing(v("listing"))
         : name === "tag-member" ? await cmdTag("member", v("user"), v("remove")) : name === "tag-founder" ? await cmdTag("founder", v("user"), v("remove")) : name === "tag-developer" ? await cmdTag("dev", v("user"), v("remove"))
-        : name === "premium" ? await cmdPremium(v("user"), v("remove")) : name === "premiums" ? await cmdPremiums()
+        : name === "premium" ? await cmdPremium(v("user"), v("remove"), who.id) : name === "premiums" ? await cmdPremiums()
         : name === "purge" ? await cmdPurge(v("user")) : name === "clear-profile" ? await cmdClearProfile(v("user")) : name === "allow-picture" ? await cmdAllowPicture(v("user"))
         : "Unknown command";
     } catch (e) { log(`/${name} failed:`, e.message); return `Something went wrong: ${e.message}`; }

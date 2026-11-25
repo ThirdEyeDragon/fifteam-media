@@ -21,7 +21,7 @@ const b64u = (b) => Buffer.from(b).toString("base64url");
 
 // ---------------------------------------------------------------------------------------------------- the stand-ins
 const HOOK = "111", TOKEN = "hooktoken", PROJECT = "test-proj";
-const msgs = new Map(), files = new Map(), pushes = [], replies = [], posted = [];
+const msgs = new Map(), files = new Map(), pushes = [], replies = [], posted = [], payments = [];
 let nextId = 900000000000001000;
 const attach = (id, name, text) => { const url = `https://cdn.discordapp.com/attachments/1/${id}/${name}?ex=${Math.floor(Date.now() / 1000 + 86400).toString(16)}&is=0&hm=${Math.random().toString(16).slice(2)}`; files.set(`/attachments/1/${id}/${name}`, Buffer.from(text)); return { id: String(Math.random()).slice(2), filename: name, url }; };
 const store = (id, name, data) => msgs.set(id, { id, attachments: [attach(id, name, JSON.stringify(data))] });
@@ -94,6 +94,8 @@ const srv = createServer((req, res) => {
     if (u.pathname.startsWith("/push/")) { pushes.push({ to: u.pathname.slice(6), headers: req.headers, body }); return send(u.pathname.endsWith("gone") ? 410 : 201, ""); }
     if (u.pathname === "/api/v10/attachments/refresh-urls") { const { attachment_urls } = JSON.parse(body.toString()); return send(200, { refreshed_urls: attachment_urls.map((x) => ({ original: x, refreshed: x.replace(/ex=[0-9a-f]+/, "ex=" + Math.floor(Date.now() / 1000 + 86400).toString(16)) })) }); }
     if (u.pathname.startsWith("/api/v10/webhooks/app1/")) { replies.push({ method: req.method, body: body.toString() }); return send(200, {}); }
+    if (u.pathname === "/api/v10/guilds/1/channels") return send(200, [{ id: "50", type: 0, name: "general" }, { id: "51", type: 0, name: "payments" }]);
+    if (u.pathname === "/api/v10/channels/51/messages" && req.method === "POST") { payments.push({ auth: req.headers.authorization, ...JSON.parse(body.toString()) }); return send(200, { id: "1" }); }
     const base = `/api/v10/webhooks/${HOOK}/${TOKEN}`;
     if (!u.pathname.startsWith(base)) return send(404, { message: "Unknown Webhook" });
     const rest = u.pathname.slice(base.length), m = /^\/messages\/(\d+)$/.exec(rest);
@@ -220,9 +222,9 @@ try {
 
   // unlimited rebassing: Ben taps Pay; the owner is told; /premium unlocks him (through the server)
   const pr = await api("/v1/premium", { method: "POST", body: JSON.stringify({ tk: idToken(ben) }) });
-  await until(() => posted.some((p) => /unlimited rebassing/.test(p.content || "")));
-  console.log("unlock asked:", pr.status, "| told the owner:", (posted.find((p) => /unlimited/.test(p.content || "")) || {}).content);
-  check(pr.status === 200 && posted.some((p) => /\*\*Ben\*\* wants unlimited rebassing/.test(p.content || "")), "tapping Pay tells the owner who to look for");
+  await until(() => payments.some((p) => /unlimited rebassing/.test(p.content || "")));
+  console.log("unlock asked:", pr.status, "| in #payments:", (payments[0] || {}).content, "| as the bot:", (payments[0] || {}).auth === "Bot test");
+  check(pr.status === 200 && payments.some((p) => /\*\*Ben\*\* wants unlimited rebassing/.test(p.content || "")) && !posted.some((p) => /unlimited/.test(p.content || "")), "tapping Pay tells the owner in #payments who to look for");
   const r1 = await signed(JSON.stringify({ type: 2, id: "1", token: "t1", application_id: "app1", data: { name: "premiums" }, member: { user: { id: "1", username: "owner" } } }));
   await until(() => replies.length >= 1, 8000);
   console.log("/premiums:", r1.status, (JSON.parse(replies[0].body).content || "").replace(/\n/g, " / "));
@@ -232,6 +234,8 @@ try {
   console.log("/premium Ben:", (JSON.parse(replies[1].body).content || "").slice(0, 80), "| in the bans store:", JSON.stringify(modNow.premium));
   check(/asked: \*\*Ben\*\*/.test(JSON.parse(replies[0].body).content) && modNow.premium && modNow.premium[ben] && heard.some((x) => x.t === "v" && x.k === "mod"), "/premium unlocks him, and every open app hears it at once");
   check(await until(() => (read(IDS.mod).premium || {})[ben], 6000), "and it's copied back to the feed service");
+  console.log("#payments after /premium:", payments.map((p) => p.content).join(" | "));
+  check(payments.some((p) => /Unlocked unlimited rebassing for \*\*Ben\*\* \(by <@1>\)/.test(p.content)), "the unlock is recorded in #payments, with who did it");
   ws.close();
 } catch (e) { console.log("STOPPED:", e.stack); fails++; }
 finally {
