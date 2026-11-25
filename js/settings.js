@@ -9,6 +9,7 @@ import { loadMeta, prefsOf, setPrefs, blocksOf, setBlock } from "./meta.js";
 import { api } from "./social.js";
 import { actWanted, setActWanted, syncPush, canPush } from "./push.js";
 import { premiumNow, leftThisHour, openUnlock, LIMIT } from "./premium.js";
+import { openTerms, TERMS_DATE } from "./legal.js";
 
 // (the app lock is gone: anything it left on a phone is cleared, so nobody stays locked out)
 for (const k of ["fifteam-lock", "fifteam-locked", "fifteam-autolock", "fifteam-lock-wait", "fifteam-lock-fails"]) { try { localStorage.removeItem(k); } catch {} }
@@ -135,6 +136,16 @@ export function openSettings() {
     pmSec.querySelector(".status").textContent = premiumNow() ? "Unlimited rebassing is unlocked on this account. Thank you!" : `${left} of ${LIMIT} songs left this hour. Unlimited rebassing is $10, once.`;
     if (!premiumNow()) { const b = el('<button class="btn block" id="set-unlock">Unlock unlimited rebassing</button>'); b.onclick = () => openUnlock(false); pmSec.append(b); }
     p.append(pmSec);
+
+    // the rules and legal terms
+    const lgSec = el(`<div class="set-sec" id="set-legal">
+      <div class="set-head"><svg><use href="#i-info"/></svg>Rules and legal</div>
+      <span class="status">We don't provide music, and what you make is for your own listening. No posting other DJs' rebasses, no selling or sharing your rebasses elsewhere, and no changing the app.</span>
+      <button class="btn block" id="set-terms">Read the Terms of Use and Rules</button>
+      <span class="status">Last updated ${TERMS_DATE}</span>
+    </div>`);
+    lgSec.querySelector("#set-terms").onclick = openTerms;
+    p.append(lgSec);
 
     p.append(el(`<p class="set-foot">FifTeam Media ${APP_VERSION}<br>Developed by Levi Newman</p>`));
   });

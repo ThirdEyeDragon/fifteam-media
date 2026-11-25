@@ -10,6 +10,7 @@ import { openShareSheet, fingerprint } from "./share.js";
 import { noteName, linToDb } from "./dsp.js";
 import { pickImage } from "./image.js";
 import { rebassAllowed, noteRebass, openUnlock } from "./premium.js";
+import { noteEditor, hz2st, noteName as stName } from "./notes.js";
 
 const S = {
   src: null, worker: null, loaded: false, origBuf: null, refBuf: null, refKey: "", outBuf: null, res: null, version: 0,
@@ -17,7 +18,10 @@ const S = {
   pl: null, ab: "rebass", an: null, spec: null, raf: 0, nameEdited: false, file: null, fileKey: "",
   cover: null, coverUrl: null, segs: [], ovImg: null, disp: null, pk: null, glow: [], lastT: 0, lastRead: 0, drag: null,
   introN: 0, scrubT: null, bg: {},
+  // Auto bass, or Custom notes (the bass placed by hand: its editor, the song's own bass line to go by, the notes)
+  how: "auto", guide: null, ed: null, custom: [],
 };
+try { if (localStorage.getItem("fifteam-rebass-how") === "custom") S.how = "custom"; } catch {}
 
 // ---------------------------------------------------------------------------------------------------- the intro
 // The FifTeam Production tag (media/intro.wav), put before the song when the Intro switch is on. Brought up to the
@@ -102,6 +106,7 @@ async function setSource(src) {
   stopPreview();
   if (S.worker) { S.worker.terminate(); S.worker = null; }
   S.src = src; S.loaded = false; S.origBuf = null; S.refBuf = null; S.refKey = ""; S.outBuf = null; S.res = null; S.file = null; S.nameEdited = false;
+  S.guide = null; S.ed = null; S.custom = loadNotes(src); paintHow();
   S.cover = null; if (S.coverUrl) URL.revokeObjectURL(S.coverUrl); S.coverUrl = null;
   $("rb-title").textContent = src.title; $("rb-artist").textContent = src.artist || "Unknown artist";
   $("rb-thumb").style.backgroundImage = `url("${src.cover || placeholderArt(src.title)}")`;
@@ -161,6 +166,7 @@ function readParams() {
     // either handle can be the higher one, and both can sit on the same frequency (the whole bass on one note)
     ...range(), db: +$("rb-db").value,
     speed: slow ? +$("rb-speed").value / 100 : 1, reverb: $("rb-reverb").checked,
+    ...(S.how === "custom" ? { custom: S.custom } : {}),
   };
 }
 /** The range the two handles mark: the lower of the two to the higher. */
@@ -193,6 +199,7 @@ function defaultName() {
   if (!S.src) return "";
   const p = S.params, db = p.db === 0 ? "0" : `-${Math.abs(p.db)}`;
   const slow = p.speed < 1 ? `Slowed ${Math.round(p.speed * 100)}%${p.reverb ? " + Reverb" : ""}, ` : (p.reverb ? "Reverb, " : "");
+  if (p.custom) return `${S.src.title} (${slow}Custom bass ${db}dB)`;
   return `${S.src.title} (${slow}Rebass ${p.lo === p.hi ? p.lo : `${p.lo}-${p.hi}`}Hz ${db}dB)`;
 }
 let reT = 0;
@@ -233,10 +240,12 @@ function paintProgress() {
   if (q !== shown.quick) $("rb-quick").hidden = shown.quick = q;
 }
 
+/** Which song this is (for the hourly count, and for keeping its custom notes). */
+const keyOf = (src) => src.id || `${src.title || src.name || ""}|${(src.blob && src.blob.size) || 0}`;
 async function go() {
   if (!S.src || S.busy) return;
   // (free accounts: 10 different songs an hour; the same song again doesn't count again)
-  const songKey = S.src.id || `${S.src.title || S.src.name || ""}|${(S.src.blob && S.src.blob.size) || 0}`;
+  const songKey = keyOf(S.src);
   if (!rebassAllowed(songKey)) { openUnlock(); return; }
   S.countKey = songKey;
   readParams();
@@ -301,11 +310,16 @@ function onWorker(e) {
   if (m.type === "progress") progress(m.stage, m.p, m.left);
   else if (m.type === "analysis") {
     $("rb-quick").hidden = true;
-    S.mode = m.mode;
+    S.mode = m.mode; S.guide = m.guide || null;
     if (m.mode === "quick" && m.why && !/cancelled|no-gpu/.test(m.why)) toast("Rebassed the quick way this time.");
     if (S._loaded) { S._loaded(); S._loaded = null; }
   }
   else if (m.type === "error") fail(m.message);
+  else if (m.type === "notes") {
+    if (!S.ed) return;
+    if (!m.list.length) { toast("No bass notes were found in this song."); return; }
+    S.ed.set(m.list); toast(`${m.list.length} notes from the song. Move, add or delete any of them.`, 2800);
+  }
   else if (m.type === "result") {
     busyMark(false);
     const ctx = getCtx(), sr = S.origBuf.sampleRate;
@@ -327,6 +341,7 @@ function onWorker(e) {
     $("rb-dur").textContent = fmtTime(ob.duration);
     S.pausedAt = Math.min(frac * ob.duration, ob.duration);
     buildSegments(); drawOverview(); paintStats(); paintSize();
+    if (S.how === "custom") makeEditor();
     S.pk = null; S.glow = []; S.disp = null;
     kickGraph();
     if (wasPlaying) playPreview(S.pausedAt);
@@ -337,8 +352,68 @@ function onWorker(e) {
 function paintStats() {
   const s = S.res.stats;
   const f1 = (v) => (v >= 100 ? v.toFixed(0) : v.toFixed(1));
+  if (s.custom) { $("rb-stats").innerHTML = [["", s.notes.toLocaleString(), "Your notes"], ["", s.notes ? `${f1(s.newLo)}–${f1(s.newHi)} Hz` : "–", "New bass"]].map(([c, b, t]) => `<div class="stat ${c}"><b>${b}</b><span>${t}</span></div>`).join(""); return; }
   const items = [["", s.notes.toLocaleString(), "Bass notes"], ["", `${f1(s.songLo)}–${f1(s.songHi)} Hz`, "Old bass"]];
   $("rb-stats").innerHTML = items.map(([c, b, t]) => `<div class="stat ${c}"><b>${b}</b><span>${t}</span></div>`).join("");
+}
+
+// ---------------------------------------------------------------------------------------------------- custom notes
+// Each song's notes are kept on the phone (under the song), so they're there the next time it's opened.
+const NOTES = "fifteam-notes:";
+function loadNotes(src) { try { const l = JSON.parse(localStorage.getItem(NOTES + keyOf(src)) || "[]"); return Array.isArray(l) ? l.filter((n) => n && n.d > 0 && n.f > 0 && n.t >= 0) : []; } catch { return []; } }
+function saveNotes() { if (!S.src) return; try { if (S.custom.length) localStorage.setItem(NOTES + keyOf(S.src), JSON.stringify(S.custom.map((n) => ({ t: n.t, d: n.d, f: +n.f.toFixed(3), v: n.v })))); else localStorage.removeItem(NOTES + keyOf(S.src)); } catch {} }
+/** The play position on the song's own timeline (seconds; the intro and slowing taken off). */
+function songTime() {
+  if (!S.outBuf) return null;
+  const off = S.introN / S.outBuf.sampleRate;
+  return Math.max(0, (curTime() - off) * (S.params.speed || 1));
+}
+/** Auto bass or Custom notes: what shows, and the button's words. */
+function paintHow() {
+  const custom = S.how === "custom";
+  document.querySelectorAll("#rb-how button").forEach((b) => { b.classList.toggle("on", b.dataset.k === S.how); b.setAttribute("aria-selected", String(b.dataset.k === S.how)); });
+  $("rb-range-card").hidden = custom;
+  $("rb-notes").hidden = !custom;
+  const ready = custom && S.loaded && S.guide && S.origBuf;
+  $("rb-ne").hidden = $("rb-ne-tools").hidden = !ready;
+  if (!ready) $("rb-ne-sel").hidden = true;
+  $("rb-ne-hint").textContent = ready ? "Tap the grid to place a note. Drag a note to move it, drag its right edge to make it longer, drag the grid to move along the song, pinch to zoom. Tap the time strip to play from there."
+    : "Pick a song and tap Take the bass out. Then place your own notes, one by one, over the song.";
+  if (!S.loaded && !S.busy) $("rb-go").innerHTML = custom ? '<svg><use href="#i-bass"/></svg>Take the bass out' : '<svg><use href="#i-bass"/></svg>Rebass it';
+  paintNe();
+}
+function paintNe() {
+  if (!$("rb-ne-count")) return;
+  const n = S.custom.length;
+  $("rb-ne-count").textContent = n ? `${n} note${n === 1 ? "" : "s"}` : "No notes yet";
+  $("rb-ne-undo").disabled = !(S.ed && S.ed.canUndo());
+  $("rb-ne-clear").disabled = !n;
+}
+function paintSel(n) {
+  const box = $("rb-ne-sel");
+  box.hidden = !n;
+  if (n) $("rb-ne-what").textContent = `${stName(hz2st(n.f))} · ${n.f.toFixed(1)} Hz · ${n.d.toFixed(2)} s`;
+}
+/** The editor, once the song's bass is out (made again for a new song). */
+function makeEditor() {
+  if (S.ed || S.how !== "custom" || !S.loaded || !S.guide || !S.origBuf) { paintHow(); return; }
+  $("rb-ne").hidden = false;
+  S.ed = noteEditor($("rb-ne"), {
+    duration: S.origBuf.duration, guide: S.guide, notes: S.custom, lowHz: 18, highHz: 125,
+    playhead: () => (S.outBuf ? songTime() : null),
+    seek: (u) => { if (!S.outBuf) return; getCtx(); const t = S.introN / S.outBuf.sampleRate + u / (S.params.speed || 1); if (S.pl) seekTo(t); else playPreview(t); },
+    onChange: (list) => { S.custom = list; saveNotes(); paintNe(); settingsChanged(); },
+    onSelect: paintSel,
+  });
+  paintHow();
+}
+function setHow(k) {
+  if (k === S.how) return;
+  S.how = k;
+  try { localStorage.setItem("fifteam-rebass-how", k); } catch {}
+  paintHow();
+  if (k === "custom") makeEditor();
+  if (S.loaded) settingsChanged();
 }
 
 // ---------------------------------------------------------------------------------------------------- listening
@@ -395,6 +470,7 @@ function seekTo(t) {
   if (S.pl) playPreview(t); else { S.pausedAt = t; kickGraph(); }
 }
 function setPlayIcon(on) {
+  const ne = $("rb-ne-play"); if (ne) { ne.querySelector("use").setAttribute("href", on ? "#i-pause" : "#i-play"); ne.lastChild.textContent = on ? "Pause" : "Play"; }
   const b = $("rb-play"); b.querySelector("use").setAttribute("href", on ? "#i-pause" : "#i-play"); b.setAttribute("aria-label", on ? "Pause preview" : "Play preview");
 }
 function setAB(k) {
@@ -659,6 +735,7 @@ function tick(now) {
   S.lastT = now;
   const moving = drawSpec(dt);
   drawRoll(); paintOverview();
+  if (S.ed && S.how === "custom") S.ed.follow(S.pl ? songTime() : null);
   if (S.pl || S.drag || S.scrubT != null || moving) S.raf = requestAnimationFrame(tick);
 }
 /** Something changed or started moving: draw until it rests. */
@@ -710,14 +787,14 @@ async function save() {
     else if (r === "downloaded") toast(`Saved to your Downloads as ${file.name}`, 5000);
   } catch (e) { toast("Couldn't save the file. " + (e.message || "")); }
 }
-const noteOf = (p) => `${p.speed < 1 ? Math.round(p.speed * 100) + "% · " : ""}${hzText(p.lo, p.hi)} Hz · ${p.db === 0 ? "0" : "−" + Math.abs(p.db)} dB`;
+const noteOf = (p) => `${p.speed < 1 ? Math.round(p.speed * 100) + "% · " : ""}${p.custom ? `Custom notes (${p.custom.length})` : `${hzText(p.lo, p.hi)} Hz`} · ${p.db === 0 ? "0" : "−" + Math.abs(p.db)} dB`;
 function share() {
   if (!S.outBuf) return;
   const name = () => $("rb-name").value.trim() || defaultName();
   openShareSheet({
     what: "song", name, build: buildFile, cover: async () => coverBlob(),
     meta: () => ({ kind: "rebass", title: name(), artist: S.src.artist || "", album: "Rebassed", duration: S.outBuf.duration, note: noteOf(S.params), made: { ...S.params, from: S.src.title } }),
-    recipe: async () => {
+    recipe: S.params.custom ? undefined : async () => {
       if (!S.src.hash) S.src.hash = await fingerprint(S.src.blob);
       const p = S.params;
       return { title: S.src.title, artist: S.src.artist || "", duration: S.src.duration || (S.origBuf ? S.origBuf.duration : 0), hash: S.src.hash, settings: { lo: p.lo, hi: p.hi, db: p.db, speed: p.speed, reverb: p.reverb, intro: introWanted(), name: S.nameEdited ? name() : "" } };
@@ -747,6 +824,18 @@ export function initRebass() {
   $("rb-pick-lib").onclick = pickFromLibrary;
   $("rb-pick-file").onclick = pickFile;
   $("rb-go").onclick = () => (S.loaded ? render() : go());
+  // Auto bass or Custom notes
+  onSeg($("rb-how"), setHow);
+  $("rb-ne-play").onclick = () => { getCtx(); if (!S.outBuf) return; if (S.pl) stopPreview(true); else playPreview(S.pausedAt || 0); };
+  $("rb-ne-song").onclick = () => { if (S.worker && S.loaded) { readParams(); S.worker.postMessage({ type: "notes", lo: S.params.lo, hi: S.params.hi, speed: S.params.speed }); } };
+  $("rb-ne-undo").onclick = () => S.ed && S.ed.undo();
+  $("rb-ne-clear").onclick = () => { if (S.ed && S.custom.length && confirm("Clear all your notes for this song?")) S.ed.clear(); };
+  $("rb-ne-sel").addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b || !S.ed) return;
+    const a = b.dataset.a;
+    if (a === "delete") S.ed.remove(); else if (a === "up") S.ed.nudge(0, 1); else if (a === "down") S.ed.nudge(0, -1); else if (a === "longer") S.ed.nudge(0.05); else if (a === "shorter") S.ed.nudge(-0.05);
+  });
+  paintHow();
   for (const id of ["rb-lo", "rb-hi"]) $(id).addEventListener("input", () => { paintRange(); settingsChanged(); });
   $("rb-presets").addEventListener("click", (e) => {
     const c = e.target.closest(".chip"); if (!c) return;
@@ -840,4 +929,4 @@ async function applyRecipe(track, s) {
   go();
 }
 
-export const rebass = { fromFile, applyRecipe };
+export const rebass = { fromFile, applyRecipe, state: S };

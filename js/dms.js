@@ -587,7 +587,7 @@ async function tellNew() {
     const l = m.l || "", title = l ? `${who} · Audio Market` : who;
     if (document.visibilityState === "visible") { if (D.chat !== m.f || (D.l || "") !== l) toast(`${title}: ${text}`.slice(0, 90), 3000); continue; }
     if (pushing()) continue;      // (the server sends it as a real notification)
-    const opts = { body: text.slice(0, 160), tag: "fifteam-dm-" + m.f + (l ? "-" + l : ""), renotify: true, icon: "icons/icon-192.png", badge: "icons/icon-192.png", data: { dm: m.f, l } };
+    const opts = { body: text.slice(0, 160), tag: "fifteam-dm-" + m.f + (l ? "-" + l : ""), renotify: true, icon: new URL("../icons/icon-192.png", import.meta.url).href, badge: new URL("../icons/badge-96.png", import.meta.url).href, data: { dm: m.f, l } };
     try { const reg = await navigator.serviceWorker.ready; await reg.showNotification(title, opts); }
     catch { try { const n = new Notification(title, opts); n.onclick = () => { window.focus(); openChat(m.f, l); n.close(); }; } catch {} }
   }

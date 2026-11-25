@@ -8,7 +8,7 @@
 // If the separator can't run on this phone, the old way is used: the notes found in the whole song, the old bass taken
 // out at its own notes' pitches.
 import { rebassMix, slowDown, freeverb, mixMono, cleanLowEnd } from "./dsp.js";
-import { analyzeBassLine, planMapping, renderBass, makeFreqAt, st2hz } from "./bassline.js";
+import { analyzeBassLine, planMapping, renderBass, makeFreqAt, st2hz, renderNotes } from "./bassline.js";
 import { getStem, putStem, pack, unpack } from "./stems.js";
 
 let base = null, sr = 0, key = "", job = 0, sepWorker = null, sepStop = null, gpuOnly = false;
@@ -74,7 +74,9 @@ async function load(m) {
     song0 = base.map((c) => Float32Array.from(c));
     cleanLowEnd(song0, null, sr, f0In(an0), { progress: (p) => post("clean", p) });
   }
-  postMessage({ type: "analysis", notes: an0.notes.length, lo: an0.lo, hi: an0.hi, mode, backend, why });
+  // (and the song's own bass line, for the Custom notes editor: its pitch and loudness every 10 ms, and its tuning)
+  const guide = { t0: an0.t0, hop: an0.hop, f0: Float32Array.from(an0.f0), env: Float32Array.from(an0.env), tune: an0.tune };
+  postMessage({ type: "analysis", notes: an0.notes.length, lo: an0.lo, hi: an0.hi, mode, backend, why, guide }, [guide.f0.buffer, guide.env.buffer]);
 }
 
 // the bass-free song slowed / reverbed for these settings (kept, so changing anything else only re-renders)
@@ -100,8 +102,47 @@ function reference(speed, reverb) {
   return music;
 }
 
+/** Custom notes: the bass-free song with the notes placed by hand instead of the song's own. */
+function renderCustom(p) {
+  const pr = prepare(p.speed || 1, !!p.reverb), sp = pr.speed;
+  const notes = (Array.isArray(p.custom) ? p.custom : []).filter((x) => x && x.d > 0 && x.f >= 8 && x.f <= 400 && x.t >= 0).sort((a, b) => a.t - b.t);
+  post("build", 0);
+  const n = pr.music[0].length;
+  const { bass, peak } = renderNotes(notes, sr, n, sp, (q) => post("build", q));
+  const fs = notes.map((x) => x.f), lo = fs.length ? Math.min(...fs) : p.lo, hi = fs.length ? Math.max(...fs) : p.hi;
+  const { out, stats } = rebassMix(pr.music, bass, peak, sr, { bassDb: p.db, band: [lo, hi], progress: (q) => post("master", q) });
+  // the map for the graphs: the old bass, and the note sounding at each moment
+  const frames = an0.f0.length, map = new Float32Array(frames * 3);
+  let j = 0;
+  for (let i = 0; i < frames; i++) {
+    const u = an0.t0 + i * an0.hop;
+    while (j < notes.length && notes[j].t + notes[j].d < u) j++;
+    let f = 0, v = 0;
+    for (let k = j; k < notes.length && notes[k].t <= u; k++) if (u <= notes[k].t + notes[k].d && (notes[k].v == null ? 1 : notes[k].v) >= v) { f = notes[k].f; v = notes[k].v == null ? 1 : notes[k].v; }
+    map[i * 3] = an0.f0[i] * sp; map[i * 3 + 1] = f; map[i * 3 + 2] = f ? Math.max(0.05, v) * 0.6 : an0.env[i] * 0.3;
+  }
+  let ref = null;
+  if (pr.changed && refSent !== pr.key) { ref = reference(sp, !!p.reverb).map((c) => c.slice()); refSent = pr.key; }
+  const transfer = [out[0].buffer, out[1].buffer, map.buffer];
+  if (ref) ref.forEach((c) => transfer.push(c.buffer));
+  postMessage({
+    type: "result", out, map, t0: an0.t0 / sp, hop: an0.hop / sp, ref, refKey: pr.changed ? pr.key : "",
+    stats: { ...stats, notes: notes.length, drums: 0, other: 0, mapping: `Your ${notes.length} note${notes.length === 1 ? "" : "s"}`, kind: "custom",
+      songLo: an0.lo * sp, songHi: an0.hi * sp, newLo: lo, newHi: hi, lo, hi, bassDb: p.db, speed: sp, reverb: !!p.reverb, mode, backend, custom: true },
+  }, transfer);
+}
+/** The song's own notes, moved into a range (Hz) the same way as a rebass: a start for Custom notes. */
+function songNotes(p) {
+  if (!an0) throw new Error("No song loaded");
+  const sp = p.speed || 1, plan = planMapping(an0, p.lo, p.hi, sp);
+  const top = Math.max(1e-6, ...an0.notes.map((g) => g.peak));
+  const list = an0.notes.map((g) => ({ t: g.on, d: Math.max(0.05, g.off - g.on), f: st2hz(plan.target.get(g.q)), v: Math.max(0.35, Math.min(1, g.peak / top)) }));
+  postMessage({ type: "notes", list });
+}
+
 function render(p) {
   if (!song0) throw new Error("No song loaded");
+  if (p.custom) return renderCustom(p);
   const pr = prepare(p.speed || 1, !!p.reverb), sp = pr.speed;
   // where each of the song's own bass notes goes, then the new bass, note for note
   const plan = planMapping(an0, p.lo, p.hi, sp);
@@ -138,6 +179,7 @@ onmessage = async (e) => {
     if (m.type === "load") await load(m);
     else if (m.type === "quick" && base) { if (sepStop) sepStop(); await load({ chs: base, sr, key, quick: true }); }   // stops a separation under way
     else if (m.type === "render") render(m.params);
+    else if (m.type === "notes") songNotes(m);
   } catch (err) {
     postMessage({ type: "error", message: String((err && err.message) || err) });
   }

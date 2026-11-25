@@ -629,3 +629,31 @@ export function renderBass(an, plan, sr, length, speed = 1, progress) {
   }
   return { bass: out, peak };
 }
+
+/**
+ * Hand-placed notes (Custom notes on the Rebass screen): [{ t, d, f, v }], each on the original song's timeline (t, d in
+ * seconds), at its own frequency (f, Hz, as it should sound) and level (v, 0..1). One clean sine per note, faded in and
+ * out over a few milliseconds (no clicks); notes that overlap sound together. speed < 1: the slowed song (the same
+ * notes at the slowed times, at the frequencies chosen). Returns { bass, peak }.
+ */
+export function renderNotes(notes, sr, length, speed = 1, progress) {
+  const out = new Float32Array(length);
+  const A = Math.max(1, Math.round(0.006 * sr)), Rel = Math.max(1, Math.round(0.03 * sr)), TAU = 2 * Math.PI;
+  notes.forEach((n, i) => {
+    const s0 = Math.max(0, Math.round((n.t / speed) * sr)), s1 = Math.min(length, Math.round(((n.t + n.d) / speed) * sr));
+    if (s1 <= s0) return;
+    const end = Math.min(length, s1 + Rel), w = (TAU * n.f) / sr, v = n.v == null ? 1 : n.v;
+    let ph = 0;
+    for (let s = s0; s < end; s++) {
+      const k = s - s0;
+      let e = k < A ? k / A : 1;
+      if (s >= s1) e *= 1 - (s - s1) / Rel;
+      out[s] += Math.sin(ph) * e * v;
+      ph += w; if (ph > TAU) ph -= TAU;
+    }
+    if (progress && (i & 31) === 0) progress(i / notes.length);
+  });
+  let peak = 0;
+  for (let s = 0; s < length; s++) { const a = out[s] < 0 ? -out[s] : out[s]; if (a > peak) peak = a; }
+  return { bass: out, peak };
+}

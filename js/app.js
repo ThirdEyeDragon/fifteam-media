@@ -2,7 +2,7 @@
 import { $, bus, toast, openLayers } from "./ui.js";
 import { player } from "./player.js";
 
-export const APP_VERSION = "2.14";
+export const APP_VERSION = "2.15";
 import * as store from "./store.js";
 import { initPlayer } from "./player.js";
 import { initLibrary, library, importFiles, openCode } from "./library.js";
@@ -90,6 +90,8 @@ function swipeBack() {
 }
 
 async function boot() {
+  // holding down anywhere (a picture, a link, a name): no copy, save or open menu; only where there's typing
+  addEventListener("contextmenu", (e) => { if (!e.target.closest("input, textarea, [contenteditable], .selectable")) e.preventDefault(); });
   topBar();
   swipeBack();
   initBan();

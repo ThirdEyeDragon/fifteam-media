@@ -1121,10 +1121,12 @@ try {
   await shot("d12_category_open");
   // shared to Social as a playlist
   await ev(`document.querySelector('#lib-cats .more').click(), 1`); await sleep(300);
-  await ev(`[...document.querySelectorAll('#sheet-panel .menu-item')].find(x => x.textContent.includes('Share to Social')).click(), 1`); await sleep(300);
+  await ev(`[...document.querySelectorAll('#sheet-panel .menu-item')].find(x => x.textContent.includes('Share to Social')).click(), 1`);
+  await until(`document.getElementById('sheet').classList.contains('open') && [...document.querySelectorAll('#sheet-panel .btn')].some(x => x.textContent === 'Share playlist')`, 5000, "the share sheet");
   const nPl = posted.length;
   await ev(`[...document.querySelectorAll('#sheet-panel .btn')].find(x => x.textContent === 'Share playlist').click(), 1`);
-  if (!(await until(`location.hash === '#social' && [...document.querySelectorAll('#so-body .so-pl')].length > 0`, 60000, "the playlist on Social"))) console.log("sharing showed:", await ev(`(document.getElementById('sheet-panel') || {}).textContent + ' | hash ' + location.hash + ' | errors ' + JSON.stringify((window.__errs || []).slice(-3))`));
+  for (let i = 0; i < 6; i++) { await sleep(500); console.log("  sharing:", await ev(`(document.querySelector('#sheet-panel .btn.primary') || {}).textContent + ' | ' + ((document.querySelector('#sheet-panel .set-err') || {}).textContent || '') + ' | open ' + document.getElementById('sheet').classList.contains('open') + ' | ' + location.hash`)); }
+  if (!(await until(`location.hash === '#social' && [...document.querySelectorAll('#so-body .so-pl')].length > 0`, 60000, "the playlist on Social"))) console.log("sharing showed:", await ev(`(document.getElementById('sheet-panel') || {}).innerHTML.slice(0, 400) + ' | open ' + document.getElementById('sheet').classList.contains('open') + ' | hash ' + location.hash`), "| page errors:", b.errors.slice(-6).join(" || ").slice(0, 1500));
   const plPost = posted.slice(nPl).find((x) => x.payload.content && x.payload.content.includes("shared a playlist"));
   const plSongs = posted.slice(nPl).filter((x) => x.files.some(([nm]) => nm === "song.mp4"));
   const plEntry = feedNow().find((x) => x.playlist) || {};

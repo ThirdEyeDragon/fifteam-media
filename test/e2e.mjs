@@ -52,6 +52,8 @@ const ev = async (expr) => {
   if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
   return r.result.value;
 };
+let fails = 0;
+const check = (ok, what) => { console.log(`  ${ok ? "ok" : "FAIL"}: ${what}`); if (!ok) fails++; };
 const until = async (expr, ms = 30000, what = expr) => { const t = Date.now(); while (Date.now() - t < ms) { if (await ev(expr)) return true; await sleep(250); } throw new Error("timed out waiting for " + what); };
 const shot = async (name) => {
   const r = await cdp("Page.captureScreenshot", { format: "png" });
@@ -163,6 +165,67 @@ console.log("stats:", await ev(`[...document.querySelectorAll('#rb-stats .stat')
 await click("#rb-play"); await sleep(2500);
 await show('#rb-result'); await sleep(300);
 await shot("05_rebass_live");
+// Custom notes: the song's bass taken out, the new bass placed by hand (real taps and drags on the editor), and heard
+await ev(`import('./js/rebass.js').then(m => { window.__rb = m.rebass.state; return 1; })`);
+const autoNotes = await ev(`__rb.res.stats.notes`);
+await click('#rb-how button[data-k="custom"]');
+await until(`!document.getElementById('rb-ne').hidden && document.getElementById('rb-busy').hidden && !!(__rb.res && __rb.res.stats.custom)`, 90000, "Custom notes");
+await show('#rb-notes'); await sleep(400);
+console.log("custom notes, before any:", await ev(`JSON.stringify({ notes: __rb.custom.length, stats: [...document.querySelectorAll('#rb-stats .stat')].map(s => s.querySelector('span').textContent + ': ' + s.querySelector('b').textContent).join(' | '), button: document.getElementById('rb-go').textContent })`));
+// the strength of one frequency in a stretch of the result (Goertzel), in the page
+await ev(`(() => { window.__band = (f, a, b) => { const S = __rb, buf = S.outBuf, x = buf.getChannelData(0), sr = buf.sampleRate, off = S.introN || 0;
+  const s0 = Math.floor(a * sr) + off, s1 = Math.floor(b * sr) + off, w = 2 * Math.PI * f / sr, c = 2 * Math.cos(w); let p1 = 0, p2 = 0;
+  for (let i = s0; i < s1; i++) { const s = x[i] + c * p1 - p2; p2 = p1; p1 = s; } return Math.sqrt(Math.max(0, p1 * p1 + p2 * p2 - c * p1 * p2)) / (s1 - s0); }; return 1; })()`);
+const quiet = await ev(`[41.2, 55, 61.7].map(f => __band(f, 1, 4.6)).map(v => v.toExponential(1)).join(', ')`);
+// where on the editor a time (s) and a pitch (Hz) are, as the editor lays them out
+const at = (t, hz) => ev(`(() => { const c = document.querySelector('#rb-ne canvas'), r = c.getBoundingClientRect(), g = __rb.guide, tune = g.tune - Math.floor(g.tune);
+  const st = (f) => 69 + 12 * Math.log2(f / 440), lo = Math.floor(st(18) - tune) + tune, hi = Math.ceil(st(125) - tune) + tune, rows = Math.round(hi - lo) + 1, rh = (r.height - 22 - 18) / rows;
+  const s = Math.round(st(${hz}) - tune) + tune, span = Math.min(8, __rb.origBuf.duration);
+  return [r.left + 44 + (${t} / span) * (r.width - 44), r.top + 22 + (hi - s) * rh + rh / 2, rh]; })()`);
+const tap = async ([x, y]) => { for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: 1 }); await sleep(120); };
+const drag = async ([x, y], dx, dy) => {
+  await cdp("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
+  for (let i = 1; i <= 8; i++) { await cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x: x + (dx * i) / 8, y: y + (dy * i) / 8, button: "left", buttons: 1 }); await sleep(16); }
+  await cdp("Input.dispatchMouseEvent", { type: "mouseReleased", x: x + dx, y: y + dy, button: "left", clickCount: 1 }); await sleep(150);
+};
+// three notes: E1 at 1 s, A1 at 2.5 s, C2 at 4 s (a tap away from a chosen note lets it go first)
+await tap(await at(1.0, 41.2));
+await tap(await at(5.5, 41.2)); await tap(await at(2.5, 55));
+await tap(await at(5.5, 41.2)); await tap(await at(4.0, 65.4));
+console.log("placed:", await ev(`__rb.custom.map(n => n.t.toFixed(2) + ' s ' + n.f.toFixed(1) + ' Hz ' + n.d.toFixed(2) + ' s').join(' | ')`));
+// drag A1 up two rows (to B1), and pull E1's right edge out (longer)
+const [ax, ay, rh] = await at(2.5, 55);
+await tap(await at(5.5, 41.2));
+await drag([ax + 6, ay], 0, -2 * rh);
+await tap(await at(5.5, 41.2));
+const [ex, ey] = await at(1.0, 41.2), noteEdge = await ev(`(() => { const c = document.querySelector('#rb-ne canvas'), r = c.getBoundingClientRect(), span = Math.min(8, __rb.origBuf.duration), n = __rb.custom.find(n => Math.abs(n.f - 41.2) < 1); return r.left + 44 + ((n.t + n.d) / span) * (r.width - 44) - 3; })()`);
+await tap([ex + 4, ey]);                                                 // (chosen first: its edge shows)
+await drag([noteEdge, ey], 40, 0);
+await sleep(500);
+await until(`document.getElementById('rb-busy').hidden && __rb.res.stats.notes === 3`, 60000, "the notes rendered");
+const placed = await ev(`JSON.stringify(__rb.custom.map(n => ({ t: n.t, d: n.d, f: +n.f.toFixed(1) })))`);
+console.log("after moving and stretching:", placed, "| stats:", await ev(`[...document.querySelectorAll('#rb-stats .stat')].map(s => s.querySelector('span').textContent + ': ' + s.querySelector('b').textContent).join(' | ')`));
+const P = JSON.parse(placed);
+const e1 = P.find((n) => Math.abs(n.f - 41.2) < 1), b1 = P.find((n) => Math.abs(n.f - 61.7) < 1), c2 = P.find((n) => Math.abs(n.f - 65.4) < 1.2);
+check(P.length === 3 && e1 && b1 && c2 && e1.d > 0.6 && Math.abs(b1.t - 2.5) < 0.15, "notes placed by tapping, one dragged up two semitones, one made longer");
+// heard: each note sounds in its own stretch, and not outside it
+const inside = await ev(`JSON.stringify({ e1: __band(${e1.f}, ${e1.t + 0.05}, ${e1.t + e1.d - 0.05}), e1out: __band(${e1.f}, ${b1.t + 0.05}, ${b1.t + 0.45}), b1: __band(${b1.f}, ${b1.t + 0.05}, ${b1.t + 0.45}), b1out: __band(${b1.f}, 5.0, 5.4), c2: __band(${c2.f}, ${c2.t + 0.05}, ${c2.t + 0.45}) })`);
+const I = JSON.parse(inside);
+console.log(`heard (before any notes: ${quiet}):`, Object.entries(I).map(([k, v]) => `${k} ${v.toExponential(1)}`).join(", "));
+check(I.e1 > 8 * I.e1out && I.b1 > 8 * I.b1out && I.c2 > 8 * I.e1out, "each note sounds at its own pitch, in its own place, in the rebass");
+await shot("05c_custom_notes");
+// the song's own notes as a start, then undone; kept on the phone for this song
+await click('#rb-ne-song');
+await until(`__rb.custom.length > 3`, 15000, "the song's notes");
+const fromSong = await ev(`__rb.custom.length`);
+await click('#rb-ne-undo'); await sleep(300);
+const kept = await ev(`Object.keys(localStorage).filter(k => k.startsWith('fifteam-notes:')).map(k => JSON.parse(localStorage.getItem(k)).length).join(',')`);
+console.log("song's notes:", fromSong, `(the auto rebass found ${autoNotes}) | undone: ${await ev(`__rb.custom.length`)} | kept on the phone: ${kept}`);
+check(fromSong === autoNotes && (await ev(`__rb.custom.length`)) === 3 && kept === "3", "the song's own notes as a start, undo, and the notes kept for this song");
+// back to Auto bass for the rest
+await click('#rb-how button[data-k="auto"]');
+await until(`document.getElementById('rb-busy').hidden && !!__rb.res && !__rb.res.stats.custom && document.getElementById('rb-notes').hidden`, 60000, "back to Auto bass");
+console.log("back to Auto bass:", await ev(`[...document.querySelectorAll('#rb-stats .stat')].map(s => s.querySelector('span').textContent + ': ' + s.querySelector('b').textContent).join(' | ')`));
 // a different range and level: it re-renders on its own
 await ev(`(() => { const lo = document.getElementById('rb-lo'), hi = document.getElementById('rb-hi'), db = document.getElementById('rb-db');
   lo.value = 20; lo.dispatchEvent(new Event('input')); hi.value = 35; hi.dispatchEvent(new Event('input')); db.value = 0; db.dispatchEvent(new Event('input')); return 1; })()`);
@@ -379,5 +442,6 @@ console.log("paused, still drifting:", JSON.stringify(await ev(`import('./js/dem
 
 console.log("tones polarity label:", await ev(`document.getElementById('tg-flip').closest('label').textContent.trim()`));
 console.log("errors:", errors.length ? errors.join("\n  ") : "none");
+console.log(fails ? `FAIL (${fails})` : "checks: all ok");
 ws.close(); edge.kill();
-process.exit(0);
+process.exit(fails ? 1 : 0);

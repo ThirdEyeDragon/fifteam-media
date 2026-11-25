@@ -148,8 +148,10 @@
     <section class="view" id="view-rebass" aria-label="Rebass">
       <div class="view-inner">
         <div><h2>Rebass</h2><p class="sub">Pick your poison</p></div>
+        <div class="seg so-tabs rb-how" id="rb-how" role="tablist"><button class="on" data-k="auto">Auto bass</button><button data-k="custom">Custom notes</button></div>
 
-        <div class="card">
+        <div class="card sec">
+          <div class="sec-head"><span class="sec-ico"><svg><use href="#i-disc"/></svg></span><div class="sec-t"><b>Song</b><small>From your library or your files</small></div></div>
           <div class="src" id="rb-src">
             <div class="thumb" id="rb-thumb"></div>
             <div class="grow"><div class="t" id="rb-title">No song chosen</div><div class="a" id="rb-artist">Pick one from your library or your files</div></div>
@@ -160,8 +162,9 @@
           </div>
         </div>
 
-        <div class="card">
-          <div class="row between"><span class="label">Bass range</span><span class="val" id="rb-range-val">25–45<small>Hz</small></span></div>
+        <div class="card sec" id="rb-range-card">
+          <div class="sec-head"><span class="sec-ico"><svg><use href="#i-bass"/></svg></span><div class="sec-t"><b>Bass range</b><small>Where the new bass sits</small></div></div>
+          <div class="row between"><span class="label">Range</span><span class="val" id="rb-range-val">25–45<small>Hz</small></span></div>
           <div class="dual" id="rb-dual">
             <div class="rail"></div><div class="fill" id="rb-fill"></div>
             <input type="range" id="rb-lo" min="10" max="120" step="1" value="25" aria-label="Bass frequency">
@@ -174,13 +177,36 @@
           </div>
         </div>
 
-        <div class="card">
-          <div class="row between"><span class="label">Bass level</span><span class="val" id="rb-db-val">−5.0<small>dB</small></span></div>
+        <div class="card sec" id="rb-notes" hidden>
+          <div class="sec-head"><span class="sec-ico"><svg><use href="#i-tone"/></svg></span><div class="sec-t"><b>Your notes</b><small>The song's bass comes out; you place the new one</small></div></div>
+          <p class="status" id="rb-ne-hint">Pick a song and tap Take the bass out. Then tap the grid to place a note, drag it to move it, drag its right edge to make it longer, and pinch to zoom.</p>
+          <div class="ne" id="rb-ne" hidden></div>
+          <div class="ne-sel" id="rb-ne-sel" hidden>
+            <span class="ne-what" id="rb-ne-what"></span>
+            <div class="ne-btns">
+              <button class="btn small" data-a="down" aria-label="Note down a semitone">▼</button><button class="btn small" data-a="up" aria-label="Note up a semitone">▲</button>
+              <button class="btn small" data-a="shorter" aria-label="Shorter">−</button><button class="btn small" data-a="longer" aria-label="Longer">+</button>
+              <button class="btn small danger" data-a="delete">Delete</button>
+            </div>
+          </div>
+          <div class="ne-tools" id="rb-ne-tools" hidden>
+            <button class="btn small" id="rb-ne-play"><svg><use href="#i-play"/></svg>Play</button>
+            <button class="btn small" id="rb-ne-song"><svg><use href="#i-bass"/></svg>Song's notes</button>
+            <button class="btn small" id="rb-ne-undo">Undo</button>
+            <button class="btn small" id="rb-ne-clear">Clear</button>
+            <span class="status grow ne-count" id="rb-ne-count"></span>
+          </div>
+        </div>
+
+        <div class="card sec">
+          <div class="sec-head"><span class="sec-ico"><svg><use href="#i-vol"/></svg></span><div class="sec-t"><b>Bass level</b><small>How loud the new bass is</small></div></div>
+          <div class="row between"><span class="label">Level</span><span class="val" id="rb-db-val">−5.0<small>dB</small></span></div>
           <input type="range" id="rb-db" min="-7.5" max="0" step="0.5" value="-5" aria-label="Bass level in decibels">
           <div class="scale"><span>−7.5 dB</span><span>−5</span><span>−2.5</span><span>0 dB</span></div>
         </div>
 
-        <div class="card">
+        <div class="card sec">
+          <div class="sec-head"><span class="sec-ico"><svg><use href="#i-spark"/></svg></span><div class="sec-t"><b>Effects</b><small>Slowed, reverb and the FifTeam intro</small></div></div>
           <label class="switch"><span class="txt">Slowed</span><input type="checkbox" id="rb-slow"></label>
           <div class="stack" id="rb-slow-box" hidden>
             <div class="row between"><span class="label">Speed</span><span class="val" id="rb-speed-val">80<small>%</small></span></div>
@@ -197,13 +223,14 @@
         </div>
 
         <button class="btn primary block" id="rb-go" disabled><svg><use href="#i-bass"/></svg>Rebass it</button>
-        <div class="card" id="rb-busy" hidden>
+        <div class="card sec" id="rb-busy" hidden>
           <div class="row between"><span class="status" id="rb-stage">Reading the song</span><span class="status" id="rb-pct">0%</span></div>
           <div class="progress"><i id="rb-bar"></i></div>
           <button class="btn small" id="rb-quick" hidden>Quick way instead</button>
         </div>
 
-        <div class="card" id="rb-result" hidden>
+        <div class="card sec" id="rb-result" hidden>
+          <div class="sec-head"><span class="sec-ico"><svg><use href="#i-play"/></svg></span><div class="sec-t"><b>Listen</b><small>Play it, and switch to the original to compare</small></div></div>
           <div class="row between"><span class="label">Live bass</span>
             <div class="seg" id="rb-ab" style="min-width:210px"><button data-k="orig">Original</button><button class="on" data-k="rebass">Rebassed</button></div>
           </div>
@@ -224,8 +251,8 @@
           <div class="stats" id="rb-stats"></div>
         </div>
 
-        <div class="card" id="rb-export" hidden>
-          <span class="label">Save your rebass</span>
+        <div class="card sec" id="rb-export" hidden>
+          <div class="sec-head"><span class="sec-ico"><svg><use href="#i-save"/></svg></span><div class="sec-t"><b>Save and share</b><small>To your phone, your library, Social or a friend</small></div></div>
           <div class="cover-row">
             <div class="cover" id="rb-cover"></div>
             <div class="grow stack-sm"><span class="status" id="rb-cover-note">Cover: the song's own</span>
@@ -260,7 +287,8 @@
     <section class="view" id="view-tones" aria-label="Tone generator">
       <div class="view-inner">
         <div><h2>Tones</h2><p class="sub">Tones, sweeps and noise.</p></div>
-        <div class="card">
+        <div class="card sec">
+          <div class="sec-head"><span class="sec-ico"><svg><use href="#i-tone"/></svg></span><div class="sec-t"><b>Tone</b><small>Pick a frequency and play it</small></div></div>
           <div class="freq"><span class="num" id="tg-num">40.0</span><span class="unit">Hz</span><div class="note" id="tg-note">E1 −14¢</div></div>
           <input type="range" id="tg-freq" min="0" max="1000" step="1" value="372" aria-label="Frequency">
           <div class="scale"><span>1 Hz</span><span>10</span><span>100</span><span>1k</span><span>20k Hz</span></div>
@@ -277,8 +305,8 @@
           <canvas class="scope" id="tg-scope"></canvas>
           <button class="play-big" id="tg-play" style="align-self:center" aria-label="Play tone"><svg><use href="#i-play"/></svg></button>
         </div>
-        <div class="card">
-          <span class="label">Sound</span>
+        <div class="card sec">
+          <div class="sec-head"><span class="sec-ico"><svg><use href="#i-vol"/></svg></span><div class="sec-t"><b>Sound</b><small>Wave, level and speakers</small></div></div>
           <div class="seg" id="tg-wave"><button class="on" data-k="sine">Sine</button><button data-k="square">Square</button><button data-k="triangle">Triangle</button><button data-k="sawtooth">Saw</button></div>
           <div class="seg" id="tg-noise"><button data-k="white">White noise</button><button data-k="pink">Pink noise</button></div>
           <div class="row between"><span class="label">Level</span><span class="val" id="tg-db-val">−12<small>dBFS</small></span></div>
@@ -288,8 +316,8 @@
           <div class="seg" id="tg-ch"><button class="on" data-k="both">Both</button><button data-k="left">Left</button><button data-k="right">Right</button></div>
           <label class="switch"><span class="txt">Reverse polarity</span><input type="checkbox" id="tg-flip"></label>
         </div>
-        <div class="card">
-          <span class="label">Sweep</span>
+        <div class="card sec">
+          <div class="sec-head"><span class="sec-ico"><svg><use href="#i-repeat"/></svg></span><div class="sec-t"><b>Sweep</b><small>From one frequency to another</small></div></div>
           <div class="inline-inputs">
             <label>From (Hz)<input class="input" id="tg-sw-a" inputmode="decimal" value="20"></label>
             <label>To (Hz)<input class="input" id="tg-sw-b" inputmode="decimal" value="120"></label>
@@ -299,8 +327,8 @@
           <label class="switch"><span class="txt">Loop</span><input type="checkbox" id="tg-sw-loop"></label>
           <button class="btn block" id="tg-sweep"><svg><use href="#i-tone"/></svg>Play sweep</button>
         </div>
-        <div class="card">
-          <span class="label">Save this tone</span>
+        <div class="card sec">
+          <div class="sec-head"><span class="sec-ico"><svg><use href="#i-save"/></svg></span><div class="sec-t"><b>Save this tone</b><small>To your phone or your library</small></div></div>
           <div class="chips" id="tg-len"><button class="chip" data-s="10">10 s</button><button class="chip on" data-s="30">30 s</button><button class="chip" data-s="60">1 min</button><button class="chip" data-s="300">5 min</button></div>
           <div class="cover-row">
             <div class="cover" id="tg-cover"></div>
