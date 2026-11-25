@@ -2,7 +2,7 @@
 import { $, bus, toast, openLayers } from "./ui.js";
 import { player } from "./player.js";
 
-export const APP_VERSION = "2.10";
+export const APP_VERSION = "2.11";
 import * as store from "./store.js";
 import { initPlayer } from "./player.js";
 import { initLibrary, library, importFiles, openCode } from "./library.js";
@@ -12,6 +12,7 @@ import { initSettings } from "./settings.js";
 import { initDemo } from "./demo.js";
 import { initSocial } from "./social.js";
 import { initBan } from "./ban.js";
+import { initAccount } from "./account.js";
 import { initPresence } from "./meta.js";
 
 const VIEWS = ["player", "library", "rebass", "social", "tones"];
@@ -90,6 +91,7 @@ async function boot() {
   topBar();
   swipeBack();
   initBan();
+  initAccount();          // (signed in, or the sign-in screen over everything until then)
   // (the download page offers "Open" rather than "Download" on a phone that has the app)
   try { if (matchMedia("(display-mode: standalone)").matches || navigator.standalone) localStorage.setItem("fifteam-installed", "1"); } catch {}
   addEventListener("appinstalled", () => { try { localStorage.setItem("fifteam-installed", "1"); } catch {} });

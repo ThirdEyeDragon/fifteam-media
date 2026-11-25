@@ -11,6 +11,20 @@ const ls = { get(k) { try { return localStorage.getItem(k); } catch { return nul
 let list = new Set(), nopic = new Set();
 try { list = new Set(JSON.parse(ls.get(LIST) || "[]")); } catch {}
 try { nopic = new Set(JSON.parse(ls.get(LIST + "-nopic") || "[]")); } catch {}
+// bans by email: kept as fingerprints (SHA-256 of the address), so the list doesn't show anyone's email
+let emails = new Set();
+try { emails = new Set(JSON.parse(ls.get(LIST + "-emails") || "[]")); } catch {}
+export async function emailHash(email) {
+  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(String(email || "").trim().toLowerCase()));
+  return Array.from(new Uint8Array(d), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+/** Whether an email has been banned (the list as last read; read again first if it's never been). */
+export async function emailBanned(email) {
+  if (!email) return false;
+  if (!checkedAt) await checkBans();
+  return emails.has(await emailHash(email));
+}
+const myEmail = () => { try { return (JSON.parse(ls.get("fifteam-account") || "null") || {}).email || ""; } catch { return ""; } };
 let badges = {};
 try { badges = JSON.parse(ls.get(LIST + "-badges") || "{}") || {}; } catch {}
 const BADGES = ["founder", "dev", "member"];
@@ -69,8 +83,10 @@ export async function checkBans() {
     const changed = JSON.stringify(bg) !== JSON.stringify(badges);
     badges = bg; ls.set(LIST + "-badges", JSON.stringify(bg));
     if (changed) window.dispatchEvent(new Event("fifteam-badges"));
-    const me = ls.get(ME) || "";
-    if (me && list.has(me)) { await setFlag(true); show(); }
+    const em = d && d.emails && typeof d.emails === "object" ? Object.keys(d.emails).filter((k) => /^[0-9a-f]{64}$/.test(k)) : [];
+    emails = new Set(em); ls.set(LIST + "-emails", JSON.stringify(em));
+    const me = ls.get(ME) || "", mail = myEmail();
+    if ((me && list.has(me)) || (mail && emails.has(await emailHash(mail)))) { await setFlag(true); show(); }
     else if (await flagged()) { await setFlag(false); hide(); }
   } catch {}
 }

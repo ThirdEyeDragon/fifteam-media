@@ -7,5 +7,10 @@
   "presence": "1574590808601006183",
   "mod": "1574590811176181902",
   "links": "1574624232363528302",
-  "market": "1574640462659321958"
+  "market": "1574640462659321958",
+  "auth": "wXU_KupL8s3WpBO0j7zelgSrnfVZOo1C3rSTBLJN_oc.pb3TvloC-ZJ18olU0mvmWSAl94gVCz-o5ee9hqAgU1c",
+  "firebase": {
+    "apiKey": "AIzaSyAHaP6-MWkh7DMmXBwguQutGVRfzhOyZg8",
+    "projectId": "fifteam-media-26"
+  }
 }

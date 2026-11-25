@@ -8,6 +8,7 @@ import { demo } from "./demo.js";
 import { APP_VERSION } from "./app.js";
 import { canNotify, notifyWanted, setNotify } from "./dms.js";
 import { isIOS } from "./export.js";
+import { account, signOut } from "./account.js";
 import { loadMeta, prefsOf, setPrefs, blocksOf, setBlock } from "./meta.js";
 import { api } from "./social.js";
 
@@ -113,6 +114,19 @@ export function openSettings() {
       const pill = $("set-demo-pill"); pill.textContent = demo.on ? "On" : "Off"; pill.classList.toggle("on", demo.on);
       if (demo.on) { closeSheet(); location.hash = "#player"; toast("Demo mode on. Play a song.", 2200); }
     };
+
+    // the account this phone is signed in to
+    const acc = account();
+    if (acc) {
+      const accSec = el(`<div class="set-sec">
+        <div class="set-head"><svg><use href="#i-key"/></svg>Account</div>
+        <span class="status set-email"></span>
+        <button class="btn small" id="set-signout">Sign out</button>
+      </div>`);
+      accSec.querySelector(".set-email").textContent = `Signed in as ${acc.email}`;
+      p.append(accSec);
+      accSec.querySelector("#set-signout").onclick = () => { if (confirm("Sign out of FifTeam Media on this phone?")) signOut(); };
+    }
 
     // privacy: who can message you, and whether your posts are for everyone or only followers you let in
     const pvSec = el(`<div class="set-sec">

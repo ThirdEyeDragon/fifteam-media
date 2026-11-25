@@ -11,6 +11,10 @@
 //   /tag-member, /tag-founder, /tag-developer <user>   the gradient tag next to their name (remove: True takes it off)
 //   /tags              who has which tag
 //   /listings [user], /delete-listing   Audio Market: the latest listings, and taking one down
+//   /accounts, /ban-email <email>, /unban-email <email>   FifTeam accounts (an account's ban shuts the app on every
+//                      phone signed in to it, and it can't sign in again). Signing in itself needs nothing here: the
+//                      accounts are Google's free sign-in service (Firebase Authentication); the bot only reads each
+//                      phone's email (sealed for it alone, in the check-ins) and keeps the bans (as email fingerprints).
 // And in the background, every half hour: every post's and profile picture's current file links in one store message
 // (social/config.json "links"), so a phone reads one file instead of asking for each post (much faster to load).
 // It reads and writes the app's store messages through the same webhook the app uses (social/config.json), and talks
@@ -26,6 +30,8 @@ import { join, dirname, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { createInterface } from "node:readline";
+import { botKeys, openSealed } from "./auth.mjs";
+import { createHash } from "node:crypto";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..", "..");
@@ -125,6 +131,7 @@ export async function cmdBan(target, reason, by) {
   const at = Date.now();
   await changeBans((b) => { for (const p of phones) b[p] = { at, name: (all[p] && all[p].name) || String(target).slice(0, 24) }; }, (b) => phones.every((p) => b[p]));
   note(phones, reason, by);
+  await accountsBan(phones, true);
   return `Banned ${phones.map((p) => `**${clean((all[p] && all[p].name) || target)}** (\`${p}\`)`).join(", ")}. FifTeam Media shuts on ${phones.length === 1 ? "that phone" : "those phones"} the next time it checks (straight away when it's opened, or within 10 minutes), and stays shut until /unban.`;
 }
 export async function cmdUnban(target) {
@@ -134,6 +141,7 @@ export async function cmdUnban(target) {
   if (!phones.length) return `**${clean(target)}** isn't banned. /bans shows who is.`;
   await changeBans((b) => { for (const p of phones) delete b[p]; }, (b) => phones.every((p) => !b[p]));
   note(phones, "", "");
+  await accountsBan(phones, false);
   return `Unbanned ${phones.map((p) => `**${clean(bans[p].name)}** (\`${p}\`)`).join(", ")}. The app opens again on ${phones.length === 1 ? "that phone" : "those phones"} the next time it checks.`;
 }
 export async function cmdBans() {
@@ -288,6 +296,7 @@ async function suggest(cmd, typed) {
   const low = String(typed || "").toLowerCase();
   if (cmd === "delete-post") return suggestPosts(low);
   if (cmd === "delete-comment") return suggestComments(low);
+  if (cmd === "ban-email" || cmd === "unban-email") { const byPhone = await emailsByPhone(), mod = (await readStore("mod", "mod.json")) || {}, banned = obj(mod.emails); return [...new Set(Object.values(byPhone))].filter((e) => (cmd === "ban-email" ? !banned[fingerprint(e)] : banned[fingerprint(e)]) && (!low || e.includes(low))).slice(0, 25).map((e) => ({ name: e.slice(0, 100), value: e })); }
   if (cmd === "delete-listing") { const d = await marketNow(); return d.items.filter((x) => !low || `${x.title} ${x.user} ${x.place}`.toLowerCase().includes(low)).slice(0, 25).map((x) => ({ name: `${x.title} · ${money(x.price)} · ${x.user}`.slice(0, 100), value: x.id })); }
   if (cmd === "unban") {
     const d = (await readStore("mod", "mod.json")) || { bans: {} };
@@ -296,6 +305,48 @@ async function suggest(cmd, typed) {
   const all = await people();
   return Object.entries(all).filter(([k, v]) => !low || k.includes(low) || (v.name || "").toLowerCase().includes(low)).sort((a, b) => b[1].at - a[1].at)
     .slice(0, 25).map(([k, v]) => ({ name: `${v.name || "(no username)"} · ${v.device || "device unknown"} · ${k}`.slice(0, 100), value: k }));
+}
+
+// ---------------------------------------------------------------------------------------------------- accounts
+let KEYS = null;
+const keys = async () => (KEYS = KEYS || (await botKeys()));
+const fingerprint = (email) => createHash("sha256").update(String(email || "").trim().toLowerCase()).digest("hex");
+/** Each phone's account email (sealed for the bot in its check-in): phone id -> email. */
+async function emailsByPhone() {
+  const pres = (await readStore("presence", "presence.json").catch(() => null)) || {}, k = await keys(), out = {};
+  for (const [ph, v] of Object.entries(pres.on || {})) if (PHONE.test(ph) && v && v.e && !v.t) { try { out[ph] = (await openSealed(k, v.e)).toLowerCase(); } catch {} }
+  return out;
+}
+/** A ban (or its end) for these phones reaches their accounts' emails too (so a new sign-in doesn't get round it). */
+async function accountsBan(phones, on) {
+  const byPhone = await emailsByPhone().catch(() => ({}));
+  const hashes = [...new Set(phones.map((p) => byPhone[p]).filter(Boolean).map(fingerprint))];
+  if (!hashes.length) return;
+  await changeMod((d) => { d.emails = obj(d.emails); for (const x of hashes) { if (on) d.emails[x] = { at: Date.now() }; else delete d.emails[x]; } }, () => true);
+}
+export async function cmdAccounts() {
+  const byPhone = await emailsByPhone(), all = await people(), mod = (await readStore("mod", "mod.json")) || {}, banned = obj(mod.emails);
+  const acc = {};
+  for (const [ph, e] of Object.entries(byPhone)) (acc[e] = acc[e] || []).push(ph);
+  const list = Object.entries(acc).sort((a, b) => Math.max(...b[1].map((p) => (all[p] || {}).at || 0)) - Math.max(...a[1].map((p) => (all[p] || {}).at || 0)));
+  if (!list.length) return "No signed-in accounts have checked in yet (they do within a few minutes of opening the app).";
+  return [`**${list.length} account${list.length === 1 ? "" : "s"}** (seen in the last half year)`, ...list.slice(0, 25).map(([e, phs]) => {
+    const p = phs.map((x) => all[x] || {}).sort((a, b) => (b.at || 0) - (a.at || 0))[0];
+    return `• ${clean(e, 60)} · **${clean(p.name || "(no username)")}** · ${phs.length} phone${phs.length === 1 ? "" : "s"} · ${banned[fingerprint(e)] ? "banned · " : ""}${p.at ? ago(p.at) : ""} · \`${phs[0]}\``;
+  })].join("\n");
+}
+export async function cmdBanEmail(email, ban, by) {
+  email = String(email || "").trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return "That isn't an email address.";
+  const fp = fingerprint(email), byPhone = await emailsByPhone().catch(() => ({})), all = await people();
+  const phones = Object.keys(byPhone).filter((p) => byPhone[p] === email);
+  await changeMod((d) => { d.emails = obj(d.emails); if (ban) d.emails[fp] = { at: Date.now() }; else delete d.emails[fp]; }, (d) => true);
+  if (phones.length) {
+    if (ban) { await changeBans((b) => { for (const p of phones) b[p] = { at: Date.now(), name: (all[p] && all[p].name) || email.split("@")[0] }; }, (b) => phones.every((p) => b[p])); note(phones, "banned by email", by); }
+    else { await changeBans((b) => { for (const p of phones) delete b[p]; }, (b) => phones.every((p) => !b[p])); note(phones, "", ""); }
+  }
+  return ban ? `Banned **${clean(email, 60)}**${phones.length ? ` (${phones.length} phone${phones.length === 1 ? "" : "s"})` : ""}. The app shuts on every phone signed in to it, and it can't sign in or sign up again until /unban-email.`
+    : `Unbanned **${clean(email, 60)}**. It can sign in again.`;
 }
 
 // ---------------------------------------------------------------------------------------------------- Audio Market
@@ -359,6 +410,9 @@ const COMMANDS = [
   { name: "tag-founder", description: "Give someone the FifTeam Founder tag", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }, { type: 5, name: "remove", description: "Take the tag off instead", required: false }] },
   { name: "tag-developer", description: "Give someone the FifTeam Media Developer tag", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }, { type: 5, name: "remove", description: "Take the tag off instead", required: false }] },
   { name: "tags", description: "Who has which FifTeam tag", type: 1 },
+  { name: "accounts", description: "FifTeam accounts: email, username, phones, last seen", type: 1 },
+  { name: "ban-email", description: "Ban an account by its email (every phone signed in to it)", type: 1, options: [{ type: 3, name: "email", description: "The account's email", required: true, autocomplete: true }] },
+  { name: "unban-email", description: "Lift an account's ban", type: 1, options: [{ type: 3, name: "email", description: "The account's email", required: true, autocomplete: true }] },
   { name: "listings", description: "The latest Audio Market listings (or one user's), with their ids", type: 1, options: [{ type: 3, name: "user", description: "Only this user's", required: false, autocomplete: true }] },
   { name: "delete-listing", description: "Take an Audio Market listing down", type: 1, options: [{ type: 3, name: "listing", description: "Start typing its title or the seller", required: true, autocomplete: true }] },
   { name: "allow-picture", description: "Let a user have a profile picture again", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }] },
@@ -400,6 +454,7 @@ async function answer(it, tok) {
         : name === "posts" ? await cmdPosts(v("user")) : name === "comments" ? await cmdComments(v("user"))
         : name === "delete-post" ? await cmdDeletePost(v("post")) : name === "delete-comment" ? await cmdDeleteComment(v("comment"))
         : name === "devices" ? await cmdDevices(v("user")) : name === "tags" ? await cmdTags()
+        : name === "accounts" ? await cmdAccounts() : name === "ban-email" ? await cmdBanEmail(v("email"), true, who.id) : name === "unban-email" ? await cmdBanEmail(v("email"), false)
         : name === "listings" ? await cmdListings(v("user")) : name === "delete-listing" ? await cmdDeleteListing(v("listing"))
         : name === "tag-member" ? await cmdTag("member", v("user"), v("remove")) : name === "tag-founder" ? await cmdTag("founder", v("user"), v("remove")) : name === "tag-developer" ? await cmdTag("dev", v("user"), v("remove"))
         : name === "purge" ? await cmdPurge(v("user")) : name === "clear-profile" ? await cmdClearProfile(v("user")) : name === "allow-picture" ? await cmdAllowPicture(v("user"))
@@ -422,6 +477,7 @@ async function run() {
   if (!(await reg())) { const t = setInterval(async () => { if (await reg()) clearInterval(t); }, 60e3); }
   const links = async () => { try { log(`file links refreshed: ${await refreshLinks()}`); } catch (e) { log("file links:", e.message); } };
   links(); setInterval(links, 30 * 60e3);
+
   let wait = 2000;
   for (;;) {
     try { await session(tok); wait = 2000; } catch (e) { log("gateway:", e.message); }
@@ -479,5 +535,6 @@ async function setup() {
 
 if (process.argv[1] && resolvePath(process.argv[1]) === fileURLToPath(import.meta.url)) {
   if (process.argv.includes("--setup")) setup().catch((e) => { console.log("Setup failed:", e.message); process.exit(1); });
+
   else run();
 }

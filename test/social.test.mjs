@@ -4,6 +4,8 @@
 // knob lock on the Player.
 import { spawn } from "node:child_process";
 import { writeFileSync, mkdtempSync, readFileSync } from "node:fs";
+import { botKeys, openSealed } from "../tools/bot/auth.mjs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { browser } from "./cdp.mjs";
@@ -60,13 +62,48 @@ function multipart(body, ctype) {
 }
 const json = (o, status = 200) => ({ status, type: "application/json", body: Buffer.from(JSON.stringify(o)) });
 // another phone's write landing just after this phone checked its own: armed, the next feed write is undone right after it's read back
+// the stand-in for the sign-in service (Google's Firebase Authentication): accounts, the emailed links (a test "taps"
+// one with fb.tapLink), sign-in, a new password; and the FifTeam bot's key (for the sealed emails in the check-ins)
+const authKeys = await botKeys(mkdtempSync(join(tmpdir(), "ft-auth-")));
+const fb = { users: new Map(), links: [], tapLink(email) { const u = this.users.get(email); if (u) u.verified = true; } };
+function firebase(u, body) {
+  const rnd = () => Math.random().toString(36).slice(2, 14) + Math.random().toString(36).slice(2, 14);
+  const fail = (m) => ({ status: 400, type: "application/json", body: Buffer.from(JSON.stringify({ error: { code: 400, message: m } })) });
+  const byToken = (t) => [...fb.users.values()].find((x) => x.tokens.has(t) || x.ids.has(t));
+  const tokens = (x) => { const id = "id-" + rnd(), rf = "rf-" + rnd(); x.ids.add(id); x.tokens.add(rf); return { id, rf }; };
+  if (u.host === "securetoken.googleapis.com") {
+    const q = new URLSearchParams(body.toString()), x = byToken(q.get("refresh_token"));
+    if (!x) return fail("INVALID_REFRESH_TOKEN");
+    if (x.disabled) return fail("USER_DISABLED");
+    const t = tokens(x); return json({ id_token: t.id, refresh_token: t.rf, user_id: x.localId });
+  }
+  const d = JSON.parse(body.toString() || "{}"), op = u.pathname.split(":").pop();
+  if (op === "signUp") {
+    if (fb.users.has(d.email)) return fail("EMAIL_EXISTS");
+    if (String(d.password).length < 6) return fail("WEAK_PASSWORD : Password should be at least 6 characters");
+    const x = { email: d.email, pass: d.password, localId: "fb" + rnd() + rnd(), verified: false, displayName: "", ids: new Set(), tokens: new Set() };
+    fb.users.set(d.email, x); const t = tokens(x);
+    return json({ idToken: t.id, refreshToken: t.rf, localId: x.localId, email: d.email });
+  }
+  if (op === "signInWithPassword") {
+    const x = fb.users.get(d.email);
+    if (!x || x.pass !== d.password) return fail("INVALID_LOGIN_CREDENTIALS");
+    if (x.disabled) return fail("USER_DISABLED");
+    const t = tokens(x); return json({ idToken: t.id, refreshToken: t.rf, localId: x.localId, email: x.email });
+  }
+  if (op === "sendOobCode") { const x = d.idToken ? byToken(d.idToken) : fb.users.get(d.email); fb.links.push({ type: d.requestType, email: x ? x.email : d.email }); return json({ email: x ? x.email : d.email }); }
+  if (op === "lookup") { const x = byToken(d.idToken); if (!x) return fail("INVALID_ID_TOKEN"); return json({ users: [{ localId: x.localId, email: x.email, emailVerified: x.verified, displayName: x.displayName }] }); }
+  if (op === "update") { const x = byToken(d.idToken); if (!x) return fail("INVALID_ID_TOKEN"); if (d.displayName != null) x.displayName = d.displayName; return json({ localId: x.localId, displayName: x.displayName }); }
+  return fail("UNKNOWN");
+}
 let clobber = null;
 const gets = new Map();
 function discord(method, url, headers, body) {
   const u = new URL(url);
+  if (u.host === "identitytoolkit.googleapis.com" || u.host === "securetoken.googleapis.com") return firebase(u, body);
   if (u.host === "api.bigdatacloud.net") { const lat = +u.searchParams.get("latitude"); return json(lat > 40.5 ? { city: "City of Toledo", principalSubdivisionCode: "US-OH", countryCode: "US" } : { city: "Columbus", principalSubdivisionCode: "US-OH", countryCode: "US" }); }
   if (u.host === "cdn.discordapp.com") { const f = cdn.get(url.split("?")[0]); return f ? { status: 200, type: f.type, body: f.bytes } : { status: 404, type: "text/plain", body: Buffer.from("no") }; }
-  if (u.pathname.endsWith("/social/config.json")) return json({ hook: HOOK, key: Buffer.from(TOKEN.split("").reverse().join("")).toString("base64"), index: INDEX, dm: DM, meta: META, presence: PRES, mod: MOD, links: LINKS, market: MARKET });
+  if (u.pathname.endsWith("/social/config.json")) return json({ hook: HOOK, key: Buffer.from(TOKEN.split("").reverse().join("")).toString("base64"), index: INDEX, dm: DM, meta: META, presence: PRES, mod: MOD, links: LINKS, market: MARKET, auth: authKeys.pub, firebase: { apiKey: "test-key" } });
   const base = `/api/v10/webhooks/${HOOK}/${TOKEN}`;
   if (!u.pathname.startsWith(base)) return json({ message: "Unknown Webhook", code: 10015 }, 404);
   const rest = u.pathname.slice(base.length), m = /^\/messages\/(\d+)$/.exec(rest);
@@ -103,15 +140,42 @@ b.on(async (m) => {
   const r = discord(request.method, request.url, request.headers, body);
   await send("Fetch.fulfillRequest", { requestId, responseCode: r.status, responseHeaders: [...CORS, { name: "Content-Type", value: r.type }], body: r.body.toString("base64") }, m.sessionId);
 });
-await send("Fetch.enable", { patterns: [{ urlPattern: "https://discord.com/*" }, { urlPattern: "https://cdn.discordapp.com/*" }, { urlPattern: "*social/config.json*" }, { urlPattern: "https://api.bigdatacloud.net/*" }] });
+await send("Fetch.enable", { patterns: [{ urlPattern: "https://discord.com/*" }, { urlPattern: "https://cdn.discordapp.com/*" }, { urlPattern: "*social/config.json*" }, { urlPattern: "https://api.bigdatacloud.net/*" }, { urlPattern: "https://identitytoolkit.googleapis.com/*" }, { urlPattern: "https://securetoken.googleapis.com/*" }] });
 // (the app's service worker fetches pictures itself: its requests go to the stand-in too)
 b.on((m) => { if (m.method === "Target.attachedToTarget" && m.params.targetInfo.type === "service_worker") send("Fetch.enable", { patterns: [{ urlPattern: "https://cdn.discordapp.com/*" }, { urlPattern: "https://discord.com/*" }] }, m.params.sessionId); });
 const until = async (expr, ms, what) => { const t = Date.now(); while (Date.now() - t < ms) { if (await ev(expr).catch(() => false)) return true; await sleep(200); } check(false, "timed out waiting for " + what); return false; };
 const text = (sel) => ev(`[...document.querySelectorAll(${JSON.stringify(sel)})].map(e => e.textContent).join(' | ')`);
 const shot = async (name) => { if (!process.env.SHOTS) return; const r = await send("Page.captureScreenshot", { format: "png" }); writeFileSync(join(process.env.SHOTS, name + ".png"), Buffer.from(r.result.data, "base64")); };
 
+// creating an account through the sign-in screen: email and password; the link in the email (tapped); Continue
+async function signUp(br, email, pass = "bass-head-2026") {
+  const wait = async (expr, ms, what) => { const t = Date.now(); while (Date.now() - t < ms) { if (await br.ev(expr).catch(() => false)) return true; await sleep(200); } check(false, "timed out waiting for " + what); return false; };
+  await wait(`!!document.getElementById('acct')`, 8000, "the sign-in screen");
+  await br.ev(`[...document.querySelectorAll('#acct .acct-link')].find(x => x.textContent.includes('Create an account')).click(), 1`); await sleep(200);
+  await br.ev(`(() => { const f = document.querySelector('#acct form'), i = f.querySelectorAll('input'); i[0].value = ${JSON.stringify(email)}; i[1].value = ${JSON.stringify(pass)}; i[2].value = ${JSON.stringify(pass)}; f.requestSubmit(); return 1; })()`);
+  await wait(`(document.querySelector('#acct .acct-title') || {}).textContent === 'Check your email'`, 15000, "the check-your-email screen");
+  // Continue before the link is tapped: not yet
+  await br.ev(`document.querySelector('#acct form').requestSubmit(), 1`);
+  await wait(`/Not confirmed yet/.test(document.querySelector('#acct .acct-err').textContent)`, 8000, "not confirmed yet");
+  const early = await br.ev(`document.querySelector('#acct .acct-err').textContent`);
+  fb.tapLink(email);
+  await br.ev(`document.querySelector('#acct form').requestSubmit(), 1`);
+  await wait(`!document.getElementById('acct') && !document.getElementById('app').inert`, 15000, "signed in");
+  return early;
+}
+
 try {
   await b.open(`http://127.0.0.1:${port}/#social`, 3000);
+  // first: the sign-in screen, over everything, until an account is made
+  const shut = await ev(`!!document.getElementById('acct') && document.getElementById('app').inert && document.querySelector('#acct .acct-title').textContent`);
+  console.log("first launch:", shut);
+  check(shut === "Sign in", "the app opens on the sign-in screen, and can't be used until then");
+  const phoneBefore = await ev(`localStorage.getItem('fifteam-social-me')`);
+  await shot("d26_signin");
+  const early = await signUp(b, "alice@example.com");
+  const acc = fb.users.get("alice@example.com") || {};
+  console.log("account made:", JSON.stringify({ emails: fb.links.map((l) => `${l.type} to ${l.email}`), beforeTheLink: early, keptOnTheAccount: acc.displayName, phoneWas: phoneBefore }));
+  check(acc.displayName === "ft:" + phoneBefore && fb.links.some((l) => l.type === "VERIFY_EMAIL" && l.email === "alice@example.com") && /Not confirmed yet/.test(early), "an account, confirmed by the link in its email (the phone keeps its id, kept on the account)");
   await until(`document.querySelectorAll('#so-body .so-post').length > 0`, 15000, "the feed");
   console.log("no Me tab:", await ev(`!document.getElementById('so-seg') && !/\\bMe\\b/.test(document.getElementById('view-social').textContent)`));
   const feed = await text("#so-body .so-post");
@@ -284,7 +348,7 @@ try {
   // another phone sees Alice's picture on her post, from her profile
   {
     const other = await browser();
-    await other.send("Fetch.enable", { patterns: [{ urlPattern: "https://discord.com/*" }, { urlPattern: "https://cdn.discordapp.com/*" }, { urlPattern: "*social/config.json*" }, { urlPattern: "https://api.bigdatacloud.net/*" }] });
+    await other.send("Fetch.enable", { patterns: [{ urlPattern: "https://discord.com/*" }, { urlPattern: "https://cdn.discordapp.com/*" }, { urlPattern: "*social/config.json*" }, { urlPattern: "https://api.bigdatacloud.net/*" }, { urlPattern: "https://identitytoolkit.googleapis.com/*" }, { urlPattern: "https://securetoken.googleapis.com/*" }] });
     other.on(async (m) => {
       if (m.method !== "Fetch.requestPaused") return;
       const { requestId, request } = m.params;
@@ -296,6 +360,7 @@ try {
       await other.send("Fetch.fulfillRequest", { requestId, responseCode: r.status, responseHeaders: [...CORS, { name: "Content-Type", value: r.type }], body: r.body.toString("base64") }, m.sessionId);
     });
     await other.open(`http://127.0.0.1:${port}/#social`, 3500);
+    await signUp(other, "ben@example.com", "ben-subwoofers-1");
     let seenPic = "";
     for (let i = 0; i < 40; i++) { seenPic = await other.ev(`(() => { const p = [...document.querySelectorAll('#so-body .so-post')].find(p => p.textContent.includes('Fresh one')); return p ? p.querySelector('.so-av').style.backgroundImage : ''; })()`); if (/avatar\.jpg/.test(seenPic)) break; await sleep(250); }
     console.log("another phone sees Alice's picture:", /avatar\.jpg/.test(seenPic));
@@ -982,6 +1047,41 @@ try {
   await ev(`[...document.querySelectorAll('#sheet-panel .menu-item')].find(x => x.textContent.includes('Delete')).click(), 1`); await sleep(400);
   check(JSON.parse(await ev(`localStorage.getItem('fifteam-cats')`)).length === 1 && (await ev(`document.querySelectorAll('#lib-list .item').length`)) >= 2, "category deleted; its songs still in the library");
   await ev(`location.hash = '#social', 1`); await sleep(300);
+
+  // the account: still signed in after opening again; signed out; back in with the password; a wrong one; banned
+  await b.open(`http://127.0.0.1:${port}/?again5#player`, 2500);
+  check(!(await ev(`!!document.getElementById('acct')`)), "still signed in after opening again");
+  await ev(`document.getElementById('btn-settings').click(), 1`); await sleep(500);
+  console.log("Settings:", await ev(`document.querySelector('#sheet-panel .set-email').textContent`));
+  await ev(`(() => { window.confirm = () => true; document.getElementById('set-signout').click(); return 1; })()`); await sleep(2500);
+  check(await ev(`!!document.getElementById('acct')`), "signed out: the sign-in screen again");
+  const signIn = async (email, pass) => { await ev(`(() => { const f = document.querySelector('#acct form'), i = f.querySelectorAll('input'); i[0].value = ${JSON.stringify(email)}; i[1].value = ${JSON.stringify(pass)}; f.requestSubmit(); return 1; })()`); for (let i = 0; i < 50; i++) { await sleep(200); const st = await ev(`document.getElementById('acct') ? document.querySelector('#acct .acct-err').textContent : 'in'`); if (st) return st; } return "timed out"; };
+  const wrong = await signIn("alice@example.com", "not-my-password");
+  console.log("a wrong password:", wrong);
+  check(/don't match/.test(wrong), "a wrong password is refused");
+  const right = await signIn("alice@example.com", "bass-head-2026");
+  console.log("the right one:", right, "| same phone id:", (await ev(`localStorage.getItem('fifteam-social-me')`)) === phoneBefore);
+  check(right === "in" && (await ev(`localStorage.getItem('fifteam-social-me')`)) === phoneBefore, "signed back in with the password (the same id)");
+  // the sealed email in her check-in: only the bot's key opens it
+  const pe = (storeNow(PRES).on[phoneBefore] || {}).e;
+  const opened = pe ? await openSealed(authKeys, pe).catch(() => "") : "";
+  console.log("her check-in's email, as stored:", pe ? pe.slice(0, 40) + "…" : "none", "| opened by the bot:", opened);
+  check(opened === "alice@example.com" && !pe.includes("alice"), "her email reaches the bot sealed (nobody else can read it)");
+  // banned by email (/ban-email): she can't sign in; lifted: she can
+  { const d = storeNow(MOD); d.emails = { [createHash("sha256").update("alice@example.com").digest("hex")]: { at: Date.now() } }; setStore(MOD, d); }
+  await ev(`import('./js/ban.js').then((m) => m.checkBans()).then(() => 1)`);
+  const shutNow = await ev(`!!document.getElementById('ban')`);
+  console.log("banned by email: the app shut at once:", shutNow);
+  check(shutNow, "an email ban shuts the app on her phone");
+  await ev(`(localStorage.removeItem('fifteam-ban'), caches.delete('fifteam-flags')).then ? 1 : 1`);
+  await ev(`import('./js/account.js').then((m) => m.signOut()), 1`); await sleep(2500);
+  const banned = await signIn("alice@example.com", "bass-head-2026");
+  console.log("signing in, banned:", banned);
+  check(/banned/.test(banned), "a banned email can't sign in");
+  { const d = storeNow(MOD); d.emails = {}; setStore(MOD, d); }
+  await ev(`import('./js/ban.js').then((m) => m.checkBans()).then(() => 1)`);
+  check(await signIn("alice@example.com", "bass-head-2026") === "in", "and can again once it's unbanned");
+  await b.open(`http://127.0.0.1:${port}/?again6#player`, 2500);
 
   // the knob lock
   await ev(`location.hash = '#player'`); await sleep(500);

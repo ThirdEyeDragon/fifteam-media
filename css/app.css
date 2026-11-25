@@ -887,3 +887,19 @@ h2 { background: linear-gradient(90deg, #ffffff 0%, #e6dcff 55%, #cdb6ff 100%); 
 .so-pllist .so-song { padding: 6px 8px; }
 .so-pllist .so-cover { width: 40px; height: 40px; }
 .so-plmore { align-self: center; }
+
+/* ---------------------------------------------------------------------------- 2.11: signing in */
+.acct { position: fixed; inset: 0; z-index: 900; overflow-y: auto; display: flex; align-items: center; justify-content: center; padding: calc(env(safe-area-inset-top, 0px) + 24px) 18px calc(env(safe-area-inset-bottom, 0px) + 24px);
+  background: radial-gradient(120% 80% at 20% 0%, rgba(47, 120, 255, 0.35), transparent 60%), radial-gradient(120% 80% at 100% 100%, rgba(187, 77, 255, 0.35), transparent 60%), #070818; }
+.acct-card { width: 100%; max-width: 400px; display: flex; flex-direction: column; gap: 12px; padding: 26px 22px; border-radius: 26px; border: 1px solid transparent;
+  background: linear-gradient(160deg, rgba(122, 75, 255, 0.14), rgba(20, 18, 56, 0.92) 45%) padding-box, linear-gradient(135deg, rgba(47, 120, 255, 0.55), rgba(187, 77, 255, 0.45)) border-box; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5); }
+.acct-card > * { flex-shrink: 0; }
+.acct-mark { width: 52px; height: 52px; border-radius: 15px; background: var(--grad); display: grid; place-items: center; box-shadow: 0 10px 26px rgba(122, 75, 255, 0.5); align-self: center; }
+.acct-mark svg { width: 30px; height: 30px; }
+.acct-title { text-align: center; margin: 4px 0 0; }
+.acct-sub { text-align: center; color: var(--muted); margin: 0 0 4px; line-height: 1.4; }
+.acct-card .input { height: 50px; font-size: 16px; }
+.acct-err { color: #ff8a9a; min-height: 1.2em; margin: 0; font-size: 14px; }
+.acct-link { color: var(--muted); font-size: 14px; padding: 4px; align-self: center; }
+.acct-link:active { color: #fff; }
+.set-email { overflow-wrap: anywhere; }

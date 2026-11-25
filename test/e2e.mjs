@@ -10,7 +10,7 @@ const dl = resolve(outDir, "downloads"); mkdirSync(dl, { recursive: true });
 const EDGE = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
 const port = 9333;
 const prof = resolve(outDir, "profile");
-const edge = spawn(EDGE, ["--headless=new", `--remote-debugging-port=${port}`, `--user-data-dir=${prof}`, "--no-first-run", "--enable-unsafe-webgpu", "--autoplay-policy=no-user-gesture-required",
+const edge = spawn(EDGE, ["--headless=new", `--remote-debugging-port=${port}`, `--user-data-dir=${prof}`, "--no-first-run", "--enable-automation", "--enable-unsafe-webgpu", "--autoplay-policy=no-user-gesture-required",
   "--window-size=390,844", "--disable-features=Translate", "about:blank"], { stdio: "ignore" });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -67,6 +67,9 @@ await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, devic
 await cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
 await cdp("Emulation.setUserAgentOverride", { userAgent: "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36" });
 await cdp("Page.setDownloadBehavior", { behavior: "allow", downloadPath: dl });
+// (signed in already: a test session, so the sign-in screen doesn't stand in the way; signing in itself is tested in
+// test/social.test.mjs)
+await cdp("Page.addScriptToEvaluateOnNewDocument", { source: `try { if (!localStorage.getItem('fifteam-account')) { localStorage.setItem('fifteam-account', JSON.stringify({ email: 'e2e@test.invalid', uid: 'e2etest001', token: 'e2e-test-session-token-000000', checked: Date.now() + 30 * 86400e3 })); localStorage.setItem('fifteam-social-me', 'e2etest001'); } } catch (e) {}` });
 await cdp("Page.navigate", { url });
 await sleep(2500);
 await shot("01_first_open");
