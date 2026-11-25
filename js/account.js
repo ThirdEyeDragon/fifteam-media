@@ -149,6 +149,7 @@ async function signedIn(s) {
   if (was !== s.uid) { location.reload(); return; }                 // (another phone's account: the app starts again as it)
   const box = document.getElementById("acct"); if (box) box.remove();
   shut(false);
+  dispatchEvent(new Event("fifteam-signed-in"));
 }
 
 /** Before anything else: signed in, or the sign-in screen (it can't be closed until then). Once a day, the account is

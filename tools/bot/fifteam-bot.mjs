@@ -28,7 +28,7 @@
 import { readFileSync, writeFileSync, mkdirSync, appendFileSync, existsSync } from "node:fs";
 import { join, dirname, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
-import { execFileSync } from "node:child_process";
+import { execFileSync, execFile } from "node:child_process";
 import { createInterface } from "node:readline";
 import { botKeys, openSealed } from "./auth.mjs";
 import { createHash } from "node:crypto";
@@ -296,7 +296,7 @@ async function suggest(cmd, typed) {
   const low = String(typed || "").toLowerCase();
   if (cmd === "delete-post") return suggestPosts(low);
   if (cmd === "delete-comment") return suggestComments(low);
-  if (cmd === "ban-email" || cmd === "unban-email") { const byPhone = await emailsByPhone(), mod = (await readStore("mod", "mod.json")) || {}, banned = obj(mod.emails); return [...new Set(Object.values(byPhone))].filter((e) => (cmd === "ban-email" ? !banned[fingerprint(e)] : banned[fingerprint(e)]) && (!low || e.includes(low))).slice(0, 25).map((e) => ({ name: e.slice(0, 100), value: e })); }
+  if (cmd === "ban-email" || cmd === "unban-email") { const emailsAll = await allAccounts().then((l) => l.map((a) => a.email), () => Object.values(emailsByPhone())), mod = (await readStore("mod", "mod.json")) || {}, banned = obj(mod.emails); return [...new Set(emailsAll)].filter((e) => (cmd === "ban-email" ? !banned[fingerprint(e)] : banned[fingerprint(e)]) && (!low || e.includes(low))).slice(0, 25).map((e) => ({ name: e.slice(0, 100), value: e })); }
   if (cmd === "delete-listing") { const d = await marketNow(); return d.items.filter((x) => !low || `${x.title} ${x.user} ${x.place}`.toLowerCase().includes(low)).slice(0, 25).map((x) => ({ name: `${x.title} · ${money(x.price)} · ${x.user}`.slice(0, 100), value: x.id })); }
   if (cmd === "unban") {
     const d = (await readStore("mod", "mod.json")) || { bans: {} };
@@ -308,13 +308,35 @@ async function suggest(cmd, typed) {
 }
 
 // ---------------------------------------------------------------------------------------------------- accounts
+// Every account, straight from the sign-in service (Firebase), with the official Firebase tool and the Google sign-in
+// it already has on this PC: `firebase auth:export` (the file is read and deleted at once). Each account's phone id is
+// kept on it ("ft:<id>"), which links it to its username and device (from the check-ins).
 let KEYS = null;
 const keys = async () => (KEYS = KEYS || (await botKeys()));
 const fingerprint = (email) => createHash("sha256").update(String(email || "").trim().toLowerCase()).digest("hex");
-/** Each phone's account email (sealed for the bot in its check-in): phone id -> email. */
+let acctCache = null;
+export async function allAccounts(maxAge = 20000) {
+  if (acctCache && Date.now() - acctCache.at < maxAge) return acctCache.list;
+  const project = (cfg.firebase && cfg.firebase.projectId) || "";
+  if (!project) throw new Error("no Firebase project in social/config.json");
+  const file = join(HOME, `accounts-${Date.now()}.json`);
+  try {
+    await new Promise((res, rej) => execFile("npx", ["-y", "firebase-tools@14", "auth:export", file, "--format=json", "--project", project, "--non-interactive"], { shell: true, timeout: 120000, windowsHide: true }, (e, out, err) => (e ? rej(new Error(String(err || out || e.message).replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").trim().split("\n").pop())) : res())));
+    const d = JSON.parse(readFileSync(file, "utf8"));
+    const list = (d.users || []).filter((u) => u.email).map((u) => ({
+      email: String(u.email).toLowerCase(), verified: !!u.emailVerified, disabled: !!u.disabled,
+      uid: (/^ft:([a-z0-9]{6,16})$/.exec(u.displayName || "") || [])[1] || "", created: +u.createdAt || 0, last: +u.lastSignedInAt || +u.lastLoginAt || 0,
+    }));
+    acctCache = { at: Date.now(), list };
+    return list;
+  } finally { try { writeFileSync(file, ""); (await import("node:fs")).unlinkSync(file); } catch {} }
+}
+/** Each phone's account email: from the account list (by the id kept on it), or the email sealed in its check-in. */
 async function emailsByPhone() {
-  const pres = (await readStore("presence", "presence.json").catch(() => null)) || {}, k = await keys(), out = {};
-  for (const [ph, v] of Object.entries(pres.on || {})) if (PHONE.test(ph) && v && v.e && !v.t) { try { out[ph] = (await openSealed(k, v.e)).toLowerCase(); } catch {} }
+  const out = {};
+  try { for (const a of await allAccounts()) if (a.uid) out[a.uid] = a.email; } catch (e) { log("accounts:", e.message); }
+  const pres = (await readStore("presence", "presence.json").catch(() => null)) || {}, k = await keys();
+  for (const [ph, v] of Object.entries(pres.on || {})) if (PHONE.test(ph) && v && v.e && !v.t && !out[ph]) { try { out[ph] = (await openSealed(k, v.e)).toLowerCase(); } catch {} }
   return out;
 }
 /** A ban (or its end) for these phones reaches their accounts' emails too (so a new sign-in doesn't get round it). */
@@ -324,16 +346,22 @@ async function accountsBan(phones, on) {
   if (!hashes.length) return;
   await changeMod((d) => { d.emails = obj(d.emails); for (const x of hashes) { if (on) d.emails[x] = { at: Date.now() }; else delete d.emails[x]; } }, () => true);
 }
+/** Every account (newest first): email, username, the phone it's on, app version, last seen, confirmed or not, banned. */
 export async function cmdAccounts() {
-  const byPhone = await emailsByPhone(), all = await people(), mod = (await readStore("mod", "mod.json")) || {}, banned = obj(mod.emails);
-  const acc = {};
-  for (const [ph, e] of Object.entries(byPhone)) (acc[e] = acc[e] || []).push(ph);
-  const list = Object.entries(acc).sort((a, b) => Math.max(...b[1].map((p) => (all[p] || {}).at || 0)) - Math.max(...a[1].map((p) => (all[p] || {}).at || 0)));
-  if (!list.length) return "No signed-in accounts have checked in yet (they do within a few minutes of opening the app).";
-  return [`**${list.length} account${list.length === 1 ? "" : "s"}** (seen in the last half year)`, ...list.slice(0, 25).map(([e, phs]) => {
-    const p = phs.map((x) => all[x] || {}).sort((a, b) => (b.at || 0) - (a.at || 0))[0];
-    return `• ${clean(e, 60)} · **${clean(p.name || "(no username)")}** · ${phs.length} phone${phs.length === 1 ? "" : "s"} · ${banned[fingerprint(e)] ? "banned · " : ""}${p.at ? ago(p.at) : ""} · \`${phs[0]}\``;
-  })].join("\n");
+  const list = (await allAccounts(0)).sort((a, b) => b.created - a.created);
+  if (!list.length) return "No accounts yet.";
+  const all = await people(), mod = (await readStore("mod", "mod.json")) || {}, banned = obj(mod.emails);
+  const row = (a) => {
+    const p = (a.uid && all[a.uid]) || {};
+    return { a, name: p.name || "(no username yet)", device: p.device || (a.uid ? "device not seen yet" : "hasn't finished signing in on a phone yet"), v: p.v || "", seen: p.at || 0, ban: !!banned[fingerprint(a.email)] || a.disabled };
+  };
+  const rows = list.map(row), now = Date.now();
+  const waiting = rows.filter((r) => !r.a.verified).length, on = rows.filter((r) => now - r.seen < 5 * 60e3).length;
+  const lines = rows.slice(0, 15).map((r) => `• ${clean(r.a.email, 60)} · **${clean(r.name)}** · ${clean(r.device, 60)}${r.v ? ` · v${clean(r.v)}` : ""} · ${r.seen ? (now - r.seen < 5 * 60e3 ? "online now" : `seen ${ago(r.seen)}`) : r.a.last ? `signed in ${ago(r.a.last)}` : "not seen yet"} · joined ${ago(r.a.created)}${r.a.verified ? "" : " · **email not confirmed yet**"}${r.ban ? " · **banned**" : ""}${r.a.uid ? ` · \`${r.a.uid}\`` : ""}`);
+  const text = [`**${rows.length} account${rows.length === 1 ? "" : "s"}** · ${on} online now${waiting ? ` · ${waiting} haven't confirmed their email yet` : ""}`, ...lines, rows.length > 15 ? `-# …and ${rows.length - 15} more in the attached list.` : "-# The full list is attached."].join("\n");
+  const file = [["Email", "Username", "Device", "App version", "Last seen", "Joined", "Email confirmed", "Banned", "Phone id"].join("\t"),
+    ...rows.map((r) => [r.a.email, r.name, r.device, r.v, r.seen ? new Date(r.seen).toISOString().replace("T", " ").slice(0, 16) + " UTC" : "", new Date(r.a.created).toISOString().replace("T", " ").slice(0, 16) + " UTC", r.a.verified ? "yes" : "no", r.ban ? "yes" : "", r.a.uid].join("\t"))].join("\n") + "\n";
+  return { text, file: { name: "fifteam-accounts.txt", data: file } };
 }
 export async function cmdBanEmail(email, ban, by) {
   email = String(email || "").trim().toLowerCase();
@@ -345,7 +373,7 @@ export async function cmdBanEmail(email, ban, by) {
     if (ban) { await changeBans((b) => { for (const p of phones) b[p] = { at: Date.now(), name: (all[p] && all[p].name) || email.split("@")[0] }; }, (b) => phones.every((p) => b[p])); note(phones, "banned by email", by); }
     else { await changeBans((b) => { for (const p of phones) delete b[p]; }, (b) => phones.every((p) => !b[p])); note(phones, "", ""); }
   }
-  return ban ? `Banned **${clean(email, 60)}**${phones.length ? ` (${phones.length} phone${phones.length === 1 ? "" : "s"})` : ""}. The app shuts on every phone signed in to it, and it can't sign in or sign up again until /unban-email.`
+  return ban ? `Banned **${clean(email, 60)}**${phones.length ? ` (${clean((all[phones[0]] || {}).name || "")})` : ""}. The app shuts on every phone signed in to it, and it can't sign in or sign up again until /unban-email.`
     : `Unbanned **${clean(email, 60)}**. It can sign in again.`;
 }
 

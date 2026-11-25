@@ -45,13 +45,12 @@ function paint() {
     b.onclick = () => people(`${name} follows`, ing);
     counts.append(a, h("span", "pf-dot", "·"), b);
     head.append(counts);
-    // the likes they've received: on their posts and comments, from other people (not their own)
+    // the likes they've received on their posts, from other people (not their own; not their comments)
     let likes = 0;
     const from = (l) => l.filter((w) => w !== P.phone).length;
     for (const x of S.feed) {
       if (S.gone.has(x.id)) continue;
       if (x.by === P.phone || (!x.by && x.user === name)) likes += from(x.likes);
-      for (const c of x.comments) if (c.by === P.phone) likes += from(c.likes);
     }
     const lk = h("div", "pf-likes"); lk.append(h("b", "", String(likes)), document.createTextNode(likes === 1 ? " like" : " likes"));
     head.append(lk);

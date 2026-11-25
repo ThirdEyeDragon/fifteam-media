@@ -208,6 +208,7 @@ export async function heartbeat() {
 }
 export function initPresence() {
   setTimeout(heartbeat, 4000);
+  addEventListener("fifteam-signed-in", () => { lastBeat = 0; setTimeout(heartbeat, 1500); });
   setInterval(heartbeat, 60e3);
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") heartbeat(); });
 }

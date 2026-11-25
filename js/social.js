@@ -140,7 +140,7 @@ function clean(list) {
     } : null;
     const media = Array.isArray(p.media) ? p.media.filter((k) => k === "i" || k === "mp4" || k === "webm").slice(0, 10) : [];
     const music = (p.image || (media.includes("i") && !media.some((k) => k !== "i"))) && p.music && typeof p.music === "object" ? { title: str(p.music.title, 120) || "Music", artist: str(p.music.artist, 80), len: Math.max(1, Math.min(60, +p.music.len || 0)) } : null;
-    return { id: p.id, at: +p.at || 0, user: str(p.user, 24) || "someone", text: str(p.text, 500), image: !!p.image, avatar: !!p.avatar, song: s, likes, by: /^[a-z0-9]{6,16}$/.test(p.by) ? p.by : "", video, comments, music, media, playlist: pl && pl.items.length ? pl : null };
+    return { id: p.id, at: +p.at || 0, edited: +p.edited || 0, user: str(p.user, 24) || "someone", text: str(p.text, 500), image: !!p.image, avatar: !!p.avatar, song: s, likes, by: /^[a-z0-9]{6,16}$/.test(p.by) ? p.by : "", video, comments, music, media, playlist: pl && pl.items.length ? pl : null };
   }).filter(Boolean);
 }
 /** A post's message (for its picture and song links), fetched once per load, a couple at a time. */
@@ -406,7 +406,7 @@ function postCard(p) {
   const av = avatarEl(40, "", name);
   showPicture(av, p);
   av.classList.add("tap"); av.setAttribute("role", "button"); av.setAttribute("aria-label", `${name}'s profile`);
-  const nm = h("span", "so-name tap"); nm.append(nameLine(name, p.by), h("small", "", ago(p.at)));
+  const nm = h("span", "so-name tap"); nm.append(nameLine(name, p.by), h("small", "", ago(p.at) + (p.edited ? " · edited" : "")));
   av.onclick = nm.onclick = () => openProfile({ by: p.by, user: p.user });
   who.append(av, nm); head.append(who);
   if (S.mine.has(p.id)) { const d = h("button", "so-more"); d.setAttribute("aria-label", "More"); d.append(icon("i-more")); d.onclick = () => postMenu(p); head.append(d); }
@@ -668,10 +668,36 @@ async function vote(p, btn) {
   document.querySelectorAll(`#so-body .so-post[data-id="${p.id}"]`).forEach((c) => paintCount(c, p));
   if ((weekly(S.feed.filter((x) => !S.gone.has(x.id) && visible(x))) || {}).id !== S.weekId) render();
 }
+/** Your post's words, changed after it's gone up (marked "edited"). */
+function editPost(p) {
+  openSheet((panel) => {
+    panel.append(h("h3", "", "Edit post"));
+    const t = h("textarea", "input so-compose"); t.rows = 4; t.maxLength = 500; t.value = p.text || ""; t.setAttribute("aria-label", "Your post");
+    const err = h("p", "set-err"), go = h("button", "btn primary block", "Save");
+    go.onclick = async () => {
+      const text = t.value.trim().slice(0, 500);
+      if (!text && !(p.image || p.video || p.song || p.media.length || p.playlist)) { err.textContent = "Write something."; return; }
+      if (offensive(text)) { err.textContent = OFFENSIVE; return; }
+      if (text === (p.text || "")) { closeSheet(); return; }
+      go.disabled = true; go.textContent = "Saving…";
+      const at = Date.now();
+      try {
+        await changeIndex((posts) => { const q = posts.find((x) => x.id === p.id); if (!q) throw new Error("gone"); q.text = text; q.edited = at; }, (now) => { const q = now.find((x) => x.id === p.id); return !q || q.text === text; });
+        p.text = text; p.edited = at;
+        closeSheet(); toast("Post updated"); render();
+      } catch (x) { err.textContent = x.message === "gone" ? "That post is gone." : "Couldn't save that. Try again."; go.disabled = false; go.textContent = "Save"; }
+    };
+    panel.append(t, err, go);
+    setTimeout(() => { t.focus(); t.setSelectionRange(t.value.length, t.value.length); }, 80);
+  });
+}
 /** Your post's menu. */
 function postMenu(p) {
   openSheet((panel) => {
     panel.append(h("h3", "", "Your post"));
+    const e = h("button", "menu-item so-edit"); e.append(icon("i-plus"), h("span", "", "Edit post"));
+    e.onclick = () => editPost(p);
+    panel.append(e);
     const d = h("button", "menu-item danger so-del"); d.append(icon("i-trash"), h("span", "", "Delete post"));
     d.onclick = () => { closeSheet(); removePost(p); };
     panel.append(d);

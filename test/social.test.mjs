@@ -560,7 +560,7 @@ try {
     console.log("top-bar profile button (from the Library):", mine);
     // her likes: on her posts and her comments, counted from the feed list
     const fromOthers = (l) => (l || []).filter((w) => w !== meNow).length;
-    const likesShould = feedNow().reduce((n, x) => n + ((x.by === meNow ? fromOthers(x.likes) : 0) + (x.comments || []).filter((c) => c.by === meNow).reduce((m, c) => m + fromOthers(c.likes), 0)), 0);
+    const likesShould = feedNow().reduce((n, x) => n + (x.by === meNow ? fromOthers(x.likes) : 0), 0);
     console.log("her likes given to her own posts and comments (not counted):", feedNow().reduce((n, x) => n + (x.by === meNow && (x.likes || []).includes(meNow) ? 1 : 0), 0));
     check(mine.startsWith("Alice") && mine.endsWith(`${likesShould} like${likesShould === 1 ? "" : "s"}`), `her own page, with her ${likesShould} likes`);
     await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await ev(`location.hash = '#social', 1`); await sleep(400);
@@ -714,6 +714,17 @@ try {
   await ev(`[...document.querySelectorAll('#so-body .so-post')].find(p => p.textContent.includes('Fresh one')).scrollIntoView({ block: 'start' }), 1`); await sleep(500);
   await shot("d3b_post");
   await ev(`document.getElementById('view-social').scrollTop = 0, 1`);
+
+  // editing her post: the words changed, marked edited
+  await ev(`[...document.querySelectorAll('#so-body .so-post')].find(p => p.textContent.includes('Fresh one')).querySelector('.so-more').click(), 1`); await sleep(300);
+  await ev(`document.querySelector('#sheet-panel .so-edit').click(), 1`); await sleep(300);
+  await ev(`(() => { document.querySelector('#sheet-panel textarea').value = 'Fresh one (edited) @everyone'; [...document.querySelectorAll('#sheet-panel .btn')].find(x => x.textContent === 'Save').click(); return 1; })()`);
+  for (let i = 0; i < 40 && !(feedNow().find((x) => x.id === p0.id) || {}).edited; i++) await sleep(200);
+  await sleep(400);
+  const ed = feedNow().find((x) => x.id === p0.id) || {};
+  const edCard = await ev(`[...document.querySelectorAll('#so-body .so-post')].find(p => p.textContent.includes('Fresh one (edited)'))?.querySelector('.so-name small').textContent || ''`);
+  console.log("edited:", JSON.stringify({ text: ed.text, edited: !!ed.edited }), "| on the card:", edCard);
+  check(ed.text === "Fresh one (edited) @everyone" && ed.edited && /edited/.test(edCard), "a post edited after it went up (marked edited)");
 
   // a new username: on this phone's older posts too (the post itself still says who it was sent as)
   const rename = async (v) => {
