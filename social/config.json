@@ -13,5 +13,7 @@
     "apiKey": "AIzaSyAHaP6-MWkh7DMmXBwguQutGVRfzhOyZg8",
     "projectId": "fifteam-media-26"
   },
-  "accounts": "1574978988437282936"
+  "accounts": "1574978988437282936",
+  "push": "BAxMqMduSOB6ljak95Uw5p04roX3eYma-bTHSoDfn-IwXluvXz2Ca_3fFixP8Oskf341f8Eh_qfaeCqLuMDYD4U",
+  "api": "https://fifteam-bot.fifteam-media.workers.dev"
 }

@@ -7,6 +7,8 @@ import { isIOS } from "./export.js";
 import { account, signOut } from "./account.js";
 import { loadMeta, prefsOf, setPrefs, blocksOf, setBlock } from "./meta.js";
 import { api } from "./social.js";
+import { actWanted, setActWanted, syncPush, canPush } from "./push.js";
+import { premiumNow, leftThisHour, openUnlock, LIMIT } from "./premium.js";
 
 // (the app lock is gone: anything it left on a phone is cleared, so nobody stays locked out)
 for (const k of ["fifteam-lock", "fifteam-locked", "fifteam-autolock", "fifteam-lock-wait", "fifteam-lock-fails"]) { try { localStorage.removeItem(k); } catch {} }
@@ -90,17 +92,19 @@ export function openSettings() {
     const ntSec = el(`<div class="set-sec">
       <div class="set-head"><svg><use href="#i-bell"/></svg>Notifications<span class="pill" id="set-nt-pill"></span></div>
       <label class="switch"><span class="txt">New messages</span><input type="checkbox" id="set-nt"></label>
+      <label class="switch"><span class="txt">Likes, comments and follows</span><input type="checkbox" id="set-act"></label>
       <span class="status" id="set-nt-why"></span>
     </div>`);
     p.append(ntSec);
     const paintNt = () => {
       const perm = canNotify() ? Notification.permission : "none", on = notifyWanted() && perm === "granted";
       $("set-nt").checked = on;
+      $("set-act").checked = actWanted() && perm === "granted";
       const pill = $("set-nt-pill"); pill.textContent = on ? "On" : "Off"; pill.classList.toggle("on", on);
       $("set-nt-why").textContent = perm === "none"
         ? (isIOS() ? "On iPhone, add FifTeam Media to your Home Screen first (Share, then Add to Home Screen), then turn this on from there." : "This browser can't show notifications.")
         : perm === "denied" ? "Notifications are blocked for FifTeam Media. Allow them in your phone's settings, then turn this on."
-        : on ? "You'll get a notification when someone messages you while FifTeam Media is open or in the background." : "";
+        : on || (actWanted() && perm === "granted") ? (canPush() ? "You'll get notifications even when FifTeam Media is closed." : "You'll get notifications while FifTeam Media is open or in the background.") : "";
     };
     paintNt();
     $("set-nt").onchange = async (e) => {
@@ -110,8 +114,27 @@ export function openSettings() {
       if (perm === "default") { try { perm = await Notification.requestPermission(); } catch { perm = "denied"; } }
       setNotify(perm === "granted");
       paintNt();
+      syncPush(true);
       if (perm === "granted") toast("Message notifications on");
     };
+    $("set-act").onchange = async (e) => {
+      if (!e.target.checked) { setActWanted(false); paintNt(); syncPush(true); return; }
+      if (!canNotify()) { paintNt(); return; }
+      let perm = Notification.permission;
+      if (perm === "default") { try { perm = await Notification.requestPermission(); } catch { perm = "denied"; } }
+      setActWanted(perm === "granted");
+      paintNt(); syncPush(true);
+    };
+
+    // rebassing: 10 songs an hour, or unlimited with the unlock
+    const pmSec = el(`<div class="set-sec" id="set-premium">
+      <div class="set-head"><svg><use href="#i-bass"/></svg>Rebassing<span class="pill ${premiumNow() ? "on" : ""}">${premiumNow() ? "Unlimited" : `${LIMIT} an hour`}</span></div>
+      <span class="status"></span>
+    </div>`);
+    const left = leftThisHour();
+    pmSec.querySelector(".status").textContent = premiumNow() ? "Unlimited rebassing is unlocked on this account. Thank you!" : `${left} of ${LIMIT} songs left this hour. Unlimited rebassing is $10, once.`;
+    if (!premiumNow()) { const b = el('<button class="btn block" id="set-unlock">Unlock unlimited rebassing</button>'); b.onclick = () => openUnlock(false); pmSec.append(b); }
+    p.append(pmSec);
 
     p.append(el(`<p class="set-foot">FifTeam Media ${APP_VERSION}<br>Developed by Levi Newman</p>`));
   });

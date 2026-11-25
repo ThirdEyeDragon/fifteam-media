@@ -16,6 +16,8 @@ import { library } from "./library.js";
 import * as store from "./store.js";
 import { player } from "./player.js";
 import { squareJpeg } from "./image.js";
+import { hubOn, hubRead, hubWrite, live } from "./hub.js";
+import { pushing, syncPush } from "./push.js";
 import { offensive, OFFENSIVE } from "./filter.js";
 import { marketItem, openListing, loadMarket } from "./market.js";
 
@@ -92,17 +94,24 @@ async function open(m) { return preview(await body(m)); }
 async function readStore() {
   const cfg = await api.config();
   if (!cfg.dm) throw new Error("setup");
-  const m = await api.dc(`/messages/${cfg.dm}`);
-  const a = (m.attachments || []).find((x) => x.filename === "dm.json");
-  if (!a) return [];
-  const d = await (await fetch(a.url, { cache: "no-store" })).json();
+  let d = null, ver = null;
+  if (await hubOn()) { try { const r = await hubRead("dm"); d = r.d || {}; ver = r.v; } catch (e) { if (!e.down) throw e; } }
+  if (ver == null) {
+    const m = await api.dc(`/messages/${cfg.dm}`);
+    const a = (m.attachments || []).find((x) => x.filename === "dm.json");
+    if (!a) return [];
+    d = await (await fetch(a.url, { cache: "no-store" })).json();
+  }
   const del = Array.isArray(d.del) ? d.del.filter((x) => typeof x === "string" && MSG.test(x)).slice(-4000) : [], gone = new Set(del);
   const out = (Array.isArray(d.msgs) ? d.msgs : []).slice(-MAX).filter((x) => x && MSG.test(x.id) && !gone.has(x.id) && PHONE.test(x.f) && PHONE.test(x.t) && typeof x.c === "string" && typeof x.iv === "string" && x.c.length < 4000)
     .map((x) => ({ id: x.id, f: x.f, t: x.t, at: +x.at || 0, iv: x.iv, c: x.c, ...(/^\d{5,25}$/.test(x.l || "") ? { l: x.l } : {}) }));
   out.del = del;
+  if (ver != null) out.ver = ver;
   return out;
 }
 async function writeStore(msgs) {
+  // (through the server: taken only if nobody changed the messages since they were read)
+  if (msgs.ver != null) { await hubWrite("dm", msgs.ver, { v: 1, msgs: msgs.slice(-MAX), del: (msgs.del || D.del || []).slice(-4000) }); return; }
   const cfg = await api.config(), f = new FormData();
   f.append("payload_json", JSON.stringify({ content: "FifTeam messages (the app keeps this message up to date; please don't delete it)", attachments: [{ id: 0, filename: "dm.json" }], allowed_mentions: { parse: [] } }));
   f.append("files[0]", new Blob([JSON.stringify({ v: 1, msgs: msgs.slice(-MAX), del: (msgs.del || D.del || []).slice(-4000) })], { type: "application/json" }), "dm.json");
@@ -113,6 +122,7 @@ async function load() {
   D.loading = (async () => {
     try {
       D.msgs = await readStore(); D.del = D.msgs.del; D.loadedAt = Date.now();
+      saveCache();
       // someone new wrote since the profiles were read: read them again, for their name and key
       const pr = api.state.profiles || {}, me = api.state.me;
       if (mineOnly().some((m) => { const o = m.f === me ? m.t : m.f; return !pr[o] || !pr[o].pk; })) await api.ensureProfiles(true).catch(() => {});
@@ -120,6 +130,16 @@ async function load() {
   })();
   return D.loading;
 }
+// (this phone's own conversations as they were last time, kept on the phone: Messages opens at once, then catches up)
+const CACHE = "fifteam-dm-cache";
+function saveCache() {
+  const me = api.state.me;
+  try { localStorage.setItem(CACHE, JSON.stringify({ me, at: Date.now(), msgs: D.msgs.filter((m) => m.f === me || m.t === me).slice(-600) })); } catch {}
+}
+try {
+  const c = JSON.parse(localStorage.getItem(CACHE) || "null");
+  if (c && Array.isArray(c.msgs) && c.me === localStorage.getItem("fifteam-social-me")) { D.msgs = c.msgs.filter((x) => x && MSG.test(x.id) && PHONE.test(x.f) && PHONE.test(x.t) && typeof x.c === "string"); D.loadedAt = 1; }
+} catch {}
 /** This phone's conversations: what it sent, and what came from phones it takes messages from (Settings: everyone, by
  * request, or nobody; someone it has written to, follows or let in always counts, unless messages are off). */
 // (an Audio Market chat: anyone may ask a seller about what they're selling, unless one has blocked the other)
@@ -218,8 +238,8 @@ export async function openChat(other, l = "") {
   if (!other || !PHONE.test(other)) { toast("Can't message them yet: they need to open FifTeam Media once more."); return; }
   if (other === api.state.me) { toast("That's you"); return; }
   if (!api.state.name) { toast("Pick a username in Social first"); return; }
-  // their choice: messages from everyone, by request, or nobody
-  try { await api.ensureProfiles(); } catch {}
+  // their choice: messages from everyone, by request, or nobody (as last seen: the chat opens at once, and catches up)
+  if (!api.state.profiles || !api.state.profiles[other]) { try { await api.ensureProfiles(); } catch {} }
   const st = l ? (blocked(api.state.me, other) ? "off" : "ok") : dmState(api.state.me, other, talkedWith(other));
   if (st !== "ok" && (l || !wrote(other))) {
     toast(st === "off" ? `${nameOf(other)} isn't taking messages.` : st === "requested" ? `You've asked to message ${nameOf(other)}. They haven't said yes yet.` : `${nameOf(other)} takes messages by request: tap Ask to message on their page.`, 3500);
@@ -249,12 +269,17 @@ export async function openChat(other, l = "") {
     f.onsubmit = (e) => { e.preventDefault(); const v = inp.value.trim(); if (!v) return; if (offensive(v)) { toast(OFFENSIVE, 3500); return; } inp.value = ""; send(other, v, l); };
     if (l) p.append(msgs, f); else p.append(head, msgs, f);
   });
+  if (D.loadedAt) paintChat();
   try { await Promise.all([api.ensureProfiles(), load()]); } catch {}
   paintChat();
   clearInterval(D.poll);
+  let polled = 0;
   D.poll = setInterval(async () => {
     if (D.chat !== other || D.l !== l || !document.querySelector("#sheet.open .dm-msgs")) { clearInterval(D.poll); D.chat = null; stopSongs(); return; }
     if (document.visibilityState !== "visible") return;
+    // (with the server's live connection, new messages arrive at once: this is only in case one was missed)
+    if (live.on && Date.now() - polled < 30000) return;
+    polled = Date.now();
     const before = D.msgs.map((m) => m.id).join(); try { await load(); } catch {}
     if (D.msgs.map((m) => m.id).join() !== before) paintChat();
   }, 6000);
@@ -296,12 +321,12 @@ async function send(other, text, l = "", extra = null) {
   D.msgs = [...D.msgs, { ...m, sending: true }];
   paintChat();
   const put = async () => {
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 5; attempt++) {
       const now = await readStore();
-      if (!now.some((x) => x.id === m.id)) { now.push(m); await writeStore(now); }
+      if (!now.some((x) => x.id === m.id)) { now.push(m); try { await writeStore(now); } catch (e) { if (e.conflict) continue; throw e; } }
       const after = await readStore();
-      if (after.some((x) => x.id === m.id)) { D.msgs = after; return; }
-      if (attempt === 2) throw new Error("busy");
+      if (after.some((x) => x.id === m.id)) { D.msgs = after; saveCache(); return; }
+      if (attempt === 4) throw new Error("busy");
       await new Promise((r) => setTimeout(r, 400 + Math.random() * 800));
     }
   };
@@ -323,14 +348,15 @@ async function removeMsgs(list) {
   const ids = new Set(list.map((m) => m.id)), files = [];
   for (const m of list) { const b = D.plain.get(m.id); if (b && b.s) files.push(b.s.m); D.gone.add(m.id); }
   const put = async () => {
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 5; attempt++) {
       const now = await readStore();
       const keep = now.filter((x) => !ids.has(x.id));
       keep.del = [...new Set([...now.del, ...ids])].slice(-4000);
-      if (keep.length !== now.length || keep.del.length !== now.del.length) await writeStore(keep);
+      if (now.ver != null) keep.ver = now.ver;
+      if (keep.length !== now.length || keep.del.length !== now.del.length) { try { await writeStore(keep); } catch (e) { if (e.conflict) continue; throw e; } }
       const after = await readStore();
-      if (!after.some((x) => ids.has(x.id))) { D.msgs = after; D.del = after.del; return; }
-      if (attempt === 2) throw new Error("busy");
+      if (!after.some((x) => ids.has(x.id))) { D.msgs = after; D.del = after.del; saveCache(); return; }
+      if (attempt === 4) throw new Error("busy");
       await wait(400 + Math.random() * 800);
     }
   };
@@ -560,6 +586,7 @@ async function tellNew() {
     const text = (await open(m)) || "New message", who = nameOf(m.f);
     const l = m.l || "", title = l ? `${who} · Audio Market` : who;
     if (document.visibilityState === "visible") { if (D.chat !== m.f || (D.l || "") !== l) toast(`${title}: ${text}`.slice(0, 90), 3000); continue; }
+    if (pushing()) continue;      // (the server sends it as a real notification)
     const opts = { body: text.slice(0, 160), tag: "fifteam-dm-" + m.f + (l ? "-" + l : ""), renotify: true, icon: "icons/icon-192.png", badge: "icons/icon-192.png", data: { dm: m.f, l } };
     try { const reg = await navigator.serviceWorker.ready; await reg.showNotification(title, opts); }
     catch { try { const n = new Notification(title, opts); n.onclick = () => { window.focus(); openChat(m.f, l); n.close(); }; } catch {} }
@@ -575,26 +602,43 @@ export function initDms() {
   bus.on("dm-send-song", (song) => sendTo({ song }));
   bus.on("dm-send-track", async (t) => { try { sendTo({ song: await api.trackSong(t) }); } catch { toast("Couldn't read that song."); } });
   bus.on("music-playing", stopSongs);
+  addEventListener("hub:dm", async (e) => {
+    const to = (e.detail && e.detail.to) || null;
+    if (to && !to.includes(api.state.me)) return;
+    const before = D.msgs.map((m) => m.id).join();
+    try { await load(); } catch { return; }
+    paintBadge();
+    if (D.msgs.map((m) => m.id).join() === before) return;
+    if (D.chat && document.querySelector("#sheet.open .dm-msgs")) paintChat();
+    const l = document.querySelector("#sheet.open .dm-list");
+    if (l && !document.querySelector("#sheet-panel.dm-send")) paintInbox(l);
+    tellNew();
+  });
+  addEventListener("hub:meta", () => setTimeout(paintBadge, 600));
   const tick = D.check = async () => {
     if ((document.visibilityState !== "visible" && !notifyOn()) || !api.state.me) return;
     try { await api.ensureProfiles(); await load(); paintBadge(); await tellNew(); } catch {}
   };
   setTimeout(tick, 2500);
-  setInterval(tick, 45000);
+  setInterval(() => { if (!live.on || Date.now() - (D.loadedAt || 0) > 5 * 60e3) tick(); }, 45000);
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") tick(); });
   // on by default: the phone's own question, once, at the first tap in the app (it only allows asking after a tap)
   try {
     if (canNotify() && Notification.permission === "default" && notifyWanted() && !localStorage.getItem(NOTIFY + "-asked")) {
-      const ask = () => { removeEventListener("click", ask, true); try { localStorage.setItem(NOTIFY + "-asked", "1"); } catch {} Notification.requestPermission().catch(() => {}); };
+      const ask = () => { removeEventListener("click", ask, true); try { localStorage.setItem(NOTIFY + "-asked", "1"); } catch {} Notification.requestPermission().then(() => syncPush(true), () => {}); };
       addEventListener("click", ask, true);
     }
   } catch {}
   // a tap on a message notification: that conversation
-  if ("serviceWorker" in navigator) navigator.serviceWorker.addEventListener("message", (e) => { if (e.data && e.data.type === "open-dm" && PHONE.test(e.data.dm)) { location.hash = "#social"; openChat(e.data.dm, /^\d{5,25}$/.test(e.data.l || "") ? e.data.l : ""); } });
-  const want = new URLSearchParams(location.search).get("dm");
+  if ("serviceWorker" in navigator) navigator.serviceWorker.addEventListener("message", (e) => {
+    if (e.data && e.data.type === "open-dm" && PHONE.test(e.data.dm)) { location.hash = "#social"; openChat(e.data.dm, /^\d{5,25}$/.test(e.data.l || "") ? e.data.l : ""); }
+    else if (e.data && e.data.type === "open-inbox") { location.hash = "#social"; openInbox(); }
+  });
+  const q = new URLSearchParams(location.search), want = q.get("dm");
   if (want && PHONE.test(want)) {
+    const wl = /^\d{5,25}$/.test(q.get("l") || "") ? q.get("l") : "";
     history.replaceState(null, "", location.pathname + "#social");
-    setTimeout(async () => { try { await api.ensureProfiles(); } catch {} openChat(want); }, 1200);
-  }
+    setTimeout(async () => { try { await api.ensureProfiles(); } catch {} openChat(want, wl); }, 1200);
+  } else if (q.has("inbox")) { history.replaceState(null, "", location.pathname + "#social"); setTimeout(openInbox, 1200); }
 }
 export const dms = { state: D, open, myPublicKey };

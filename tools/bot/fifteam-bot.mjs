@@ -129,6 +129,8 @@ async function online() {
   // the secrets: put in through the tool's input (never on a command line, never in a file here)
   wrangler(["secret", "put", "BOT_TOKEN"], tok);
   wrangler(["secret", "put", "BOT_KEY"], readFileSync(join(HOME, "auth-key.json"), "utf8"));
+  // (the notifications' private key, if made: its public half is social/config.json "push")
+  try { wrangler(["secret", "put", "VAPID_KEY"], readFileSync(join(HOME, "vapid-key.json"), "utf8")); } catch (e) { if (!/ENOENT/.test(e.message)) throw e; }
   // the ban reasons made on this PC so far go up too
   const n = await notes.get();
   if (Object.keys(n).length) wrangler(["kv", "key", "put", "--binding=NOTES", "--remote", "ban-notes", JSON.stringify(n)]);

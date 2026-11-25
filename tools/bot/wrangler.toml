@@ -1,16 +1,25 @@
-# The FifTeam bot on Cloudflare Workers (free). From this folder: npx wrangler@4 deploy
-# Secrets go in with: npx wrangler@4 secret put BOT_TOKEN   (and BOT_KEY); never in this file.
+# The FifTeam bot and server on Cloudflare Workers (free). Put online with: node tools/bot/fifteam-bot.mjs --online
+# Secrets (BOT_TOKEN, BOT_KEY, VAPID_KEY) go in with wrangler secret put; never in this file.
 name = "fifteam-bot"
 main = "worker.mjs"
 compatibility_date = "2025-06-01"
 workers_dev = true
 
 [triggers]
-crons = ["*/30 * * * *"]
+crons = ["* * * * *", "*/30 * * * *"]
 
 [vars]
 CONFIG_URL = "https://thirdeyedragon.github.io/fifteam-media/social/config.json"
 PUBLIC_KEY = "9465f336d2e3ca2dd7f6b3bb29a3673e78956a4678c99adcabf844ef67d01681"
+FIREBASE_JWKS = "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com"
+
+[[durable_objects.bindings]]
+name = "HUB"
+class_name = "Hub"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Hub"]
 
 [[kv_namespaces]]
 binding = "NOTES"

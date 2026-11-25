@@ -4,6 +4,7 @@
 // banned remembers it, so it stays shut even offline, until the ban is lifted.
 import { player } from "./player.js";
 import { hookFetch } from "./limiter.js";
+import { hubOn, hubRead } from "./hub.js";
 
 const FLAG = "fifteam-ban", LIST = "fifteam-bans", ME = "fifteam-social-me";
 const ls = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch {} }, del(k) { try { localStorage.removeItem(k); } catch {} } };
@@ -25,6 +26,10 @@ export async function emailBanned(email) {
   return emails.has(await emailHash(email));
 }
 const myEmail = () => { try { return (JSON.parse(ls.get("fifteam-account") || "null") || {}).email || ""; } catch { return ""; } };
+let premium = new Set();
+try { premium = new Set(JSON.parse(ls.get(LIST + "-premium") || "[]")); } catch {}
+/** Whether this phone has unlimited rebassing (paid for, and unlocked with /premium). */
+export const isPremium = (phone) => !!phone && premium.has(phone);
 let badges = {};
 try { badges = JSON.parse(ls.get(LIST + "-badges") || "{}") || {}; } catch {}
 const BADGES = ["founder", "dev", "member"];
@@ -68,12 +73,16 @@ export async function checkBans() {
   try {
     const c = await (await fetch(new URL("../social/config.json", import.meta.url), { cache: "no-cache" })).json();
     if (!c.mod) return;
-    const base = `https://discord.com/api/v10/webhooks/${c.hook}/${atob(c.key).split("").reverse().join("")}`;
-    const r = await hookFetch(`${base}/messages/${c.mod}`, { cache: "no-store" }, true);
-    if (!r.ok) return;
-    const a = ((await r.json()).attachments || []).find((x) => x.filename === "mod.json");
-    if (!a) return;
-    const d = await (await fetch(a.url, { cache: "no-store" })).json();
+    let d = null;
+    if (await hubOn()) { try { d = (await hubRead("mod")).d; } catch {} }
+    if (!d) {
+      const base = `https://discord.com/api/v10/webhooks/${c.hook}/${atob(c.key).split("").reverse().join("")}`;
+      const r = await hookFetch(`${base}/messages/${c.mod}`, { cache: "no-store" }, true);
+      if (!r.ok) return;
+      const a = ((await r.json()).attachments || []).find((x) => x.filename === "mod.json");
+      if (!a) return;
+      d = await (await fetch(a.url, { cache: "no-store" })).json();
+    }
     const bans = d && d.bans && typeof d.bans === "object" ? Object.keys(d.bans).filter((k) => /^[a-z0-9]{6,16}$/.test(k)) : [];
     list = new Set(bans); ls.set(LIST, JSON.stringify(bans));
     const np = d && d.nopic && typeof d.nopic === "object" ? Object.keys(d.nopic).filter((k) => /^[a-z0-9]{6,16}$/.test(k)) : [];
@@ -83,6 +92,11 @@ export async function checkBans() {
     const changed = JSON.stringify(bg) !== JSON.stringify(badges);
     badges = bg; ls.set(LIST + "-badges", JSON.stringify(bg));
     if (changed) window.dispatchEvent(new Event("fifteam-badges"));
+    // unlimited rebassing (the $10 unlock), given with /premium
+    const pm = d && d.premium && typeof d.premium === "object" ? Object.keys(d.premium).filter((k) => /^[a-z0-9]{6,16}$/.test(k)) : [];
+    const wasMine = premium.has(ls.get(ME) || "");
+    premium = new Set(pm); ls.set(LIST + "-premium", JSON.stringify(pm));
+    if (!wasMine && premium.has(ls.get(ME) || "")) window.dispatchEvent(new Event("fifteam-premium"));
     const em = d && d.emails && typeof d.emails === "object" ? Object.keys(d.emails).filter((k) => /^[0-9a-f]{64}$/.test(k)) : [];
     emails = new Set(em); ls.set(LIST + "-emails", JSON.stringify(em));
     const me = ls.get(ME) || "", mail = myEmail();

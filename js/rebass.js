@@ -9,6 +9,7 @@ import { FORMATS, makeFile, saveFile, sizeText, isIOS, fitFormat } from "./expor
 import { openShareSheet, fingerprint } from "./share.js";
 import { noteName, linToDb } from "./dsp.js";
 import { pickImage } from "./image.js";
+import { rebassAllowed, noteRebass, openUnlock } from "./premium.js";
 
 const S = {
   src: null, worker: null, loaded: false, origBuf: null, refBuf: null, refKey: "", outBuf: null, res: null, version: 0,
@@ -234,6 +235,10 @@ function paintProgress() {
 
 async function go() {
   if (!S.src || S.busy) return;
+  // (free accounts: 10 different songs an hour; the same song again doesn't count again)
+  const songKey = S.src.id || `${S.src.title || S.src.name || ""}|${(S.src.blob && S.src.blob.size) || 0}`;
+  if (!rebassAllowed(songKey)) { openUnlock(); return; }
+  S.countKey = songKey;
   readParams();
   if (introWanted()) loadIntro().catch(() => {});
   if (!S.loaded) {
@@ -315,6 +320,7 @@ function onWorker(e) {
     S.res = { stats: m.stats, map: m.map, t0: m.t0 + k / sr, hop: m.hop };
     S.version++; S.file = null;
     S.busy = false;
+    if (S.countKey) noteRebass(S.countKey);
     $("rb-busy").hidden = true; $("rb-go").disabled = false;
     $("rb-go").innerHTML = '<svg><use href="#i-bass"/></svg>Rebass again';
     $("rb-result").hidden = false; $("rb-export").hidden = false;

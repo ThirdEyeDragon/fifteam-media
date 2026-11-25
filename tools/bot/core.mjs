@@ -12,6 +12,8 @@
 //   /tag-member, /tag-founder, /tag-developer <user>   the gradient tag next to their name (remove: True takes it off)
 //   /tags              who has which tag
 //   /listings [user], /delete-listing   Audio Market: the latest listings, and taking one down
+//   /premium <user> [remove]   unlimited rebassing for someone who paid (the $10 one-time unlock); /premiums lists
+//                      who has it and who has asked
 //   /accounts, /ban-email <email>, /unban-email <email>   FifTeam accounts: every account, online or not, with its
 //                      phone. The app keeps the list (social/config.json "accounts"), each email sealed for the bot's key
 //                      alone; signing in itself is Google's free sign-in service (Firebase Authentication).
@@ -58,6 +60,8 @@ export const COMMANDS = [
   { name: "unban-email", description: "Lift an account's ban", type: 1, options: [{ type: 3, name: "email", description: "The account's email", required: true, autocomplete: true }] },
   { name: "listings", description: "The latest Audio Market listings (or one user's), with their ids", type: 1, options: [{ type: 3, name: "user", description: "Only this user's", required: false, autocomplete: true }] },
   { name: "delete-listing", description: "Take an Audio Market listing down", type: 1, options: [{ type: 3, name: "listing", description: "Start typing its title or the seller", required: true, autocomplete: true }] },
+  { name: "premium", description: "Unlock unlimited rebassing for someone who paid $10 (or take it away)", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }, { type: 5, name: "remove", description: "Take it away instead", required: false }] },
+  { name: "premiums", description: "Who has unlimited rebassing, and who has asked for it", type: 1 },
   { name: "allow-picture", description: "Let a user have a profile picture again", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }] },
 ].map((c) => ({ ...c, default_member_permissions: "4", dm_permission: false }));   // (4: Ban Members; admins only)
 
@@ -66,8 +70,10 @@ export const COMMANDS = [
  *   priv      () => the bot's private key (CryptoKey, ECDH P-256) for the sealed emails
  *   notes     { get(): {phone: {why, by}}, set(obj) }  why each ban was made (kept with the bot, never in a store)
  *   token     the bot's token (renews file links in bulk; optional)
- *   log       (...text) */
-export function makeBot({ cfg, priv, notes, token = "", log = () => {} }) {
+ *   log       (...text)
+ *   stores    (online) the server's stores: { read(k), change(k, fn), put(k, d), premiumAsks(), premiumDone(phones) };
+ *             without it, the store messages are read and written directly */
+export function makeBot({ cfg, priv, notes, token = "", log = () => {}, stores = null }) {
   const HOOK = `${API}/webhooks/${cfg.hook}/${atob(cfg.key).split("").reverse().join("")}`;
   async function hook(path, opt = {}) {
     for (let i = 0; i < 5; i++) {
@@ -79,12 +85,14 @@ export function makeBot({ cfg, priv, notes, token = "", log = () => {} }) {
     throw new Error("store busy");
   }
   async function readStore(key, file) {
+    if (stores) return stores.read(key);
     if (!cfg[key]) return null;
     const m = await hook(`/messages/${cfg[key]}`);
     const a = (m.attachments || []).find((x) => x.filename === file);
     return a ? (await fetch(a.url, { cache: "no-store" })).json() : null;
   }
   async function writeStore(key, file, content, data) {
+    if (stores) return stores.put(key, data);
     const f = new FormData();
     f.append("payload_json", JSON.stringify({ content, attachments: [{ id: 0, filename: file }], allowed_mentions: { parse: [] } }));
     f.append("files[0]", new Blob([JSON.stringify(data)], { type: "application/json" }), file);
@@ -95,6 +103,8 @@ export function makeBot({ cfg, priv, notes, token = "", log = () => {} }) {
   const META_LABEL = "FifTeam votes, follows and about (the app keeps this message up to date; please don't delete it)";
   const obj = (x) => (x && typeof x === "object" && !Array.isArray(x) ? x : {});
   async function changeStore(key, file, label, fresh, fn, check) {
+    // (through the server: each change is taken only on the copy it was made on, so it needs no checking after)
+    if (stores) return stores.change(key, (d) => { if (!Object.keys(d).length) Object.assign(d, fresh()); fn(d); });
     for (let i = 0; i < 3; i++) {
       const d = (await readStore(key, file)) || fresh();
       fn(d);
@@ -413,6 +423,27 @@ export function makeBot({ cfg, priv, notes, token = "", log = () => {} }) {
       : `Unbanned **${clean(email, 60)}**. It can sign in again.`;
   }
 
+  // ---------------------------------------------------------------------------------------------------- premium
+  async function cmdPremium(user, remove) {
+    const w = await whoIs(user);
+    if (!w.phones.length) return `No phone goes by **${clean(user)}**. Try /premiums for who has asked.`;
+    const on = !remove, at = Date.now();
+    await changeMod((d) => { d.premium = obj(d.premium); for (const p of w.phones) { if (on) d.premium[p] = { at, name: (w.all[p] && w.all[p].name) || String(user).slice(0, 24) }; else delete d.premium[p]; } }, () => true);
+    if (on && stores && stores.premiumDone) await stores.premiumDone(w.phones).catch(() => {});
+    return on ? `**${clean(w.name)}** has unlimited rebassing now. It unlocks on their phone the next time it checks (straight away if the app is open, or when it's opened).`
+      : `Took unlimited rebassing away from **${clean(w.name)}**.`;
+  }
+  async function cmdPremiums() {
+    const d = (await readStore("mod", "mod.json")) || {}, paid = Object.entries(obj(d.premium)).sort((a, b) => b[1].at - a[1].at);
+    const asks = stores && stores.premiumAsks ? Object.entries(obj(await stores.premiumAsks().catch(() => ({})))).filter(([k]) => !obj(d.premium)[k]).sort((a, b) => b[1] - a[1]) : [];
+    const all = asks.length ? await people() : {};
+    const lines = [`**Unlimited rebassing** · ${paid.length} paid${asks.length ? ` · ${asks.length} asked (check PayPal for $10 with their name in the note)` : ""}`];
+    for (const [k, v] of paid.slice(0, 25)) lines.push(`• **${clean(v.name)}** · since ${ago(v.at)} · \`${k}\``);
+    for (const [k, t] of asks.slice(0, 15)) lines.push(`• asked: **${clean((all[k] && all[k].name) || k)}** · ${ago(t)} · \`${k}\` (unlock with /premium)`);
+    if (!paid.length && !asks.length) lines.push("Nobody yet.");
+    return lines.join("\n");
+  }
+
   // ---------------------------------------------------------------------------------------------------- Audio Market
   const MARKET_LABEL = "FifTeam Audio Market (the app keeps this message up to date; please don't delete it)";
   const marketNow = async () => { const d = (await readStore("market", "market.json")) || {}; return { items: Array.isArray(d.items) ? d.items : [] }; };
@@ -494,6 +525,7 @@ export function makeBot({ cfg, priv, notes, token = "", log = () => {} }) {
         : name === "accounts" ? await cmdAccounts() : name === "ban-email" ? await cmdBanEmail(v("email"), true, who.id) : name === "unban-email" ? await cmdBanEmail(v("email"), false)
         : name === "listings" ? await cmdListings(v("user")) : name === "delete-listing" ? await cmdDeleteListing(v("listing"))
         : name === "tag-member" ? await cmdTag("member", v("user"), v("remove")) : name === "tag-founder" ? await cmdTag("founder", v("user"), v("remove")) : name === "tag-developer" ? await cmdTag("dev", v("user"), v("remove"))
+        : name === "premium" ? await cmdPremium(v("user"), v("remove")) : name === "premiums" ? await cmdPremiums()
         : name === "purge" ? await cmdPurge(v("user")) : name === "clear-profile" ? await cmdClearProfile(v("user")) : name === "allow-picture" ? await cmdAllowPicture(v("user"))
         : "Unknown command";
     } catch (e) { log(`/${name} failed:`, e.message); return `Something went wrong: ${e.message}`; }

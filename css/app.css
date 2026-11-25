@@ -926,3 +926,15 @@ h2 { background: linear-gradient(90deg, #ffffff 0%, #e6dcff 55%, #cdb6ff 100%); 
 .dm-send .dm-list { flex: 1; }
 .dm-send .dm-row .btn { flex: none; min-width: 86px; }
 @media (max-width: 400px) { .so-bar:has(.so-vote) .so-send .so-lbl { display: none; } }
+
+/* ---------------------------------------------------------------------------- unlimited rebassing */
+.pm-card { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 18px 16px; border-radius: 20px; text-align: center;
+  background: linear-gradient(135deg, rgba(122, 75, 255, 0.28), rgba(255, 79, 135, 0.22)); border: 1px solid rgba(190, 160, 255, 0.35); }
+.pm-price { font: 700 40px/1 var(--font-head); background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.pm-once { font-weight: 700; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.pm-what { color: var(--ink); font-size: 14.5px; margin-top: 6px; }
+.pm-steps { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 8px; color: var(--muted); font-size: 14.5px; line-height: 1.4; }
+.pm-name { color: var(--ink); overflow-wrap: anywhere; }
+.pm-copy { height: 28px; padding: 0 10px; vertical-align: 1px; }
+.pm-pay { text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
+.pm-done { color: var(--ink); }

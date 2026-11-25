@@ -2,13 +2,15 @@
 import { $, bus, toast, openLayers } from "./ui.js";
 import { player } from "./player.js";
 
-export const APP_VERSION = "2.12";
+export const APP_VERSION = "2.13";
 import * as store from "./store.js";
 import { initPlayer } from "./player.js";
 import { initLibrary, library, importFiles, openCode } from "./library.js";
 import { initRebass, rebass, checkLight } from "./rebass.js";
 import { initTones } from "./tones.js";
 import { initSettings } from "./settings.js";
+import { initPush } from "./push.js";
+import { initPremium } from "./premium.js";
 import { initDemo } from "./demo.js";
 import { initSocial } from "./social.js";
 import { initBan } from "./ban.js";
@@ -104,6 +106,8 @@ async function boot() {
   initDemo();
   initSocial();
   initPresence();
+  initPush();
+  initPremium();
   await library.refresh().catch(() => toast("This browser is blocking storage, so songs won't be kept after you close the app."));
   addEventListener("hashchange", route);
   if (!location.hash) location.replace(library.songs().length ? "#player" : "#library");

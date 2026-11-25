@@ -9,6 +9,7 @@ import { api } from "./social.js";
 import { APP_VERSION } from "./app.js";
 import { deviceName } from "./device.js";
 import { sealedEmail } from "./account.js";
+import { hubOn, hubRead, hubWrite } from "./hub.js";
 
 const PHONE = /^[a-z0-9]{6,16}$/, POST = /^\d{5,25}$/;
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -18,24 +19,28 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
  * on top of it). */
 export function jsonStore(key, file, label, clean, low = false) {
   let queue = Promise.resolve(), seq = 0;
+  // (through the FifTeam server when it's there: each copy has a version, and a change is only taken on the latest)
+  const versioned = (d, v) => { Object.defineProperty(d, "__v", { value: v, enumerable: false, writable: true }); return d; };
   async function read() {
     const cfg = await api.config();
     if (!cfg[key]) throw new Error("setup");
+    if (await hubOn()) { try { const r = await hubRead(key); return versioned(clean(r.d), r.v); } catch (e) { if (!e.down) throw e; } }
     const m = await api.dc(`/messages/${cfg[key]}`, { low });
     const a = (m.attachments || []).find((x) => x.filename === file);
     return clean(a ? await (await fetch(a.url, { cache: "no-store" })).json() : null);
   }
   async function write(d) {
+    if (d.__v != null) { d.__v = await hubWrite(key, d.__v, d); return; }
     const cfg = await api.config(), f = new FormData();
     f.append("payload_json", JSON.stringify({ content: `${label} (the app keeps this message up to date; please don't delete it)`, attachments: [{ id: 0, filename: file }], allowed_mentions: { parse: [] } }));
     f.append("files[0]", new Blob([JSON.stringify(d)], { type: "application/json" }), file);
     await api.dc(`/messages/${cfg[key]}`, { method: "PATCH", form: f, low });
   }
   async function changeNow(change, check) {
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 5; attempt++) {
       const d = await read();
       change(d);
-      await write(d);
+      try { await write(d); } catch (e) { if (e.conflict) continue; throw e; }
       if (!check) return d;
       const now = await read();
       if (check(now)) return now;

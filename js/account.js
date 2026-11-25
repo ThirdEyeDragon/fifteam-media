@@ -204,8 +204,21 @@ export async function sealedEmail(email) {
     return JSON.stringify({ k: `${jwk.x}.${jwk.y}`, iv: b(iv), c: b(ct) });
   } catch { return ""; }
 }
-/** Sign out (Settings): this phone forgets the account, and the sign-in screen comes back. */
+/** Fresh proof of this phone's account, for the FifTeam server (a Firebase ID token, good for an hour): "" if not
+ * signed in. */
+let idt = null;
+export async function idToken() {
+  const s = account();
+  if (!s) return "";
+  if (idt && idt.for === s.token && idt.until > Date.now()) return idt.t;
+  const t = await refresh(s.token);
+  if (t.token && t.token !== s.token) await keep({ ...session, token: t.token });
+  idt = { t: t.idToken, for: t.token || s.token, until: Date.now() + 50 * 60e3 };
+  return t.idToken;
+}
+/** Sign out (Settings): this phone forgets the account (and stops its notifications), and the sign-in screen comes back. */
 export async function signOut() {
+  try { const { pushOff } = await import("./push.js"); await pushOff(); } catch {}
   await keep(null);
   location.reload();
 }

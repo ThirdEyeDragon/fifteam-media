@@ -14,10 +14,11 @@ import { myPublicKey, initDms, sendTo } from "./dms.js";
 import { openProfile } from "./profile.js";
 import { loadMeta, votesOf, setVote, meta, canSee, blocked } from "./meta.js";
 import { bannedPhones, noPicPhones, checkBans, badgesOf } from "./ban.js";
-import { activityChanged, initActivity } from "./activity.js";
+import { activityChanged, initActivity, openActivity } from "./activity.js";
 import { hookFetch, holdFor } from "./limiter.js";
 import { offensive, OFFENSIVE } from "./filter.js";
 import { showMarket, marketOpen, loadMarket, renderMarket } from "./market.js";
+import { hubOn, hubRead, hubWrite, hubFiles, startLive, live } from "./hub.js";
 
 const NAME_KEY = "fifteam-social-name", MINE_KEY = "fifteam-social-mine", ME_KEY = "fifteam-social-me", AV_KEY = "fifteam-social-avatar";
 const MAX_MSG = 9.5 * 1024 * 1024;   // what one post may carry (10 MB), with room to spare
@@ -67,6 +68,15 @@ async function dc(path, { method = "GET", form, json, low = false } = {}) {
 /** The feed list, fresh: [{ id, at, user, text, image, song, by }] newest first, with .profiles: { phone id: { name,
  * av (the message holding their picture), at } }. */
 async function readIndex() {
+  await config();
+  if (await hubOn()) {
+    try {
+      const { v, d } = await hubRead("index");
+      const posts = clean(d && d.posts);
+      posts.profiles = cleanProfiles(d && d.profiles); posts.ver = v;
+      return posts;
+    } catch (e) { if (!e.down) throw e; }
+  }
   const m = await dc(`/messages/${S.cfg.index}`);
   const a = (m.attachments || []).find((x) => x.filename === "feed.json");
   if (!a) { const e = []; e.profiles = {}; return e; }
@@ -77,12 +87,14 @@ async function readIndex() {
   return posts;
 }
 async function writeIndex(posts) {
+  // (through the server: taken only if nobody changed the list since it was read)
+  if (posts.ver != null) { await hubWrite("index", posts.ver, { v: 1, posts: posts.slice(0, MAX_FEED), profiles: posts.profiles || {} }); return; }
   const f = new FormData();
   f.append("payload_json", JSON.stringify({ content: "FifTeam Social feed (the app keeps this message up to date; please don't delete it)", attachments: [{ id: 0, filename: "feed.json" }], allowed_mentions: { parse: [] } }));
   f.append("files[0]", new Blob([JSON.stringify({ v: 1, posts: posts.slice(0, MAX_FEED), profiles: posts.profiles || {} })], { type: "application/json" }), "feed.json");
   await dc(`/messages/${S.cfg.index}`, { method: "PATCH", form: f });
 }
-const keepGone = (list) => { const out = list.filter((p) => !S.gone.has(p.id)); out.profiles = list.profiles || {}; return out; };
+const keepGone = (list) => { const out = list.filter((p) => !S.gone.has(p.id)); out.profiles = list.profiles || {}; if (list.ver != null) out.ver = list.ver; return out; };
 /** Change the feed list: read it fresh, change it, write it, check it took (someone posting at the same moment).
  *  This phone's changes go one at a time (a profile update and a comment sent together would otherwise write over
  *  each other), and each is looked at again a moment later: another phone that read the list just before this write
@@ -106,10 +118,10 @@ function changeIndex(change, check) {
   return run;
 }
 async function changeIndexNow(change, check) {
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 5; attempt++) {
     const posts = keepGone(await readIndex());
     change(posts);
-    await writeIndex(posts);
+    try { await writeIndex(posts); } catch (e) { if (e.conflict) { await wait(60 + Math.random() * 200); continue; } throw e; }
     const now = await readIndex();
     if (check(now)) { indexVer++; S.feed = keepGone(now); S.profiles = now.profiles; return; }
     await wait(400 + Math.random() * 800);
@@ -171,6 +183,7 @@ let linksAt = 0;
 try { linksAt = +localStorage.getItem(LINKS + "-at") || 0; } catch {}
 async function loadLinks() {
   const cfg = await config();
+  if (await hubOn()) return;          // (the server hands out each post's links as they're needed, many at once)
   if (!cfg.links || Date.now() - linksAt < 20 * 60e3) return;
   const m = await dc(`/messages/${cfg.links}`), f = fileOf(m, "links.json");
   if (!f) return;
@@ -195,7 +208,16 @@ function message(id, low = false) {
     if (S.recheck) dc(`/messages/${id}`, { low: true }).then((m) => { const a = ((m && m.attachments) || []).map(({ filename, url }) => ({ filename, url })); if (a.length) { links[id] = { a, ex: expiryOf(a) }; saveLinks(); } }, (e) => { if (e && e.status === 404) gone(id); });
     return p;
   }
-  const p = dc(`/messages/${id}`, { low });
+  const p = (async () => {
+    if (await hubOn()) {
+      try {
+        const a = await hubFiles(id);
+        if (a === null) { const e = new Error("gone"); e.status = 404; throw e; }
+        return { id, attachments: a };
+      } catch (e) { if (e.status === 404) throw e; }
+    }
+    return dc(`/messages/${id}`, { low });
+  })();
   S.msgs.set(id, p);
   p.then((m) => { const a = ((m && m.attachments) || []).map(({ filename, url }) => ({ filename, url })); if (a.length) { links[id] = { a, ex: expiryOf(a) }; saveLinks(); } }, () => { S.msgs.delete(id); });
   return p;
@@ -1499,6 +1521,7 @@ function pullToRefresh() {
 }
 
 export function initSocial() {
+  cachedFeed();           // (the profiles and posts from last time, at once: Messages and pages open without waiting)
   bus.on("view", (v) => { if (v === "social") refresh(); else { stopSong(); stopClip(); pauseVideos(); } });
   bus.on("music-playing", () => { stopSong(); stopClip(); if (!S.muted) setMuted(true); });
   // a rebass made just now, posted from the Rebass screen
@@ -1523,8 +1546,32 @@ export function initSocial() {
   addEventListener("fifteam-badges", () => { render(); });
   initDms();
   initActivity();
-  // new posts and likes come in on their own while the feed is open
-  setInterval(() => { if (location.hash === "#social" && document.visibilityState === "visible" && !S.loading) refresh(); }, 45000);
+  // new posts and likes come in on their own while the feed is open: at once with the server's live connection (and
+  // every 45 seconds without it, or every 5 minutes with it, in case one was missed)
+  let lastLook = 0;
+  const look = () => { lastLook = Date.now(); if (location.hash === "#social" && document.visibilityState === "visible" && !marketOpen()) refresh(); else ensureProfiles(true).catch(() => {}); };
+  setInterval(() => { if (location.hash === "#social" && document.visibilityState === "visible" && !S.loading && (!live.on || Date.now() - lastLook > 5 * 60e3)) { lastLook = Date.now(); refresh(); } }, 45000);
+  let soon = 0;
+  addEventListener("hub:index", () => { clearTimeout(soon); soon = setTimeout(look, 150); });
+  addEventListener("hub:meta", () => { loadMeta(0).then(() => { if (location.hash === "#social") render(); activityChanged(); }, () => {}); });
+  addEventListener("hub:market", () => { if (marketOpen()) loadMarket(0).then(renderMarket, () => {}); });
+  addEventListener("hub:mod", () => { checkBans(); });
+  // (another phone's like or comment while this one is open: a note at the top, like a notification)
+  addEventListener("hub:note", (e) => { const n = e.detail || {}; if (n.kind === "act") toast(`${n.title}: ${n.body}`.slice(0, 90), 3000); });
+  addEventListener("hub:open", () => { if (Date.now() - lastLook > 20000) look(); });
+  startLive();
+  addEventListener("fifteam-signed-in", () => { if (live.ws) { try { live.ws.close(); } catch {} } setTimeout(startLive, 500); });
+  // a tap on a notification: that post (or its comments), the requests, or the activity
+  if ("serviceWorker" in navigator) navigator.serviceWorker.addEventListener("message", (e) => {
+    const d = e.data || {};
+    if (d.type === "open-post" && /^\d{5,25}$/.test(d.post || "")) { location.hash = "#social"; ensureProfiles().catch(() => {}).then(() => (d.c ? openComments(d.post) : showPost(d.post))); }
+    else if (d.type === "open-activity") { location.hash = "#social"; openActivity(); }
+  });
+  const q = new URLSearchParams(location.search), wantPost = q.get("post");
+  if ((wantPost && /^\d{5,25}$/.test(wantPost)) || q.has("act")) {
+    history.replaceState(null, "", location.pathname + "#social");
+    setTimeout(async () => { try { await ensureProfiles(); } catch {} if (wantPost) { if (q.has("c")) openComments(wantPost); else showPost(wantPost); } else openActivity(); }, 1200);
+  }
 }
 /** The profiles (and this phone's on them, with its key for messages), loaded if they haven't been (fresh: unless just now). */
 async function ensureProfiles(fresh) {
