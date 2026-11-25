@@ -218,7 +218,7 @@ function render() {
     $("lib-add-2").hidden = $("lib-add-dir").hidden = kind !== "song" || !!q;
   }
   const n = tracks.filter((t) => (t.kind || "song") === "song").length;
-  store.storageUse().then((u) => { $("lib-foot").textContent = (n || u ? `${n} song${n === 1 ? "" : "s"} · ${sizeText(u)} kept on this device · ` : "") + "FifTeam Media 2.11.1"; });
+  store.storageUse().then((u) => { $("lib-foot").textContent = (n || u ? `${n} song${n === 1 ? "" : "s"} · ${sizeText(u)} kept on this device · ` : "") + "FifTeam Media 2.12"; });
 }
 
 function menu(t) {
@@ -232,6 +232,7 @@ function menu(t) {
     add("i-play", "Play", () => playIn(t));
     add("i-queue", "Play next", () => { player.playNext(t.id); toast("Plays next"); });
     if ((t.kind || "song") !== "tone") add("i-bass", "Rebass this song", () => bus.emit("rebass", t));
+    if (t.kind === "rebass") add("i-send", "Send in a message", () => bus.emit("dm-send-track", t));
     if (t.kind === "rebass") add("i-folder", categories.of(t.id).length ? `Categories: ${categories.of(t.id).map((c) => c.name).join(", ")}`.slice(0, 60) : "Add to a category", () => chooseCategories(t, render));
     add("i-image", t.hasArt ? "Change cover image" : "Add a cover image", async () => {
       const b = await pickImage(); if (!b) return;

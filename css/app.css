@@ -903,3 +903,26 @@ h2 { background: linear-gradient(90deg, #ffffff 0%, #e6dcff 55%, #cdb6ff 100%); 
 .acct-link { color: var(--muted); font-size: 14px; padding: 4px; align-self: center; }
 .acct-link:active { color: #fff; }
 .set-email { overflow-wrap: anywhere; }
+
+/* ---------------------------------------------------------------------------- messages: held, posts and songs, Send to */
+.dm-bubble, .dm-row { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; transition: transform 0.18s ease, filter 0.18s; }
+.dm-bubble.holding, .dm-row.holding { transform: scale(0.96); filter: brightness(1.15); }
+.dm-bubble.dm-rich { gap: 8px; min-width: 230px; }
+.dm-postw { display: flex; flex-direction: column; gap: 8px; }
+.dm-post { display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 14px; background: rgba(4, 5, 20, 0.35); border: 1px solid rgba(255, 255, 255, 0.12); color: inherit; text-align: left; width: 100%; }
+.dm-post:disabled { opacity: 0.7; }
+.dm-pth { width: 52px; height: 52px; border-radius: 10px; flex: none; background: var(--grad) center / cover; }
+.dm-pth.none { background: rgba(255, 255, 255, 0.08); }
+.dm-bubble .so-song { background: rgba(4, 5, 20, 0.35); border-color: rgba(255, 255, 255, 0.12); }
+.dm-bubble .so-smeta small, .dm-bubble .dm-mid small { color: inherit; opacity: 0.75; }
+.dm-act { position: fixed; inset: 0; z-index: 60; display: flex; align-items: flex-end; justify-content: center; background: rgba(3, 3, 14, 0); transition: background 0.2s; }
+.dm-act.in { background: rgba(3, 3, 14, 0.55); }
+.dm-actbox { width: 100%; max-width: 560px; display: flex; flex-direction: column; gap: 2px; padding: 12px 16px calc(16px + env(safe-area-inset-bottom, 0px)); border-radius: 24px 24px 0 0;
+  background: linear-gradient(180deg, #1d1856, #13113a); border: 1px solid var(--line); border-bottom: 0; transform: translateY(24px); transition: transform 0.22s ease; }
+.dm-act.in .dm-actbox { transform: none; }
+.dm-acth { margin: 2px 6px 6px; color: var(--dim); font-size: 13px; font-weight: 600; }
+.dm-actbox .menu-item { justify-content: center; }
+.dm-what { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 14px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--line); }
+.dm-send .dm-list { flex: 1; }
+.dm-send .dm-row .btn { flex: none; min-width: 86px; }
+@media (max-width: 400px) { .so-bar:has(.so-vote) .so-send .so-lbl { display: none; } }

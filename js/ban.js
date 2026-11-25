@@ -51,14 +51,14 @@ function show() {
   d.className = "lock"; d.id = "ban"; d.setAttribute("role", "dialog"); d.setAttribute("aria-modal", "true");
   d.innerHTML = `<div class="lock-box"><span class="lock-mark"><svg><use href="#i-lock"/></svg></span><h2>This phone is banned</h2><p class="status">FifTeam Media can't be used on this phone.</p></div>`;
   document.body.appendChild(d);
-  for (const id of ["app", "sheet", "toast", "lock"]) { const e = document.getElementById(id); if (e) e.inert = true; }
+  for (const id of ["app", "sheet", "toast"]) { const e = document.getElementById(id); if (e) e.inert = true; }
   try { player.pause(); } catch {}
   document.querySelectorAll("audio, video").forEach((m) => { try { m.pause(); } catch {} });
 }
 function hide() {
   const d = document.getElementById("ban"); if (!d) return;
   d.remove();
-  for (const id of ["app", "sheet", "toast", "lock"]) { const e = document.getElementById(id); if (e && !(id === "app" && !document.getElementById("lock").hidden)) e.inert = false; }
+  for (const id of ["app", "sheet", "toast"]) { const e = document.getElementById(id); if (e) e.inert = false; }
 }
 
 let checkedAt = 0;

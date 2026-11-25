@@ -68,8 +68,31 @@ async function finish(email, idToken, token) {
   let uid = /^ft:([a-z0-9]{6,16})$/.exec(u.displayName || "");
   uid = uid ? uid[1] : "";
   if (!uid) { uid = PHONE.test(myPhone()) ? myPhone() : Array.from(crypto.getRandomValues(new Uint8Array(10)), (b) => "abcdefghijklmnopqrstuvwxyz0123456789"[b % 36]).join(""); await fb("update", { idToken, displayName: "ft:" + uid, returnSecureToken: false }); }
+  listAccount(u.localId, email, { ok: 1, u: uid, c: +u.createdAt || 0 });
   await signedIn({ email, uid, token, fid: u.localId, at: Date.now() });
   return { done: true };
+}
+
+// ---------------------------------------------------------------------------------------------------- the account list
+// Every account, for the owner's /accounts in the FifTeam server (which runs online, with nothing on a PC): one store
+// message (social/config.json "accounts") with each account's email sealed for the FifTeam bot alone (nobody else who
+// reads it can see an address), whether it's confirmed, its phone id, and when it joined and was last signed in.
+const FID = /^[A-Za-z0-9]{10,64}$/;
+function cleanAccounts(d) {
+  const out = { v: 1, a: {} };
+  for (const [k, v] of Object.entries((d && d.a) || {}).slice(0, 20000)) if (FID.test(k) && v && typeof v.e === "string" && v.e.length < 400)
+    out.a[k] = { e: v.e, c: +v.c || 0, ok: v.ok ? 1 : 0, u: PHONE.test(v.u || "") ? v.u : "", at: +v.at || 0 };
+  return out;
+}
+let acctStore = null;
+async function listAccount(fid, email, fields) {
+  if (!FID.test(fid || "") || !email) return;
+  try {
+    const e = await sealedEmail(email);
+    if (!e) return;
+    if (!acctStore) { const { jsonStore } = await import("./meta.js"); acctStore = jsonStore("accounts", "accounts.json", "FifTeam accounts", cleanAccounts, true); }
+    await acctStore.change((d) => { const was = d.a[fid] || {}; d.a[fid] = { e, c: fields.c || was.c || Date.now(), ok: fields.ok ? 1 : was.ok || 0, u: fields.u || was.u || "", at: Date.now() }; }, (d) => !!d.a[fid]);
+  } catch {}
 }
 
 // ---------------------------------------------------------------------------------------------------- the sign-in screen
@@ -119,6 +142,7 @@ function show(mode = "signin", email = "", note = "") {
         if (await emailBanned(mail)) throw new Error("This email has been banned from FifTeam Media.");
         d = await fb("signUp", { email: mail, password: pw.value, returnSecureToken: true });
         await fb("sendOobCode", { requestType: "VERIFY_EMAIL", idToken: d.idToken });
+        listAccount(d.localId, mail, { ok: 0, c: Date.now() });
         Object.assign(pending, { email: mail, idToken: d.idToken, token: d.refreshToken });
         show("verify", mail); return;
       }
@@ -159,14 +183,14 @@ export async function initAccount() {
   if (!valid(session)) { show("signin"); return false; }
   if (myPhone() !== session.uid) { try { localStorage.setItem(ME, session.uid); } catch {} }
   if (Date.now() - (session.checked || 0) > 86400e3 && navigator.onLine !== false) {
-    refresh(session.token).then((t) => keep({ ...session, token: t.token, checked: Date.now() }), (e) => { if (["USER_DISABLED", "USER_NOT_FOUND", "INVALID_REFRESH_TOKEN"].includes(e.code)) signOut(); });
+    refresh(session.token).then((t) => { keep({ ...session, token: t.token, checked: Date.now() }); listAccount(session.fid, session.email, { ok: 1, u: session.uid }); }, (e) => { if (["USER_DISABLED", "USER_NOT_FOUND", "INVALID_REFRESH_TOKEN"].includes(e.code)) signOut(); });
   }
   return true;
 }
 /** This account's email, sealed for the FifTeam bot alone (social/config.json "auth"): its /accounts and bans by email
  * can tell whose phone is whose, and nobody else who reads the check-ins can see an address. */
-export async function sealedEmail() {
-  const s = account(); if (!s) return "";
+export async function sealedEmail(email) {
+  const s = email ? { email } : account(); if (!s) return "";
   try {
     const c = await (await fetch(new URL("../social/config.json", import.meta.url), { cache: "force-cache" })).json();
     if (!c.auth) return "";

@@ -4,14 +4,25 @@
 // ever holds sealed messages (which phone wrote to which, and when, but not a word of what): nobody else can read them,
 // the app's owner included.
 //   The messages live in one store message of their own (social/config.json "dm": a dm.json attached to it).
-import { $, toast, openSheet, closeSheet } from "./ui.js";
+//   A message can carry a post (its id: the other phone shows it, if they can see it) or a rebassed song: the song (and
+// its cover) goes up sealed with the same key, in a message of its own, so the file service can't hear it either.
+//   Held down, a message (or a whole conversation) can be deleted for both phones: it's taken out of the store, and its
+// id stays on a short list there (so a phone writing back an older copy can't bring it back).
+import { $, toast, openSheet, closeSheet, fmtTime, placeholderArt, bus } from "./ui.js";
 import { api } from "./social.js";
-import { dmState, dmRequests, answerDm, blocked } from "./meta.js";
+import { dmState, dmRequests, answerDm, blocked, followingOf } from "./meta.js";
+import { bannedPhones } from "./ban.js";
+import { library } from "./library.js";
+import * as store from "./store.js";
+import { player } from "./player.js";
+import { squareJpeg } from "./image.js";
 import { offensive, OFFENSIVE } from "./filter.js";
 import { marketItem, openListing, loadMarket } from "./market.js";
 
 const KEY = "fifteam-dm-key", READ = "fifteam-dm-read", MAX = 2000;
-const D = { msgs: [], loadedAt: 0, loading: null, keys: new Map(), plain: new Map(), chat: null, poll: 0, queue: Promise.resolve() };
+const D = { msgs: [], del: [], gone: new Set(), loadedAt: 0, loading: null, keys: new Map(), plain: new Map(), files: new Map(), chat: null, poll: 0, queue: Promise.resolve(), audio: null, playing: "" };
+const POST = /^\d{5,25}$/, MSG = /^[a-z0-9]{8,24}$/;
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const b64u = (u8) => btoa(String.fromCharCode(...u8)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const unb64u = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
 const PHONE = /^[a-z0-9]{6,16}$/;
@@ -48,24 +59,34 @@ async function sharedKey(phone) {
   D.keys.set(k, key);
   return key;
 }
-async function seal(phone, text) {
+async function seal(phone, body) {
   const key = await sharedKey(phone);
   if (!key) throw new Error("nokey");
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const c = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(JSON.stringify({ t: text }))));
+  const c = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(JSON.stringify(body))));
   return { iv: b64u(iv), c: b64u(c) };
 }
-/** A message's words ("" if this phone can't open it: not for it, or its key was lost). */
-async function open(m) {
+const cleanSong = (s) => (s && typeof s === "object" && POST.test(s.m || "") && typeof s.iv === "string" && s.iv.length < 40
+  ? { m: s.m, iv: s.iv, ...(typeof s.civ === "string" && s.civ.length < 40 ? { civ: s.civ } : {}), title: String(s.title || "Rebass").slice(0, 120), artist: String(s.artist || "").slice(0, 80), note: String(s.note || "").slice(0, 80), duration: +s.duration || 0 } : null);
+/** What a message holds: { t: its words, p: a post's id, s: a sealed song } (t "" and nothing else if this phone
+ * can't open it: not for it, or its key was lost). */
+async function body(m) {
   if (D.plain.has(m.id)) return D.plain.get(m.id);
-  let t = "";
+  let b = { t: "" };
   try {
     const other = m.f === api.state.me ? m.t : m.f, key = await sharedKey(other);
-    if (key) t = String(JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64u(m.iv) }, key, unb64u(m.c)))).t || "").slice(0, 1000);
+    if (key) {
+      const j = JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64u(m.iv) }, key, unb64u(m.c))));
+      const s = cleanSong(j.s);
+      b = { t: String(j.t || "").slice(0, 1000), ...(POST.test(j.p || "") ? { p: j.p } : {}), ...(s ? { s } : {}) };
+    }
   } catch {}
-  D.plain.set(m.id, t);
-  return t;
+  D.plain.set(m.id, b);
+  return b;
 }
+const preview = (b) => b.t || (b.p ? "Sent a post" : b.s ? `♪ ${b.s.title}` : "");
+/** A message in a line of words (for the list of conversations, and notifications). */
+async function open(m) { return preview(await body(m)); }
 
 // ---------------------------------------------------------------------------------------------------- the store
 async function readStore() {
@@ -75,20 +96,23 @@ async function readStore() {
   const a = (m.attachments || []).find((x) => x.filename === "dm.json");
   if (!a) return [];
   const d = await (await fetch(a.url, { cache: "no-store" })).json();
-  return (Array.isArray(d.msgs) ? d.msgs : []).slice(-MAX).filter((x) => x && /^[a-z0-9]{8,24}$/.test(x.id) && PHONE.test(x.f) && PHONE.test(x.t) && typeof x.c === "string" && typeof x.iv === "string" && x.c.length < 4000)
+  const del = Array.isArray(d.del) ? d.del.filter((x) => typeof x === "string" && MSG.test(x)).slice(-4000) : [], gone = new Set(del);
+  const out = (Array.isArray(d.msgs) ? d.msgs : []).slice(-MAX).filter((x) => x && MSG.test(x.id) && !gone.has(x.id) && PHONE.test(x.f) && PHONE.test(x.t) && typeof x.c === "string" && typeof x.iv === "string" && x.c.length < 4000)
     .map((x) => ({ id: x.id, f: x.f, t: x.t, at: +x.at || 0, iv: x.iv, c: x.c, ...(/^\d{5,25}$/.test(x.l || "") ? { l: x.l } : {}) }));
+  out.del = del;
+  return out;
 }
 async function writeStore(msgs) {
   const cfg = await api.config(), f = new FormData();
   f.append("payload_json", JSON.stringify({ content: "FifTeam messages (the app keeps this message up to date; please don't delete it)", attachments: [{ id: 0, filename: "dm.json" }], allowed_mentions: { parse: [] } }));
-  f.append("files[0]", new Blob([JSON.stringify({ v: 1, msgs: msgs.slice(-MAX) })], { type: "application/json" }), "dm.json");
+  f.append("files[0]", new Blob([JSON.stringify({ v: 1, msgs: msgs.slice(-MAX), del: (msgs.del || D.del || []).slice(-4000) })], { type: "application/json" }), "dm.json");
   await api.dc(`/messages/${cfg.dm}`, { method: "PATCH", form: f });
 }
 async function load() {
   if (D.loading) return D.loading;
   D.loading = (async () => {
     try {
-      D.msgs = await readStore(); D.loadedAt = Date.now();
+      D.msgs = await readStore(); D.del = D.msgs.del; D.loadedAt = Date.now();
       // someone new wrote since the profiles were read: read them again, for their name and key
       const pr = api.state.profiles || {}, me = api.state.me;
       if (mineOnly().some((m) => { const o = m.f === me ? m.t : m.f; return !pr[o] || !pr[o].pk; })) await api.ensureProfiles(true).catch(() => {});
@@ -99,7 +123,7 @@ async function load() {
 /** This phone's conversations: what it sent, and what came from phones it takes messages from (Settings: everyone, by
  * request, or nobody; someone it has written to, follows or let in always counts, unless messages are off). */
 // (an Audio Market chat: anyone may ask a seller about what they're selling, unless one has blocked the other)
-const mineOnly = () => { const me = api.state.me; return D.msgs.filter((m) => m.f === me || (m.t === me && (m.l ? !blocked(m.f, me) : dmState(m.f, me, wrote(m.f)) === "ok"))); };
+const mineOnly = () => { const me = api.state.me; return D.msgs.filter((m) => !D.gone.has(m.id) && (m.f === me || (m.t === me && (m.l ? !blocked(m.f, me) : dmState(m.f, me, wrote(m.f)) === "ok")))); };
 /** A conversation: the other phone, and (an Audio Market chat) the listing it's about. */
 const thread = (m) => (m.f === api.state.me ? m.t : m.f) + "|" + (m.l || "");
 const wrote = (to) => D.msgs.some((m) => m.f === api.state.me && m.t === to);
@@ -177,7 +201,13 @@ async function paintInbox(list) {
     if (l) { const it = marketItem(l); mid.append(h("span", "dm-mktag", `Audio Market · ${it ? it.title : "a listing"}`)); }
     mid.append(prev);
     row.append(av, mid, h("span", "dm-time", api.ago(last.at)));
-    row.onclick = () => openChat(other, l);
+    row.onclick = () => { if (!wasHeld(row)) openChat(other, l); };
+    onHold(row, () => actions(`${nameOf(other)}${l ? " · Audio Market" : ""}`, [["Delete chat for both of you", async () => {
+      if (!confirm(`Delete this whole chat with ${nameOf(other)}? It's deleted on their phone too.`)) return;
+      const all = mineOnly().filter((m) => thread(m) === thread(last));
+      if (await removeMsgs(all)) toast("Chat deleted");
+      paintInbox(list); paintBadge();
+    }, "danger"]]));
     list.append(row);
     open(last).then((t) => { prev.textContent = (last.f === api.state.me ? "You: " : "") + (t || "🔒 a message"); });
   }
@@ -223,10 +253,10 @@ export async function openChat(other, l = "") {
   paintChat();
   clearInterval(D.poll);
   D.poll = setInterval(async () => {
-    if (D.chat !== other || D.l !== l || !document.querySelector("#sheet.open .dm-msgs")) { clearInterval(D.poll); D.chat = null; return; }
+    if (D.chat !== other || D.l !== l || !document.querySelector("#sheet.open .dm-msgs")) { clearInterval(D.poll); D.chat = null; stopSongs(); return; }
     if (document.visibilityState !== "visible") return;
-    const before = D.msgs.length; try { await load(); } catch {}
-    if (D.msgs.length !== before) paintChat();
+    const before = D.msgs.map((m) => m.id).join(); try { await load(); } catch {}
+    if (D.msgs.map((m) => m.id).join() !== before) paintChat();
   }, 6000);
 }
 async function paintChat() {
@@ -234,27 +264,35 @@ async function paintChat() {
   if (!other || !box) return;
   const l = D.l || "";
   const list = mineOnly().filter((m) => (m.f === other || m.t === other) && (m.l || "") === l).sort((a, b) => a.at - b.at);
-  const texts = await Promise.all(list.map(open));
+  const texts = await Promise.all(list.map(body));
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
   box.replaceChildren();
   if (!api.state.profiles[other] || !api.state.profiles[other].pk) box.append(h("p", "status", `${nameOf(other)} needs to open FifTeam Media once more before you can message them.`));
   else if (!list.length) box.append(h("p", "status", l ? "Ask about it: is it still available, the price, picking it up…" : "Say hi."));
   list.forEach((m, i) => {
-    const b = h("div", "dm-bubble " + (m.f === api.state.me ? "me" : "them") + (m.sending ? " sending" : ""));
-    b.append(h("span", "", texts[i] || "🔒 This message can't be opened on this phone."), h("small", "", api.ago(m.at)));
+    const x = texts[i], b = h("div", "dm-bubble " + (m.f === api.state.me ? "me" : "them") + (m.sending ? " sending" : "") + (x.p || x.s ? " dm-rich" : ""));
+    if (x.p) b.append(postBubble(x.p));
+    if (x.s) b.append(songBubble(m, x.s));
+    if (x.t || (!x.p && !x.s)) b.append(h("span", "", x.t || "🔒 This message can't be opened on this phone."));
+    b.append(h("small", "", api.ago(m.at)));
+    if (!m.sending) onHold(b, () => actions("", [
+      ...(x.t ? [["Copy", () => { navigator.clipboard && navigator.clipboard.writeText(x.t).then(() => toast("Copied", 1200), () => {}); }]] : []),
+      ["Delete for both of you", async () => { if (await removeMsgs([m])) toast("Deleted for both of you", 1600); paintChat(); }, "danger"],
+    ]));
     box.append(b);
   });
   if (atBottom || list.length) box.scrollTop = box.scrollHeight;
   markRead(other, l);
 }
 const newId = () => Array.from(crypto.getRandomValues(new Uint8Array(14)), (b) => "abcdefghijklmnopqrstuvwxyz0123456789"[b % 36]).join("");
-async function send(other, text, l = "") {
+async function send(other, text, l = "", extra = null) {
   let sealed;
-  try { await api.ensureProfiles(); sealed = await seal(other, text.slice(0, 500)); }
-  catch { toast(`${nameOf(other)} needs to open FifTeam Media once more before you can message them.`); return; }
-  if (l ? blocked(api.state.me, other) : dmState(api.state.me, other, talkedWith(other)) === "off") { toast(`${nameOf(other)} isn't taking messages any more.`); return; }
+  const b = { t: String(text || "").slice(0, 500), ...(extra || {}) };
+  try { await api.ensureProfiles(); sealed = await seal(other, b); }
+  catch { toast(`${nameOf(other)} needs to open FifTeam Media once more before you can message them.`); return false; }
+  if (l ? blocked(api.state.me, other) : dmState(api.state.me, other, talkedWith(other)) === "off") { toast(`${nameOf(other)} isn't taking messages any more.`); return false; }
   const m = { id: newId(), f: api.state.me, t: other, at: Date.now(), ...sealed, ...(l ? { l } : {}) };
-  D.plain.set(m.id, text.slice(0, 500));
+  D.plain.set(m.id, b);
   D.msgs = [...D.msgs, { ...m, sending: true }];
   paintChat();
   const put = async () => {
@@ -270,9 +308,234 @@ async function send(other, text, l = "") {
   // one at a time from this phone; and looked at again a moment later, in case another phone's copy landed on top of it
   const run = D.queue.then(put);
   D.queue = run.catch(() => {});
-  try { await run; } catch { D.msgs = D.msgs.filter((x) => x.id !== m.id); toast("Couldn't send that message. Try again."); paintChat(); return; }
+  try { await run; } catch { D.msgs = D.msgs.filter((x) => x.id !== m.id); toast("Couldn't send that message. Try again."); paintChat(); return false; }
   paintChat();
-  for (const ms of [3000, 10000]) setTimeout(() => { D.queue = D.queue.then(async () => { if (!(await readStore()).some((x) => x.id === m.id)) { await put(); paintChat(); } }).catch(() => {}); }, ms);
+  for (const ms of [3000, 10000]) setTimeout(() => { D.queue = D.queue.then(async () => { const now = await readStore(); if (!now.some((x) => x.id === m.id) && !now.del.includes(m.id) && !D.gone.has(m.id)) { await put(); paintChat(); } }).catch(() => {}); }, ms);
+  return true;
+}
+
+// ---------------------------------------------------------------------------------------------------- deleting
+/** Messages deleted for both phones: out of the store (their sealed songs too), and their ids on its list of deleted
+ * ones. Gone from this screen at once; back (with a note) if it couldn't be saved. */
+async function removeMsgs(list) {
+  list = list.filter((m) => m && MSG.test(m.id));
+  if (!list.length) return false;
+  const ids = new Set(list.map((m) => m.id)), files = [];
+  for (const m of list) { const b = D.plain.get(m.id); if (b && b.s) files.push(b.s.m); D.gone.add(m.id); }
+  const put = async () => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const now = await readStore();
+      const keep = now.filter((x) => !ids.has(x.id));
+      keep.del = [...new Set([...now.del, ...ids])].slice(-4000);
+      if (keep.length !== now.length || keep.del.length !== now.del.length) await writeStore(keep);
+      const after = await readStore();
+      if (!after.some((x) => ids.has(x.id))) { D.msgs = after; D.del = after.del; return; }
+      if (attempt === 2) throw new Error("busy");
+      await wait(400 + Math.random() * 800);
+    }
+  };
+  const run = D.queue.then(put);
+  D.queue = run.catch(() => {});
+  try { await run; } catch { for (const id of ids) D.gone.delete(id); toast("Couldn't delete that. Try again."); return false; }
+  for (const id of files) api.dc(`/messages/${id}`, { method: "DELETE", low: true }).catch(() => {});
+  // (looked at again, in case another phone's older copy landed on top)
+  for (const ms of [3000, 10000]) setTimeout(() => { D.queue = D.queue.then(async () => { if ((await readStore()).some((x) => ids.has(x.id))) await put(); }).catch(() => {}); }, ms);
+  return true;
+}
+/** Held down (half a second, without moving): fn. A right-click does it too. */
+function onHold(el, fn) {
+  let t = 0, x0 = 0, y0 = 0;
+  const stop = () => { clearTimeout(t); t = 0; el.classList.remove("holding"); };
+  el.addEventListener("pointerdown", (e) => {
+    if (e.button > 0) return;
+    x0 = e.clientX; y0 = e.clientY; el.classList.add("holding");
+    t = setTimeout(() => { t = 0; el.classList.remove("holding"); el._held = Date.now(); try { navigator.vibrate && navigator.vibrate(12); } catch {} fn(); }, 480);
+  });
+  el.addEventListener("pointermove", (e) => { if (t && Math.hypot(e.clientX - x0, e.clientY - y0) > 10) stop(); });
+  for (const ev of ["pointerup", "pointercancel", "pointerleave"]) el.addEventListener(ev, stop);
+  el.addEventListener("contextmenu", (e) => { e.preventDefault(); if (!wasHeld(el)) { stop(); el._held = Date.now(); fn(); } });
+}
+/** Whether that touch was a hold (so letting go isn't also a tap). */
+const wasHeld = (el) => !!el._held && Date.now() - el._held < 900;
+/** A few choices over the open panel (Cancel, or a tap outside, closes it). */
+function actions(title, items) {
+  document.querySelectorAll(".dm-act").forEach((n) => n.remove());
+  const wrap = h("div", "dm-act"), box = h("div", "dm-actbox");
+  if (title) box.append(h("p", "dm-acth", title));
+  for (const [label, fn, cls] of items) { const b = h("button", "menu-item " + (cls || ""), label); b.onclick = () => { wrap.remove(); fn(); }; box.append(b); }
+  const c = h("button", "menu-item", "Cancel"); c.onclick = () => wrap.remove(); box.append(c);
+  wrap.onclick = (e) => { if (e.target === wrap) wrap.remove(); };
+  wrap.append(box); document.body.append(wrap);
+  requestAnimationFrame(() => wrap.classList.add("in"));
+}
+
+// ---------------------------------------------------------------------------------------------------- posts and songs in a chat
+const fileOf = (m, n) => api.fileOf(m, n);
+/** A post sent in a message: its picture, who posted it and its words; a tap shows it in Social. A rebassed song's
+ * post plays right here too. */
+function postBubble(id) {
+  const wrap = h("div", "dm-postw");
+  const p = (api.state.feed || []).find((x) => x.id === id);
+  const card = h("button", "dm-post");
+  if (!p || !api.visible(p)) { card.disabled = true; card.append(h("span", "dm-mid", "This post isn't available.")); wrap.append(card); return wrap; }
+  const th = h("span", "dm-pth"), mid = h("span", "dm-mid");
+  const what = p.text || (p.song ? `♪ ${p.song.title}` : p.playlist ? `Playlist: ${p.playlist.name}` : p.video || (p.media && p.media.some((k) => k !== "i")) ? "A video" : p.image || (p.media && p.media.length) ? "Pictures" : "A post");
+  mid.append(h("small", "dm-mktag", "Post"), h("b", "", api.nameOf(p)), h("small", "", what));
+  card.append(th, mid);
+  card.onclick = () => { if (wasHeld(card.closest(".dm-bubble") || card)) return; closeSheet(); api.showPost(p.id); };
+  if (p.image || p.video || p.song || (p.media && p.media.length) || p.playlist) {
+    api.message(p.id).then((m) => {
+      const f = fileOf(m, "picture.jpg") || fileOf(m, "m0.jpg") || fileOf(m, "poster.jpg") || fileOf(m, "m0.poster.jpg") || fileOf(m, "cover.jpg");
+      if (f) th.style.backgroundImage = `url("${f.url}")`; else th.classList.add("none");
+    }).catch(() => th.classList.add("none"));
+  } else th.classList.add("none");
+  wrap.append(card);
+  if (p.song) wrap.append(api.songBlock(p));
+  return wrap;
+}
+/** A sealed file from a message's own store message, opened (and kept for the rest of the visit). */
+async function sealedFile(other, msgId, name, iv) {
+  const k = msgId + "/" + name;
+  if (D.files.has(k)) return D.files.get(k);
+  const job = (async () => {
+    const key = await sharedKey(other);
+    if (!key) throw new Error("nokey");
+    const f = fileOf(await api.message(msgId), name);
+    if (!f) throw new Error("gone");
+    const r = await fetch(f.url, { cache: "no-store" });
+    if (!r.ok) throw new Error("download");
+    const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64u(iv) }, key, await r.arrayBuffer());
+    return new Blob([plain], { type: name === "song.bin" ? "audio/mpeg" : "image/jpeg" });
+  })();
+  D.files.set(k, job); job.catch(() => D.files.delete(k));
+  return job;
+}
+/** A rebassed song sent in a message: play it, or add it to the library (under Rebassed). */
+function songBubble(m, s) {
+  const other = m.f === api.state.me ? m.t : m.f;
+  const b = h("div", "so-song dm-song");
+  const cov = h("span", "so-cover"); cov.style.backgroundImage = `url("${placeholderArt(s.title, "rebass")}")`;
+  if (s.civ) sealedFile(other, s.m, "cover.bin", s.civ).then((c) => { cov.style.backgroundImage = `url("${URL.createObjectURL(c)}")`; }, () => {});
+  const play = h("button", "so-play dm-play"); play.dataset.id = m.id; play.setAttribute("aria-label", D.playing === m.id ? "Pause" : "Play"); play.append(api.icon(D.playing === m.id ? "i-pause" : "i-play"));
+  play.onclick = async () => {
+    if (!D.audio) { D.audio = new Audio(); D.audio.onended = () => { D.playing = ""; paintPlays(); }; }
+    if (D.playing === m.id) { D.audio.pause(); D.playing = ""; paintPlays(); return; }
+    play.classList.add("busy");
+    try {
+      const blob = await sealedFile(other, s.m, "song.bin", s.iv);
+      player.pause();
+      if (D.audioUrl) URL.revokeObjectURL(D.audioUrl);
+      D.audioUrl = URL.createObjectURL(blob); D.audio.src = D.audioUrl; D.playing = m.id;
+      await D.audio.play();
+    } catch (e) { D.playing = ""; toast(e.message === "gone" ? "That song was deleted." : "Couldn't play that song. Are you online?"); }
+    paintPlays();
+  };
+  const meta = h("div", "so-smeta"); meta.append(h("b", "", s.title), h("small", "", [s.artist, s.note, s.duration ? fmtTime(s.duration) : ""].filter(Boolean).join(" · ")));
+  const add = h("button", "so-add"); add.append(api.icon("i-plus")); add.setAttribute("aria-label", "Add to my library"); add.title = "Add to my library";
+  add.onclick = async () => {
+    add.disabled = true; add.classList.add("busy");
+    try {
+      const audio = await sealedFile(other, s.m, "song.bin", s.iv);
+      const cover = s.civ ? await sealedFile(other, s.m, "cover.bin", s.civ).catch(() => null) : null;
+      const file = new File([audio], `${s.title}.mp3`.replace(/[\\/:*?"<>|]+/g, " "), { type: "audio/mpeg" });
+      await library.add({ id: store.newId(), kind: "rebass", title: s.title, artist: s.artist || nameOf(m.f), album: "FifTeam Social", note: s.note || `from ${nameOf(m.f)}`,
+        duration: s.duration, size: file.size, type: file.type, fileName: file.name, added: Date.now(), hasArt: !!cover, from: "dm" }, file, cover);
+      add.classList.remove("busy"); add.classList.add("done"); toast("Added to your library, under Rebassed");
+    } catch { add.disabled = false; add.classList.remove("busy"); toast("Couldn't download that song. Are you online?"); }
+  };
+  b.append(cov, play, meta, add);
+  return b;
+}
+function paintPlays() {
+  document.querySelectorAll(".dm-play").forEach((b) => { const on = b.dataset.id === D.playing; b.querySelector("use").setAttribute("href", on ? "#i-pause" : "#i-play"); b.setAttribute("aria-label", on ? "Pause" : "Play"); b.classList.remove("busy"); });
+}
+function stopSongs() { if (D.audio && D.playing) { D.audio.pause(); D.playing = ""; paintPlays(); } }
+/** A rebassed song, sealed for one phone and put up in a message of its own. song: { title, artist, note, duration,
+ * cover (Blob), encode(kbps) -> File } (as for a post). */
+async function upSong(other, song, say) {
+  const key = await sharedKey(other);
+  if (!key) throw new Error("nokey");
+  const room = 9.4 * 1024 * 1024;
+  const kbps = [192, 160, 128, 112, 96].find((k) => (k * 1000 / 8) * (song.duration || 0) * 1.03 < room);
+  if (!kbps) throw new Error(`That song is too long to send (${fmtTime(song.duration)}). Songs up to about 12 minutes fit.`);
+  say("Preparing…");
+  const f = await song.encode(kbps);
+  if (f.size > room) throw new Error("That song is too big to send.");
+  const seal1 = async (blob) => { const iv = crypto.getRandomValues(new Uint8Array(12)); return { iv: b64u(iv), blob: new Blob([await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, await blob.arrayBuffer())], { type: "application/octet-stream" }) }; };
+  const a = await seal1(f);
+  let c = null;
+  if (song.cover) { try { c = await seal1(await squareJpeg(song.cover, 300)); } catch {} }
+  const files = [["song.bin", a.blob], ...(c ? [["cover.bin", c.blob]] : [])];
+  const fd = new FormData();
+  fd.append("payload_json", JSON.stringify({ content: "FifTeam sealed message file (only the two phones can open it)", username: "FifTeam", allowed_mentions: { parse: [] }, attachments: files.map(([n], i) => ({ id: i, filename: n })) }));
+  files.forEach(([n, bl], i) => fd.append(`files[${i}]`, bl, n));
+  say("Uploading…");
+  const msg = await api.dc("?wait=true", { method: "POST", form: fd });
+  return { m: msg.id, iv: a.iv, ...(c ? { civ: c.iv } : {}), title: String(song.title || "Rebass").slice(0, 120), artist: String(song.artist || "").slice(0, 80), note: String(song.note || "").slice(0, 80), duration: Math.round(song.duration || 0) };
+}
+
+// ---------------------------------------------------------------------------------------------------- sending to someone
+/** Whether this phone can message them: not blocked or banned, they have a key, and they take messages from it. */
+function canMessage(other) {
+  const me = api.state.me, pr = api.state.profiles[other];
+  if (!PHONE.test(other) || other === me || !pr || !pr.pk || bannedPhones().has(other) || blocked(me, other)) return false;
+  const st = dmState(me, other, talkedWith(other));
+  return st === "ok" || (wrote(other) && st !== "off");
+}
+/** "Send to…": a post ({ post }) or a rebassed song ({ song }), to one or more people, with a few words if wanted.
+ * (A song goes up once for each person: each copy is sealed for that phone alone.) */
+export async function sendTo(item) {
+  if (!api.state.name) { toast("Pick a username in Social first"); return; }
+  if (item.post && !api.visible(item.post)) return;
+  openSheet((p) => {
+    p.classList.add("dm-panel", "dm-send");
+    p.append(h("h3", "", "Send to"));
+    const what = h("div", "dm-what"), mid = h("span", "dm-mid");
+    if (item.post) mid.append(h("small", "dm-mktag", "Post"), h("b", "", api.nameOf(item.post)), h("small", "", item.post.text || (item.post.song ? `♪ ${item.post.song.title}` : "")));
+    else mid.append(h("small", "dm-mktag", "Rebassed song"), h("b", "", item.song.title), h("small", "", [item.song.artist, item.song.note, item.song.duration ? fmtTime(item.song.duration) : ""].filter(Boolean).join(" · ")));
+    what.append(mid);
+    const note = h("input", "input dm-note"); note.maxLength = 300; note.placeholder = "Add a message (optional)"; note.setAttribute("aria-label", "Add a message"); note.autocomplete = "off";
+    const q = h("input", "input"); q.type = "search"; q.placeholder = "Search people"; q.setAttribute("aria-label", "Search people"); q.autocomplete = "off";
+    const list = h("div", "dm-list"); list.append(h("p", "status", "Loading…"));
+    p.append(what, note, q, list);
+    const sent = new Set(), busy = new Set();   // (kept through a redraw of the list)
+    const paint = () => {
+      const me = api.state.me, low = q.value.trim().toLowerCase();
+      // people talked with lately first, then people followed, then everyone else
+      const order = [], seen = new Set();
+      for (const m of mineOnly().filter((x) => !x.l).sort((a, b) => b.at - a.at)) { const o = m.f === me ? m.t : m.f; if (!seen.has(o)) { seen.add(o); order.push(o); } }
+      for (const o of followingOf(me)) if (!seen.has(o)) { seen.add(o); order.push(o); }
+      const rest = Object.keys(api.state.profiles || {}).filter((o) => !seen.has(o)).sort((a, b) => nameOf(a).localeCompare(nameOf(b), undefined, { sensitivity: "base" }));
+      const people = [...order, ...rest].filter((o) => o !== me && api.state.profiles[o] && api.state.profiles[o].name && !bannedPhones().has(o) && !blocked(me, o) && (!low || nameOf(o).toLowerCase().includes(low)));
+      list.replaceChildren();
+      if (!people.length) { list.append(h("p", "status", low ? `Nobody called "${q.value.trim()}".` : "Nobody to send to yet.")); return; }
+      for (const o of people.slice(0, 80)) {
+        const row = h("div", "dm-row");
+        const av = api.avatarEl(42, "", nameOf(o)); api.showPicture(av, { by: o, user: nameOf(o), id: "" });
+        const nm = h("span", "dm-mid"); nm.append(h("b", "", nameOf(o)));
+        const ok = canMessage(o), go = h("button", "btn small", "");
+        go.dataset.who = o;
+        const look = (t) => { const b = list.querySelector(`button[data-who="${o}"]`) || go; b.textContent = t; b.disabled = t !== "Send"; b.classList.toggle("primary", t === "Send"); };
+        look(sent.has(o) ? "Sent ✓" : busy.has(o) ? "Sending…" : ok ? "Send" : "Can't message");
+        go.onclick = async () => {
+          const words = note.value.trim();
+          if (words && offensive(words)) { toast(OFFENSIVE, 3500); return; }
+          busy.add(o); look("Sending…");
+          try {
+            const extra = item.post ? { p: item.post.id } : { s: await upSong(o, item.song, look) };
+            look("Sending…");
+            if (await send(o, words, "", extra)) sent.add(o);
+          } catch (e) { toast(e.message === "nokey" ? `${nameOf(o)} needs to open FifTeam Media once more first.` : e.message || "Couldn't send that. Try again.", 3500); }
+          busy.delete(o); look(sent.has(o) ? "Sent ✓" : "Send");
+        };
+        row.append(av, nm, go);
+        list.append(row);
+      }
+    };
+    q.oninput = paint;
+    if (D.loadedAt) paint();
+    Promise.all([api.ensureProfiles(), load()]).then(() => { if (list.isConnected) paint(); }, () => { if (list.isConnected && !D.loadedAt) list.replaceChildren(h("p", "status", "Couldn't load. Are you online?")); });
+  });
 }
 
 // ---------------------------------------------------------------------------------------------------- notifications
@@ -308,6 +571,10 @@ async function tellNew() {
 export function initDms() {
   const btn = $("btn-dms");
   if (btn) btn.onclick = () => openInbox();
+  // a rebassed song to send (from the Rebass screen, or the library)
+  bus.on("dm-send-song", (song) => sendTo({ song }));
+  bus.on("dm-send-track", async (t) => { try { sendTo({ song: await api.trackSong(t) }); } catch { toast("Couldn't read that song."); } });
+  bus.on("music-playing", stopSongs);
   const tick = D.check = async () => {
     if ((document.visibilityState !== "visible" && !notifyOn()) || !api.state.me) return;
     try { await api.ensureProfiles(); await load(); paintBadge(); await tellNew(); } catch {}

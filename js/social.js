@@ -10,7 +10,7 @@ import { library } from "./library.js";
 import { player } from "./player.js";
 import { fitJpeg, squareJpeg } from "./image.js";
 import { makeFile, sizeText } from "./export.js";
-import { myPublicKey, initDms } from "./dms.js";
+import { myPublicKey, initDms, sendTo } from "./dms.js";
 import { openProfile } from "./profile.js";
 import { loadMeta, votesOf, setVote, meta, canSee, blocked } from "./meta.js";
 import { bannedPhones, noPicPhones, checkBans, badgesOf } from "./ban.js";
@@ -44,7 +44,7 @@ async function config() {
   const c = await r.json();
   if (!c.hook || !c.key || !c.index) throw new Error("setup");
   // (the key is kept reversed in the file, so robots that search code for links don't pick it up)
-  S.cfg = { base: `https://discord.com/api/v10/webhooks/${c.hook}/${atob(c.key).split("").reverse().join("")}`, index: c.index, dm: c.dm || "", meta: c.meta || "", presence: c.presence || "", mod: c.mod || "", links: c.links || "", market: c.market || "" };
+  S.cfg = { base: `https://discord.com/api/v10/webhooks/${c.hook}/${atob(c.key).split("").reverse().join("")}`, index: c.index, dm: c.dm || "", meta: c.meta || "", presence: c.presence || "", mod: c.mod || "", links: c.links || "", market: c.market || "", accounts: c.accounts || "" };
   return S.cfg;
 }
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -441,6 +441,10 @@ function postCard(p) {
     vt.onclick = () => vote(p, vt);
     bar.append(vt);
   }
+  const sd = h("button", "so-cbtn so-send"); sd.setAttribute("aria-label", "Send in a message");
+  sd.append(icon("i-send"), h("span", "so-lbl", "Send"));
+  sd.onclick = () => sendTo({ post: p });
+  bar.append(sd);
   card.append(bar);
   paintLike(lk, p);
   paintCount(card, p);
@@ -1311,6 +1315,11 @@ function pickRebass(done) {
     }
   });
 }
+/** A library rebass, ready to send in a message (as for a post). */
+async function trackSong(t) {
+  const cover = t.hasArt ? await store.getArt(t.id) : null;
+  return { title: t.title, artist: t.artist || "", note: t.note || "", duration: t.duration || 0, cover, encode: (kbps) => libraryMp3(t, kbps) };
+}
 async function libraryMp3(t, kbps) {
   const blob = await store.getBlob(t.id);
   if (!blob) throw new Error("That song's audio is missing.");
@@ -1560,5 +1569,5 @@ function showPost(id) {
   }, 350);
 }
 function editName() { closeSheet(); S.editingName = true; if (location.hash !== "#social") location.hash = "#social"; render(); setTimeout(() => { const i = document.querySelector("#so-body .so-nameform input"); if (i) { i.focus(); i.select(); } }, 120); }
-export const api = { openViewer, nameLine, visible, state: S, config, dc, avatarEl, showPicture, ago, icon, findPhone, ensureProfiles, openComments, nameOf, hidden, songBlock, showPost, pickAvatar, editName, fileOf, message, viewImage, render };
+export const api = { openViewer, nameLine, visible, state: S, config, dc, avatarEl, showPicture, ago, icon, findPhone, ensureProfiles, openComments, nameOf, hidden, songBlock, showPost, pickAvatar, editName, fileOf, message, viewImage, render, trackSong };
 export const social = { state: S, prepareVideo };

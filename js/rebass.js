@@ -804,14 +804,16 @@ export function initRebass() {
   $("rb-cover-reset").onclick = () => { S.cover = null; if (S.coverUrl) URL.revokeObjectURL(S.coverUrl); S.coverUrl = null; paintCover(); };
   $("rb-save").onclick = save; $("rb-share").onclick = share; $("rb-keep").onclick = keep;
   // onto FifTeam Social: the rebass as it is now (with its intro, if on), as an MP3 with its cover
-  $("rb-post").onclick = () => {
-    if (!S.outBuf) return;
+  const songNow = () => {
     const name = $("rb-name").value.trim() || defaultName(), buf = S.outBuf, cover = coverBlob(), artist = (S.src && S.src.artist) || "";
-    bus.emit("social-post", {
+    return {
       title: name, artist, note: noteOf(S.params), duration: buf.duration, cover,
       encode: async (kbps) => (await makeFile([buf.getChannelData(0), buf.getChannelData(1)], buf.sampleRate, name, "mp3", getCtx(), null, { title: name, artist, album: "FifTeam Social", cover, kbps })).file,
-    });
+    };
   };
+  $("rb-post").onclick = () => { if (S.outBuf) bus.emit("social-post", songNow()); };
+  // (or to someone in a message)
+  $("rb-dm").onclick = () => { if (S.outBuf) bus.emit("dm-send-song", songNow()); };
   bus.on("rebass", (t) => { location.hash = "#rebass"; fromTrack(t); });
   bus.on("view", (v) => { if (v !== "rebass") stopPreview(true); else if (S.res) kickGraph(); });
   bus.on("music-playing", () => stopPreview(true));

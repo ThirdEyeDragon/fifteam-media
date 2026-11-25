@@ -34,6 +34,8 @@ msgs.set(bobPic, { id: bobPic, content: "", attachments: [attach(bobPic, "avatar
 const seedProfiles = { bobphone001: { name: seedFeed[0].user, av: bobPic, at: Date.now() - 86400e3 } };
 const DM = "900000000000000002";
 const META = "900000000000000003", PRES = "900000000000000004", MOD = "900000000000000005", MARKET = "900000000000000007";
+const ACCTS = "900000000000000008";
+msgs.set(ACCTS, { id: ACCTS, content: "accounts", attachments: [attach(ACCTS, "accounts.json", Buffer.from(JSON.stringify({ v: 1, a: {} })), "application/json")] });
 msgs.set(MARKET, { id: MARKET, content: "market", attachments: [attach(MARKET, "market.json", Buffer.from(JSON.stringify({ v: 1, items: [] })), "application/json")] });
 for (const [id, file, d] of [[META, "meta.json", { v: 1, votes: {}, follows: {}, about: {} }], [PRES, "presence.json", { v: 1, on: {} }], [MOD, "mod.json", { v: 1, bans: {} }]])
   msgs.set(id, { id, content: file, attachments: [attach(id, file, Buffer.from(JSON.stringify(d)), "application/json")] });
@@ -103,7 +105,7 @@ function discord(method, url, headers, body) {
   if (u.host === "identitytoolkit.googleapis.com" || u.host === "securetoken.googleapis.com") return firebase(u, body);
   if (u.host === "api.bigdatacloud.net") { const lat = +u.searchParams.get("latitude"); return json(lat > 40.5 ? { city: "City of Toledo", principalSubdivisionCode: "US-OH", countryCode: "US" } : { city: "Columbus", principalSubdivisionCode: "US-OH", countryCode: "US" }); }
   if (u.host === "cdn.discordapp.com") { const f = cdn.get(url.split("?")[0]); return f ? { status: 200, type: f.type, body: f.bytes } : { status: 404, type: "text/plain", body: Buffer.from("no") }; }
-  if (u.pathname.endsWith("/social/config.json")) return json({ hook: HOOK, key: Buffer.from(TOKEN.split("").reverse().join("")).toString("base64"), index: INDEX, dm: DM, meta: META, presence: PRES, mod: MOD, links: LINKS, market: MARKET, auth: authKeys.pub, firebase: { apiKey: "test-key" } });
+  if (u.pathname.endsWith("/social/config.json")) return json({ hook: HOOK, key: Buffer.from(TOKEN.split("").reverse().join("")).toString("base64"), index: INDEX, dm: DM, meta: META, presence: PRES, mod: MOD, links: LINKS, market: MARKET, accounts: ACCTS, auth: authKeys.pub, firebase: { apiKey: "test-key" } });
   const base = `/api/v10/webhooks/${HOOK}/${TOKEN}`;
   if (!u.pathname.startsWith(base)) return json({ message: "Unknown Webhook", code: 10015 }, 404);
   const rest = u.pathname.slice(base.length), m = /^\/messages\/(\d+)$/.exec(rest);
@@ -371,6 +373,10 @@ try {
     await sleep(300);   // (on by default: nothing to switch, the phone said yes)
     console.log("notifications setting:", await ev(`document.getElementById('set-nt-pill').textContent + ' | ' + document.getElementById('set-nt-why').textContent`));
     check((await ev(`document.getElementById('set-nt').checked && localStorage.getItem('fifteam-dm-notify') === null`)), "message notifications on by default");
+    const setLook = await ev(`JSON.stringify({ first: document.querySelector('#sheet-panel .set-sec').id, signout: (document.getElementById('set-signout') || {}).textContent, email: document.querySelector('#set-account .set-email').textContent, lock: /Lock app|Set password/.test(document.getElementById('sheet-panel').textContent) || !!document.getElementById('lock') })`).then(JSON.parse);
+    console.log("Settings:", JSON.stringify(setLook), "| sections:", await ev(`[...document.querySelectorAll('#sheet-panel .set-head')].map(h => h.textContent.replace(/(On|Off)$/, '').trim()).join(', ')`));
+    check(setLook.first === "set-account" && setLook.signout === "Sign out" && setLook.email === "Signed in as alice@example.com" && !setLook.lock, "Settings: the account and Sign out first, no app lock");
+    await shot("d7b_settings");
     await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
     // a private message: from the other phone to Alice, by tapping her picture
     await other.ev(`localStorage.setItem('fifteam-social-name', 'Ben'), 1`); await other.open(`http://127.0.0.1:${port}/?again#social`, 3500);
@@ -600,6 +606,82 @@ try {
     await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
     check(!((storeNow(META).blocks || {})[meNow] || []).length, "unblocked from Settings");
     await ev(`import('./js/social.js').then((m) => m.api.render()).then(() => 1)`);
+
+    // sending a post in a message: Alice's Send on her own post, to Ben
+    const benId = await other.ev(`localStorage.getItem('fifteam-social-me')`);
+    const freshId = feedNow().find((x) => x.text && x.text.startsWith("Fresh one")).id;
+    await ev(`location.hash = '#social', 1`); await sleep(300);
+    await ev(`[...document.querySelectorAll('#so-body .so-post')].find(p => p.dataset.id === ${JSON.stringify(freshId)}).querySelector('.so-send').click(), 1`);
+    await until(`[...document.querySelectorAll('#sheet-panel.dm-send .dm-row')].some(r => r.textContent.includes('Ben'))`, 10000, "the Send to list");
+    console.log("Send to:", await ev(`document.querySelector('#sheet-panel .dm-what').textContent + ' | ' + [...document.querySelectorAll('#sheet-panel .dm-row')].map(r => r.textContent).join(', ')`));
+    await shot("d8b_send_to");
+    const nBefore = dmNow().length;
+    await ev(`(() => { document.querySelector('#sheet-panel .dm-note').value = 'look at this'; [...document.querySelectorAll('#sheet-panel .dm-row')].find(r => r.textContent.includes('Ben')).querySelector('button').click(); return 1; })()`);
+    for (let i = 0; i < 40 && dmNow().length <= nBefore; i++) await sleep(250);
+    await until(`[...document.querySelectorAll('#sheet-panel .dm-row')].some(r => r.textContent.includes('Sent'))`, 8000, "Sent");
+    const postMsg = dmNow()[dmNow().length - 1];
+    check(dmNow().length === nBefore + 1 && postMsg.t === benId && !JSON.stringify(postMsg).includes(freshId) && !/look at this/.test(JSON.stringify(dmNow())), "a post sent in a message, sealed (no post id or words in the store)");
+    await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
+    // Ben sees it as the post (a tap would show it in Social)
+    await other.ev(`import('./js/social.js').then((m) => m.api.ensureProfiles(true)).then(() => 1)`);
+    await other.ev(`import('./js/dms.js').then((m) => m.openChat(${JSON.stringify(alice)})).then(() => 1)`);
+    let benPost = "";
+    for (let i = 0; i < 40 && !benPost; i++) { benPost = await other.ev(`(() => { const b = [...document.querySelectorAll('#sheet-panel .dm-bubble')].find(b => b.querySelector('.dm-post')); return b ? b.textContent : ''; })()`); await sleep(300); }
+    console.log("Ben's chat shows:", benPost);
+    check(/Post/.test(benPost) && /Fresh one/.test(benPost) && /look at this/.test(benPost), "Ben's chat shows the post, with Alice's words");
+    // held down: deleted for both of them
+    await other.ev(`[...document.querySelectorAll('#sheet-panel .dm-bubble')].find(b => b.querySelector('.dm-post')).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })), 1`);
+    await sleep(300);
+    console.log("held:", await other.ev(`[...document.querySelectorAll('.dm-act .menu-item')].map(b => b.textContent).join(' | ')`));
+    await other.ev(`[...document.querySelectorAll('.dm-act .menu-item')].find(b => b.textContent.includes('Delete for both')).click(), 1`);
+    for (let i = 0; i < 40 && dmNow().some((x) => x.id === postMsg.id); i++) await sleep(250);
+    for (let i = 0; i < 40 && (await other.ev(`[...document.querySelectorAll('#sheet-panel .dm-bubble')].some(b => b.querySelector('.dm-post'))`)); i++) await sleep(250);
+    const delList = storeNow(DM).del || [];
+    const benGone = await other.ev(`![...document.querySelectorAll('#sheet-panel .dm-bubble')].some(b => b.querySelector('.dm-post'))`);
+    await ev(`import('./js/dms.js').then((m) => m.dms.state.check()).then(() => 1)`);
+    const aliceStill = await ev(`import('./js/dms.js').then((m) => m.dms.state.msgs.some((x) => x.id === ${JSON.stringify(postMsg.id)}))`);
+    console.log("after deleting: in the store:", dmNow().some((x) => x.id === postMsg.id), "| on the deleted list:", delList.includes(postMsg.id), "| on Ben's screen:", !benGone, "| on Alice's phone:", aliceStill);
+    check(!dmNow().some((x) => x.id === postMsg.id) && delList.includes(postMsg.id) && benGone && !aliceStill, "held down and deleted: gone for both of them");
+    // an older copy written back (a phone that read the store before the delete) doesn't bring it back
+    setStore(DM, { v: 1, msgs: [...dmNow(), postMsg], del: delList });
+    await ev(`import('./js/dms.js').then((m) => m.dms.state.check()).then(() => 1)`);
+    check(!(await ev(`import('./js/dms.js').then((m) => m.dms.state.msgs.some((x) => x.id === ${JSON.stringify(postMsg.id)}))`)), "a deleted message stays deleted when an older copy is written back");
+    setStore(DM, { v: 1, msgs: dmNow().filter((x) => x.id !== postMsg.id), del: delList });
+    await other.ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
+    // a rebassed song, sealed for Ben: plays and goes into his library
+    const songBytes = Buffer.alloc(24000); songBytes.write("ID3"); for (let i = 3; i < songBytes.length; i++) songBytes[i] = (i * 7) & 255;
+    const msgCount = msgs.size;
+    await ev(`import('./js/dms.js').then((m) => { m.sendTo({ song: { title: 'Test Rebass', artist: 'Alice', note: '30-60 Hz', duration: 2, cover: null, encode: async () => new File([Uint8Array.from(atob(${JSON.stringify(songBytes.toString("base64"))}), (c) => c.charCodeAt(0))], 'x.mp3', { type: 'audio/mpeg' }) } }); return 1; })`);
+    await until(`[...document.querySelectorAll('#sheet-panel.dm-send .dm-row')].some(r => r.textContent.includes('Ben'))`, 10000, "the Send to list for the song");
+    const nB2 = dmNow().length;
+    await ev(`[...document.querySelectorAll('#sheet-panel .dm-row')].find(r => r.textContent.includes('Ben')).querySelector('button').click(), 1`);
+    for (let i = 0; i < 60 && dmNow().length <= nB2; i++) await sleep(250);
+    const songMsgId = [...msgs.keys()].slice(msgCount).find((k) => (msgs.get(k).attachments || []).some((a) => a.filename === "song.bin"));
+    const sealedBytes = songMsgId && cdn.get(msgs.get(songMsgId).attachments.find((a) => a.filename === "song.bin").url.split("?")[0]).bytes;
+    console.log("the song's file:", songMsgId ? `${sealedBytes.length} bytes, sealed: ${!sealedBytes.includes(Buffer.from("ID3"))}` : "none");
+    check(!!songMsgId && !sealedBytes.includes(songBytes.subarray(0, 200)) && dmNow().length === nB2 + 1, "a rebassed song sent sealed");
+    await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
+    await other.ev(`import('./js/dms.js').then((m) => m.openChat(${JSON.stringify(alice)})).then(() => 1)`);
+    let benSong = "";
+    for (let i = 0; i < 40 && !benSong; i++) { benSong = await other.ev(`(() => { const s = document.querySelector('#sheet-panel .dm-song'); return s ? s.textContent : ''; })()`); await sleep(300); }
+    console.log("Ben's chat shows the song:", benSong);
+    await other.ev(`document.querySelector('#sheet-panel .dm-song .so-add').click(), 1`);
+    let inLib = "";
+    for (let i = 0; i < 40 && !inLib; i++) { inLib = await other.ev(`import('./js/library.js').then((m) => { const t = m.library.all().find((x) => x.title === 'Test Rebass'); return t ? t.kind + ' ' + t.size + ' bytes, ' + t.note : ''; })`); await sleep(300); }
+    console.log("in Ben's library:", inLib);
+    check(/Test Rebass/.test(benSong) && inLib === `rebass ${songBytes.length} bytes, 30-60 Hz`, "Ben opens the song (the same bytes) and adds it to his library");
+    // the whole chat, held in Ben's inbox: deleted for both (the song's file too)
+    await other.ev(`(window.confirm = () => true, document.getElementById('btn-dms').click(), 1)`);
+    for (let i = 0; i < 30 && !(await other.ev(`!!document.querySelector('#sheet-panel .dm-row')`)); i++) await sleep(300);
+    await other.ev(`[...document.querySelectorAll('#sheet-panel .dm-row')].find(r => r.textContent.includes('Alice')).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })), 1`);
+    await sleep(300);
+    await other.ev(`[...document.querySelectorAll('.dm-act .menu-item')].find(b => b.textContent.includes('Delete chat')).click(), 1`);
+    const between = (x) => (x.f === alice && x.t === benId) || (x.f === benId && x.t === alice);
+    for (let i = 0; i < 40 && dmNow().some((x) => between(x) && !x.l); i++) await sleep(250);
+    await sleep(800);
+    console.log("chat deleted: left in the store:", dmNow().filter((x) => between(x) && !x.l).length, "| the song's file:", msgs.has(songMsgId) ? "still there" : "deleted", "| Ben's inbox:", await other.ev(`document.querySelector('#sheet-panel .dm-list').textContent`));
+    check(!dmNow().some((x) => between(x) && !x.l) && !msgs.has(songMsgId), "a whole chat deleted for both, with its song file");
+    await other.ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
 
     // Audio Market: Alice (in Toledo) lists a sub; Ben (about 120 miles away, in Columbus) finds it, asks about it
     const origin = `http://127.0.0.1:${port}`;
@@ -1078,6 +1160,13 @@ try {
   const opened = pe ? await openSealed(authKeys, pe).catch(() => "") : "";
   console.log("her check-in's email, as stored:", pe ? pe.slice(0, 40) + "…" : "none", "| opened by the bot:", opened);
   check(opened === "alice@example.com" && !pe.includes("alice"), "her email reaches the bot sealed (nobody else can read it)");
+  // the account list (the bot's /accounts reads it, with nothing running on a PC): every account, sealed
+  await sleep(1500);
+  const accts = storeNow(ACCTS).a || {}, rows = [];
+  for (const [fid, v] of Object.entries(accts)) rows.push({ fid, email: await openSealed(authKeys, v.e).catch(() => "?"), ok: v.ok, u: v.u, raw: v.e });
+  console.log("the account list:", rows.map((r) => `${r.email} (confirmed ${r.ok}, phone ${r.u || "none"})`).join(" | "));
+  const ar = rows.find((r) => r.email === "alice@example.com"), br = rows.find((r) => r.email === "ben@example.com");
+  check(ar && ar.ok === 1 && ar.u === phoneBefore && ar.fid === fb.users.get("alice@example.com").localId && br && br.ok === 1 && rows.every((r) => !r.raw.includes("@example")), "every account in the account list, confirmed, with its phone, the emails sealed");
   // banned by email (/ban-email): she can't sign in; lifted: she can
   { const d = storeNow(MOD); d.emails = { [createHash("sha256").update("alice@example.com").digest("hex")]: { at: Date.now() } }; setStore(MOD, d); }
   await ev(`import('./js/ban.js').then((m) => m.checkBans()).then(() => 1)`);

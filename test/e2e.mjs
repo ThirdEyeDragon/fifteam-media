@@ -347,36 +347,12 @@ await ev(`location.hash = '#library'`); await sleep(300);
 await click('#lib-seg button[data-k="rebass"]'); await sleep(800);
 await shot("09_library_rebassed");
 
-// settings: set a password and lock the app
+// settings: the account first (with Sign out), and no app lock any more
 await click('#btn-settings'); await sleep(800);
-console.log("settings: no bass separator section:", await ev(`!document.getElementById('set-sep-pill') && !/Bass separator/.test(document.getElementById('sheet-panel').textContent)`), "| sections:", await ev(`[...document.querySelectorAll('#sheet-panel .set-head')].map(h => h.textContent.replace(/(On|Off|Password set)$/, '').trim()).join(', ')`));
+console.log("settings: no bass separator section:", await ev(`!document.getElementById('set-sep-pill') && !/Bass separator/.test(document.getElementById('sheet-panel').textContent)`), "| sections:", await ev(`[...document.querySelectorAll('#sheet-panel .set-head')].map(h => h.textContent.replace(/(On|Off)$/, '').trim()).join(', ')`));
+console.log("settings: Sign out:", await ev(`(document.getElementById('set-signout') || {}).textContent`), "| app lock gone:", await ev(`!document.getElementById('lock') && !/Lock app|Set password/.test(document.getElementById('sheet-panel').textContent)`));
 await shot("10_settings");
-await ev(`(() => { const i = document.querySelectorAll('#set-lock input[type=password]'); i[0].value = 'blue42'; i[1].value = 'blue42'; [...document.querySelectorAll('#set-lock button')].find(b => b.textContent.includes('Set password')).click(); return 1; })()`);
-await until(`[...document.querySelectorAll('#set-lock button')].some(b => b.textContent.includes('Lock now'))`, 10000, "the password to be set");
-await shot("10b_settings_password");
-console.log("password kept as:", await ev(`(() => { const r = JSON.parse(localStorage.getItem('fifteam-lock')); return 'PBKDF2 x' + r.it + ', salt ' + atob(r.salt).length + ' bytes, hash ' + atob(r.hash).length + ' bytes, plain text stored: ' + JSON.stringify(localStorage).includes('blue42'); })()`));
-await ev(`[...document.querySelectorAll('#set-lock button')].find(b => b.textContent.includes('Lock now')).click(), 1`);
-await sleep(500);
-const lockState = () => ev(`JSON.stringify({ overlay: !document.getElementById('lock').hidden, appInert: document.getElementById('app').inert, saved: localStorage.getItem('fifteam-locked') })`);
-console.log("locked:", await lockState());
-// real taps on the Player tab and the play button: nothing may happen
-const hashBefore = await ev("location.hash");
-for (const sel of ['#tabs a[data-v="player"]', '#lib-list .item']) {
-  const [x, y] = await ev(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; })()`).catch(() => [195, 800]);
-  await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] }); await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-  for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: 1 });
-}
-await sleep(500);
-console.log("taps while locked: hash", hashBefore, "->", await ev("location.hash"), "| playing:", await ev(`import('./js/player.js').then(m => m.player.playing)`));
-await shot("11_locked");
-// closing and reopening the app: still locked
-await cdp("Page.reload"); await sleep(3000);
-console.log("after reopening:", await lockState());
-await ev(`(() => { document.getElementById('lock-pw').value = 'nope'; document.getElementById('lock-form').requestSubmit(); return 1; })()`); await sleep(900);
-console.log("wrong password:", await ev(`document.getElementById('lock-err').textContent`), "| still locked:", await ev(`!document.getElementById('lock').hidden`));
-await shot("11b_wrong_password");
-await ev(`(() => { document.getElementById('lock-pw').value = 'blue42'; document.getElementById('lock-form').requestSubmit(); return 1; })()`); await sleep(900);
-console.log("right password:", await lockState());
+await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
 
 // demo mode: on from settings, straight to the player, and rings on the bass hits
 await click('#btn-settings'); await sleep(400);

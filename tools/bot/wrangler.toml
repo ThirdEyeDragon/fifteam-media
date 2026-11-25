@@ -1,0 +1,13 @@
+# The FifTeam bot on Cloudflare Workers (free). From this folder: npx wrangler@4 deploy
+# Secrets go in with: npx wrangler@4 secret put BOT_TOKEN   (and BOT_KEY); never in this file.
+name = "fifteam-bot"
+main = "worker.mjs"
+compatibility_date = "2025-06-01"
+workers_dev = true
+
+[triggers]
+crons = ["*/30 * * * *"]
+
+[vars]
+CONFIG_URL = "https://thirdeyedragon.github.io/fifteam-media/social/config.json"
+PUBLIC_KEY = ""
