@@ -2,12 +2,13 @@
 import { $, bus, toast, openLayers } from "./ui.js";
 import { player } from "./player.js";
 
-export const APP_VERSION = "2.18";
+export const APP_VERSION = "2.19";
 import * as store from "./store.js";
 import { initPlayer } from "./player.js";
 import { initLibrary, library, importFiles, openCode } from "./library.js";
 import { initRebass, rebass, checkLight } from "./rebass.js";
 import { initTones } from "./tones.js";
+import { initBox } from "./box.js";
 import { initSettings } from "./settings.js";
 import { initPush } from "./push.js";
 import { initPremium } from "./premium.js";
@@ -17,7 +18,7 @@ import { initBan } from "./ban.js";
 import { initAccount } from "./account.js";
 import { initPresence } from "./meta.js";
 
-const VIEWS = ["player", "library", "rebass", "social", "tones"];
+const VIEWS = ["player", "library", "rebass", "social", "tones", "box"];
 function route() {
   // a link with a rebass code in it: open the code
   const code = /^#code=(FT1\.[A-Za-z0-9_-]+)/.exec(location.hash);
@@ -104,6 +105,7 @@ async function boot() {
   initRebass();
   checkLight(APP_VERSION);
   initTones();
+  initBox();
   initSettings();
   initDemo();
   initSocial();

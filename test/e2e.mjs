@@ -418,6 +418,33 @@ if (tone) {
   console.log(`tone file: ${tone}, ${(d.length / 2 / 48000).toFixed(1)} s, peak ${(20 * Math.log10(pk / 32768)).toFixed(1)} dBFS`);
 } else console.log("tone file: nothing");
 
+// the sub box designer: it draws the box in 3D, works out every type, and the numbers follow the measurements
+await ev(`location.hash = '#box'`); await sleep(1200);
+const bx = (e) => ev(`import('./js/box.js').then(m => (${e})(m.box))`);
+const drawn = await bx(`(b) => b.view && b.view.counts()`);
+console.log("box: 3D:", await bx(`(b) => b.view.webgl ? 'WebGL' : 'lines'`), JSON.stringify(drawn));
+check(!!drawn && drawn.opaque > 500 && drawn.lines > 50, "the box is drawn in 3D (panels, the sub, the port)");
+await shot("13_box");
+const types = [];
+for (const t of ["sealed", "ported", "bp4", "bp6"]) {
+  await click(`#bx-type [data-k="${t}"]`); await sleep(500);
+  types.push(await bx(`(b) => ({ t: '${t}', net: b.result.L.net.map(v => +(v / 0.0283168).toFixed(2)), tune: b.result.L.ports.map(p => +p.fb.toFixed(1)), fit: b.result.L.warn.filter(w => /fit|too long|deeper/.test(w)).length, tiles: document.querySelectorAll('#bx-tiles .bx-tile').length })`));
+}
+console.log("box: types:", JSON.stringify(types));
+check(types.every((x) => x.tiles >= 6 && x.fit === 0 && x.net.every((v) => v > 0.2)) && types[1].tune[0] > 25 && types[3].tune.length === 2, "every box type designed, fitting, with its results");
+await click('#bx-type [data-k="ported"]'); await sleep(400);
+await ev(`document.getElementById('bx-fixed').click(), 1`);
+const typeIn = (path, v) => ev(`(() => { const i = document.querySelector('[data-path="${path}"]'); i.focus(); i.value = '${v}'; i.dispatchEvent(new Event('input', { bubbles: true })); i.blur(); return 1; })()`);
+await typeIn("w", "30"); await typeIn("h", "15"); await typeIn("d", "16"); await sleep(400);
+const mine = await bx(`(b) => ({ w: b.result.L.W / 0.0254, net: b.result.L.net[0] / 0.0283168, tune: b.result.L.ports[0].fb })`);
+console.log("box: my measurements 30x15x16:", JSON.stringify(mine));
+check(Math.abs(mine.w - 30) < 1e-6 && mine.net > 2.5 && mine.net < 3.2 && Math.abs(mine.tune - 32) < 0.05, "exact measurements kept: the volume follows them, the port still tunes to 32 Hz");
+await ev(`document.getElementById('bx-fixed').click(), 1`); await sleep(300);
+await ev(`document.getElementById('view-box').scrollTop = 1400`); await sleep(500);
+const pinned = await ev(`(() => { const r = document.getElementById('bx-3dcard').getBoundingClientRect(); return r.top >= -1 && r.top < 120; })()`);
+check(pinned, "the 3D view stays at the top while the inputs scroll");
+await shot("14_box_scrolled");
+
 // the library's rebassed list
 await ev(`location.hash = '#library'`); await sleep(300);
 await click('#lib-seg button[data-k="rebass"]'); await sleep(800);
