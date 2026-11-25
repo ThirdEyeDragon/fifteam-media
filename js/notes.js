@@ -53,74 +53,103 @@ export function noteEditor(host, opts) {
     E.raf = 0;
     if (!cv.isConnected) return;
     if (!E.w || Math.abs(cv.getBoundingClientRect().width - E.w) > 1) size();
-    const g = cv.getContext("2d"), W = E.w, H = E.h, rh = rowH();
+    const g = cv.getContext("2d"), W = E.w, H = E.h, rh = rowH(), GH = gridH();
     g.setTransform(E.dpr, 0, 0, E.dpr, 0, 0);
     g.clearRect(0, 0, W, H);
-    g.fillStyle = "rgba(6, 6, 24, 0.75)"; g.fillRect(0, 0, W, H);
-    // rows: every semitone, the naturals a touch lighter; the octave (C) lines brighter, labelled
+    // the background: deep, a little lighter at the top
+    const bg = g.createLinearGradient(0, 0, 0, H); bg.addColorStop(0, "#15123d"); bg.addColorStop(1, "#0a0920");
+    g.fillStyle = bg; g.fillRect(0, 0, W, H);
+    // rows: the natural notes a shade lighter than the sharps, each octave (C) marked by a soft violet line
     for (let st = E.lo; st <= E.hi + 1e-6; st++) {
       const y = yOf(st), k = ((Math.round(st) % 12) + 12) % 12, sharp = [1, 3, 6, 8, 10].includes(k);
-      g.fillStyle = sharp ? "rgba(255,255,255,0.018)" : "rgba(255,255,255,0.045)";
-      g.fillRect(GUTTER, y, W - GUTTER, rh - 1);
-      if (k === 0) { g.fillStyle = "rgba(160,140,255,0.28)"; g.fillRect(GUTTER, y + rh - 1, W - GUTTER, 1); }
-      if (!sharp && rh >= 7) {
-        g.fillStyle = k === 0 ? "rgba(255,255,255,0.85)" : "rgba(255,255,255,0.45)"; g.font = `600 ${Math.min(10, rh)}px Inter, system-ui, sans-serif`; g.textBaseline = "middle";
-        g.fillText(k === 0 || k === 4 || k === 9 ? `${noteName(st)} ${Math.round(st2hz(st))}` : noteName(st), 3, y + rh / 2);
-      }
+      g.fillStyle = sharp ? "rgba(0,0,0,0.16)" : "rgba(255,255,255,0.025)";
+      g.fillRect(GUTTER, y, W - GUTTER, rh);
+      if (k === 0) { g.fillStyle = "rgba(170,140,255,0.32)"; g.fillRect(GUTTER, y + rh - 1, W - GUTTER, 1); }
     }
-    // the time strip on top: seconds
-    g.fillStyle = "rgba(255,255,255,0.05)"; g.fillRect(0, 0, W, RULER);
+    // the time strip on top, with the seconds; beat lines down the grid (every second a little brighter)
+    const tg = g.createLinearGradient(0, 0, 0, RULER); tg.addColorStop(0, "rgba(122,75,255,0.28)"); tg.addColorStop(1, "rgba(122,75,255,0.10)");
+    g.fillStyle = tg; g.fillRect(0, 0, W, RULER);
     const step = E.span <= 4 ? 0.5 : E.span <= 10 ? 1 : E.span <= 24 ? 2 : 5;
     g.font = "600 10px Inter, system-ui, sans-serif"; g.textBaseline = "middle";
     for (let t = Math.ceil(E.t0 / step) * step; t <= E.t0 + E.span; t += step) {
-      const x = xOf(t);
-      g.fillStyle = "rgba(255,255,255,0.08)"; g.fillRect(x, RULER, 1, gridH());
-      g.fillStyle = "rgba(255,255,255,0.6)"; g.fillText(`${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}${step < 1 ? "." + Math.round((t % 1) * 10) : ""}`, x + 3, RULER / 2);
+      const x = xOf(t), whole = Math.abs(t - Math.round(t)) < 1e-6;
+      g.fillStyle = whole ? "rgba(255,255,255,0.09)" : "rgba(255,255,255,0.045)"; g.fillRect(x, RULER, 1, GH);
+      g.fillStyle = "rgba(255,255,255,0.28)"; g.fillRect(x, RULER - 5, 1, 5);
+      g.fillStyle = "rgba(255,255,255,0.75)"; g.fillText(`${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}${step < 1 ? "." + Math.round((t % 1) * 10) : ""}`, x + 4, RULER / 2);
     }
-    // the song's own bass, faintly: its line (folded into view by octaves) and its hits along the bottom
+    // the song's own bass, faintly: its hits along the bottom, and its line (folded into view by octaves), softly glowing
     const gd = opts.guide;
     if (gd && gd.f0 && gd.f0.length) {
       const i0 = Math.max(0, Math.floor((E.t0 - gd.t0) / gd.hop)), i1 = Math.min(gd.f0.length - 1, Math.ceil((E.t0 + E.span - gd.t0) / gd.hop));
-      const by = H - HITS;
-      g.fillStyle = "rgba(159,179,255,0.35)";
-      const stride = Math.max(1, Math.floor((i1 - i0) / (W - GUTTER)));
+      const by = H - HITS, stride = Math.max(1, Math.floor((i1 - i0) / (W - GUTTER))), bw = Math.max(1, stride * ((W - GUTTER) / ((i1 - i0) || 1)));
+      g.fillStyle = "rgba(0,0,0,0.25)"; g.fillRect(GUTTER, by, W - GUTTER, HITS);
+      const hg = g.createLinearGradient(0, by, 0, H); hg.addColorStop(0, "rgba(187,77,255,0.75)"); hg.addColorStop(1, "rgba(47,120,255,0.35)");
+      g.fillStyle = hg;
       for (let i = i0; i <= i1; i += stride) {
         const e = gd.env[i] || 0; if (e <= 0.003) continue;
         const x = xOf(gd.t0 + i * gd.hop), hh = Math.min(HITS - 3, 2 + Math.sqrt(e) * (HITS - 3));
-        g.fillRect(x, by + (HITS - hh), Math.max(1, stride * ((W - GUTTER) / ((i1 - i0) || 1))), hh);
+        g.fillRect(x, H - hh - 1, bw, hh);
       }
-      g.strokeStyle = "rgba(159,179,255,0.45)"; g.lineWidth = 2; g.setLineDash([4, 4]); g.beginPath();
-      let pen = false;
+      g.save();
+      g.strokeStyle = "rgba(170,190,255,0.42)"; g.lineWidth = 2.2; g.lineJoin = "round"; g.lineCap = "round";
+      g.shadowColor = "rgba(140,160,255,0.55)"; g.shadowBlur = 6;
+      g.beginPath();
+      let pen = false, lastY = 0;
       for (let i = i0; i <= i1; i += stride) {
-        let f = gd.f0[i]; const e = gd.env[i] || 0;
+        const f = gd.f0[i], e = gd.env[i] || 0;
         if (!(f > 0) || e < 0.01) { pen = false; continue; }
         let st = hz2st(f); while (st > E.hi) st -= 12; while (st < E.lo) st += 12;
-        const x = xOf(gd.t0 + i * gd.hop), y = yOf(st) + rh / 2;
+        const x = xOf(gd.t0 + i * gd.hop), y = yOf(snapSt(st)) + rh / 2;
+        if (pen && Math.abs(y - lastY) > rh * 6) pen = false;        // (an octave fold: a gap, not a jump)
         if (pen) g.lineTo(x, y); else { g.moveTo(x, y); pen = true; }
+        lastY = y;
       }
-      g.stroke(); g.setLineDash([]);
+      g.stroke(); g.restore();
     }
-    // the notes
+    // the notes: glowing, their names inside when there's room
     E.notes.forEach((n, i) => {
       const x0 = xOf(n.t), x1 = xOf(n.t + n.d);
       if (x1 < GUTTER || x0 > W) return;
-      const st = snapSt(hz2st(n.f)), y = yOf(st) + 1, hh = Math.max(3, rh - 2);
-      const a = 0.55 + 0.45 * (n.v == null ? 1 : n.v);
-      const gr = g.createLinearGradient(x0, 0, x1, 0); gr.addColorStop(0, `rgba(47,120,255,${a})`); gr.addColorStop(1, `rgba(187,77,255,${a})`);
-      g.fillStyle = gr;
-      const xs = Math.max(GUTTER, x0), wd = Math.max(3, x1 - xs);
-      roundRect(g, xs, y, wd, hh, Math.min(5, hh / 2)); g.fill();
-      if (i === E.sel) {
-        g.strokeStyle = "#fff"; g.lineWidth = 2; roundRect(g, xs, y, wd, hh, Math.min(5, hh / 2)); g.stroke();
-        g.fillStyle = "#fff"; g.fillRect(x1 - 4, y + 2, 3, Math.max(2, hh - 4));     // the edge to drag
+      const st = snapSt(hz2st(n.f)), hh = Math.max(5, rh - 1.5), y = yOf(st) + (rh - hh) / 2;
+      const xs = Math.max(GUTTER, x0), wd = Math.max(4, x1 - xs), r = Math.min(6, hh / 2), sel = i === E.sel;
+      const a = 0.6 + 0.4 * (n.v == null ? 1 : n.v);
+      g.save();
+      g.shadowColor = sel ? "rgba(255,255,255,0.65)" : "rgba(150,90,255,0.7)"; g.shadowBlur = sel ? 14 : 9;
+      const gr = g.createLinearGradient(xs, 0, xs + wd, 0); gr.addColorStop(0, `rgba(47,120,255,${a})`); gr.addColorStop(0.55, `rgba(122,75,255,${a})`); gr.addColorStop(1, `rgba(187,77,255,${a})`);
+      g.fillStyle = gr; roundRect(g, xs, y, wd, hh, r); g.fill();
+      g.restore();
+      // a light edge along the top
+      g.fillStyle = "rgba(255,255,255,0.28)"; roundRect(g, xs + 1, y + 1, Math.max(2, wd - 2), Math.max(1, hh * 0.35), Math.min(r, hh * 0.18)); g.fill();
+      if (wd > 34 && hh >= 9) { g.fillStyle = "rgba(255,255,255,0.95)"; g.font = `700 ${Math.min(10, hh - 2)}px Inter, system-ui, sans-serif`; g.textBaseline = "middle"; g.fillText(noteName(st), xs + 6, y + hh / 2 + 0.5); }
+      if (sel) {
+        g.strokeStyle = "#fff"; g.lineWidth = 2; roundRect(g, xs, y, wd, hh, r); g.stroke();
+        // the grip on its right edge (drag it to make the note longer or shorter)
+        g.fillStyle = "#fff"; const gx = x1 - 6;
+        g.fillRect(gx, y + hh * 0.25, 1.5, hh * 0.5); g.fillRect(gx + 3, y + hh * 0.25, 1.5, hh * 0.5);
       }
     });
-    // the play position
+    // the keyboard down the side: white keys for the naturals, black for the sharps, each C named (with its Hz)
+    g.fillStyle = "#0d0b26"; g.fillRect(0, RULER, GUTTER, GH);
+    for (let st = E.lo; st <= E.hi + 1e-6; st++) {
+      const y = yOf(st), k = ((Math.round(st) % 12) + 12) % 12, sharp = [1, 3, 6, 8, 10].includes(k);
+      if (!sharp) { g.fillStyle = "rgba(236,232,255,0.92)"; g.fillRect(GUTTER - 16, y + 0.5, 14, Math.max(1, rh - 1)); }
+      else { g.fillStyle = "#1b1840"; g.fillRect(GUTTER - 16, y + 0.5, 10, Math.max(1, rh - 1)); }
+      if (k === 0 || (rh >= 12 && (k === 4 || k === 9))) {
+        g.fillStyle = k === 0 ? "#fff" : "rgba(255,255,255,0.55)"; g.font = `700 ${Math.max(8, Math.min(10, rh + 1))}px Inter, system-ui, sans-serif`; g.textBaseline = "middle";
+        g.fillText(noteName(st), 3, y + rh / 2);
+        if (k === 0 && rh >= 7) { g.fillStyle = "rgba(255,255,255,0.45)"; g.font = "600 8px Inter, system-ui, sans-serif"; g.fillText(`${Math.round(st2hz(st))}`, 3, y + rh / 2 + 9); }
+      }
+    }
+    g.fillStyle = "rgba(160,130,255,0.35)"; g.fillRect(GUTTER - 1, RULER, 1, GH);
+    // the play position: a glowing line, with a marker on the time strip
     const ph = opts.playhead && opts.playhead();
-    if (ph != null && ph >= E.t0 && ph <= E.t0 + E.span) { const x = xOf(ph); g.fillStyle = "#ff4f87"; g.fillRect(x - 1, 0, 2, H); }
-    // the gutter's edge, and how much of the song is in view
-    g.fillStyle = "rgba(255,255,255,0.12)"; g.fillRect(GUTTER - 1, RULER, 1, gridH());
-    if (E.dur > E.span) { const a = E.t0 / E.dur, b = (E.t0 + E.span) / E.dur; g.fillStyle = "rgba(255,255,255,0.25)"; g.fillRect(GUTTER + a * (W - GUTTER), H - 2, Math.max(4, (b - a) * (W - GUTTER)), 2); }
+    if (ph != null && ph >= E.t0 && ph <= E.t0 + E.span) {
+      const x = xOf(ph);
+      g.save(); g.shadowColor = "rgba(255,79,135,0.9)"; g.shadowBlur = 8; g.fillStyle = "#ff4f87"; g.fillRect(x - 1, RULER, 2, H - RULER); g.restore();
+      g.fillStyle = "#ff4f87"; g.beginPath(); g.moveTo(x - 6, RULER - 8); g.lineTo(x + 6, RULER - 8); g.lineTo(x, RULER); g.closePath(); g.fill();
+    }
+    // how much of the song is in view
+    if (E.dur > E.span) { const a = E.t0 / E.dur, b = (E.t0 + E.span) / E.dur; g.fillStyle = "rgba(255,255,255,0.35)"; roundRect(g, GUTTER + a * (W - GUTTER), H - 3, Math.max(6, (b - a) * (W - GUTTER)), 3, 1.5); g.fill(); }
   }
   function roundRect(g, x, y, w, h, r) { g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r); g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath(); }
 

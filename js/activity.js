@@ -26,6 +26,7 @@ function items() {
     const myComments = new Set(p.comments.filter((c) => c.by === me).map((c) => c.id));
     if (mine) {
       for (const who of p.likes) if (who !== me && !api.hidden({ by: who })) out.set(`lp|${p.id}|${who}`, { kind: "like", who, name: nameOf(who), post: p, at: 0 });
+      for (const who of p.shares || []) if (who !== me && !api.hidden({ by: who })) out.set(`sh|${p.id}|${who}`, { kind: "share", who, name: nameOf(who), post: p, at: 0 });
       for (const c of p.comments) if (c.by !== me && !api.hidden(c) && !(c.re && myComments.has(c.re)))
         out.set(`c|${c.id}`, { kind: "comment", who: c.by, name: nameOf(c.by, c.user), text: c.text, post: p, at: c.at });
     }
@@ -80,8 +81,8 @@ function paintList(box, list, read) {
     const mid = h("span", "dm-mid"), top = h("span", "act-what");
     const q = (t) => `“${t.length > 60 ? t.slice(0, 60) + "…" : t}”`;
     top.append(h("b", "", it.name), document.createTextNode(
-      it.kind === "follow" ? " started following you" : it.kind === "like" ? " liked your post" : it.kind === "comment" ? ` commented: ${q(it.text)}` : it.kind === "reply" ? ` replied to your comment: ${q(it.text)}` : ` liked your comment ${q(it.text)}`));
-    mid.append(top, h("small", "", it.kind === "follow" ? "tap to see their page" : it.kind === "like" || it.kind === "comment" ? `on ${what(it.post)}` : `on ${it.post.user === api.state.name ? "your post" : `${it.post.user}'s post`}`));
+      it.kind === "follow" ? " started following you" : it.kind === "like" ? " liked your post" : it.kind === "share" ? " shared your post" : it.kind === "comment" ? ` commented: ${q(it.text)}` : it.kind === "reply" ? ` replied to your comment: ${q(it.text)}` : ` liked your comment ${q(it.text)}`));
+    mid.append(top, h("small", "", it.kind === "follow" ? "tap to see their page" : it.kind === "like" || it.kind === "comment" || it.kind === "share" ? `${it.kind === "share" ? "" : "on "}${what(it.post)}` : `on ${it.post.user === api.state.name ? "your post" : `${it.post.user}'s post`}`));
     row.append(av, mid, h("span", "dm-time", api.ago(it.at)));
     row.onclick = () => go(it);
     box.append(row);
@@ -90,7 +91,7 @@ function paintList(box, list, read) {
 /** Where it happened: their page (a follow), the post's comments, or (a like on the post) the post itself. */
 function go(it) {
   if (it.kind === "follow") { openProfile({ by: it.who, user: it.name }); return; }
-  if (it.kind === "like") { api.showPost(it.post.id); return; }
+  if (it.kind === "like" || it.kind === "share") { api.showPost(it.post.id); return; }
   location.hash = "#social";
   api.openComments(it.post.id);
 }

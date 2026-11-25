@@ -31,12 +31,13 @@ const SECTIONS = [
     "It's a digital unlock: once it's given, the payment is final, except where the law says otherwise. An account banned for breaking these rules loses the unlock.",
   ]],
   ["Your information", [
-    "To run the app we keep your account's email (sign-in is through Google's Firebase), your username, picture and about me, what you post, comment and like, who you follow, and your phone's model and app version.",
+    "To run the app we keep your account's email (to sign you in), your username, picture and about me, what you post, comment and like, who you follow, and your phone's model and app version.",
     "Private messages are encrypted on the phones: only the two people talking can read them.",
     "Your location is only used for Audio Market listings, and only shared as the town and a spot rounded to about 3 miles.",
   ]],
   ["Look after your ears and speakers", [
-    "Deep bass and test tones played loud can damage your hearing and your speakers. Start quiet, and turn it up slowly.",
+    "Deep bass and test tones played loud can damage your hearing, and your speakers, subwoofers, amplifiers, headphones and car audio. Start quiet, turn it up slowly, and stay within what your equipment is made for.",
+    "You use FifTeam Media and the sounds you make with it at your own risk. FifTeam Media isn't responsible for any damage to your hearing, or to any speakers, subwoofers, amplifiers, headphones, car audio or other equipment, from using the app or anything made with it.",
   ]],
   ["No guarantees", [
     "FifTeam Media is provided as it is, without any guarantee that it will always work or be free of mistakes. As far as the law allows, FifTeam Media isn't responsible for any loss or damage from using it.",

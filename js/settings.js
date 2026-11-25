@@ -9,7 +9,7 @@ import { loadMeta, prefsOf, setPrefs, blocksOf, setBlock } from "./meta.js";
 import { api } from "./social.js";
 import { actWanted, setActWanted, syncPush, canPush } from "./push.js";
 import { premiumNow, leftThisHour, openUnlock, LIMIT } from "./premium.js";
-import { openTerms, TERMS_DATE } from "./legal.js";
+import { openTerms } from "./legal.js";
 
 // (the app lock is gone: anything it left on a phone is cleared, so nobody stays locked out)
 for (const k of ["fifteam-lock", "fifteam-locked", "fifteam-autolock", "fifteam-lock-wait", "fifteam-lock-fails"]) { try { localStorage.removeItem(k); } catch {} }
@@ -51,6 +51,8 @@ export function openSettings() {
       <span class="status" id="set-dm-why"></span>
       <label class="switch"><span class="txt">Private account</span><input type="checkbox" id="set-priv"></label>
       <span class="status" id="set-priv-why"></span>
+      <label class="switch"><span class="txt">Show the posts I've liked on my page</span><input type="checkbox" id="set-lk"></label>
+      <span class="status" id="set-lk-why"></span>
       <div id="set-blocked"></div>
     </div>`);
     p.append(pvSec);
@@ -62,6 +64,8 @@ export function openSettings() {
         : pr.dm === "req" ? "People ask first, and you say yes or no in Messages. People you follow, and people you've written to, can always message you."
         : "Nobody can message you, and messages sent to you aren't shown.";
       $("set-priv").checked = !!pr.priv;
+      $("set-lk").checked = !!pr.lk;
+      $("set-lk-why").textContent = pr.lk ? "Everyone who can see your page sees a Liked tab with the posts you've liked." : "Only you see the posts you've liked (the Liked tab on your page).";
       // the people this phone has blocked: unblock from here (or from their page)
       const bx = $("set-blocked"); bx.replaceChildren();
       const bl = blocksOf(me);
@@ -88,6 +92,7 @@ export function openSettings() {
     };
     pvSec.querySelector("#set-dm").onclick = (e) => { const b = e.target.closest("button"); if (b && b.dataset.v !== prefsOf(api.state.me).dm) savePv({ dm: b.dataset.v }); };
     $("set-priv").onchange = (e) => savePv({ priv: e.target.checked });
+    $("set-lk").onchange = (e) => savePv({ lk: e.target.checked });
 
     // notifications for new messages
     const ntSec = el(`<div class="set-sec">
@@ -138,14 +143,9 @@ export function openSettings() {
     p.append(pmSec);
 
     // the rules and legal terms
-    const lgSec = el(`<div class="set-sec" id="set-legal">
-      <div class="set-head"><svg><use href="#i-info"/></svg>Rules and legal</div>
-      <span class="status">We don't provide music, and what you make is for your own listening. No posting other DJs' rebasses, no selling or sharing your rebasses elsewhere, and no changing the app.</span>
-      <button class="btn block" id="set-terms">Read the Terms of Use and Rules</button>
-      <span class="status">Last updated ${TERMS_DATE}</span>
-    </div>`);
-    lgSec.querySelector("#set-terms").onclick = openTerms;
-    p.append(lgSec);
+    const lgBtn = el('<button class="set-sec set-link" id="set-terms"><span class="set-head"><svg><use href="#i-info"/></svg>Rules and legal<span class="set-go">›</span></span></button>');
+    lgBtn.onclick = openTerms;
+    p.append(lgBtn);
 
     p.append(el(`<p class="set-foot">FifTeam Media ${APP_VERSION}<br>Developed by Levi Newman</p>`));
   });

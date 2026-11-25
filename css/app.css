@@ -971,7 +971,7 @@ h2 { background: linear-gradient(90deg, #ffffff 0%, #e6dcff 55%, #cdb6ff 100%); 
 .rb-how { margin-top: 4px; }
 
 /* ---------------------------------------------------------------------------- Custom notes */
-.ne { height: 360px; margin: 0 -18px; position: relative; }
+.ne { height: min(470px, 62vh); min-height: 380px; margin: 0 -18px; position: relative; }
 @media (min-width: 600px) { .ne { margin: 0; border-radius: 14px; overflow: hidden; } }
 .ne-canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
 .ne-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
@@ -992,3 +992,40 @@ img, svg, canvas, video { -webkit-touch-callout: none; -webkit-user-drag: none; 
 .lg-sec { display: flex; flex-direction: column; gap: 6px; padding: 12px 0 4px; border-top: 1px solid var(--line); }
 .lg-sec h4 { margin: 0; font: 700 15px/1.3 var(--font-body); }
 .lg-sec p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.5; }
+
+/* ---------------------------------------------------------------------------- messages: who, ⋯, photos and videos */
+.dm-who { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; text-align: left; padding: 4px; border-radius: 12px; }
+.dm-who:active { background: rgba(255, 255, 255, 0.06); }
+.dm-who .nline b { font: 700 17px/1.2 var(--font-head); }
+.dm-head .dm-more { width: 40px; padding: 0; }
+.dm-head .dm-more svg { width: 18px; height: 18px; }
+.dm-attach { width: 44px; padding: 0; flex: none; }
+.dm-attach svg { width: 20px; height: 20px; }
+.dm-bubble.dm-media { padding: 4px; gap: 4px; max-width: 72%; }
+.dm-bubble.dm-media > span, .dm-bubble.dm-media > small { padding: 0 8px; }
+.dm-bubble.dm-media > small { padding-bottom: 4px; }
+.dm-pic { position: relative; width: min(240px, 62vw); min-height: 120px; max-height: 340px; border-radius: 14px; overflow: hidden; background: rgba(4, 5, 20, 0.45); opacity: 0.6; transition: opacity 0.2s; }
+.dm-pic.in { opacity: 1; }
+.dm-pic img, .dm-pic video { display: block; width: 100%; height: 100%; max-height: 340px; object-fit: cover; }
+.dm-pic video { object-fit: contain; background: #000; }
+.dm-pic.gone { display: grid; place-items: center; }
+.dm-vplay { position: absolute; inset: 0; margin: auto; width: 54px; height: 54px; border-radius: 50%; display: grid; place-items: center; background: rgba(10, 8, 30, 0.55); backdrop-filter: blur(6px); border: 1px solid rgba(255, 255, 255, 0.35); }
+.dm-vplay svg { width: 24px; height: 24px; color: #fff; margin-left: 3px; }
+.dm-pic.busy .dm-vplay { animation: ptrspin 1s linear infinite; }
+
+/* ---------------------------------------------------------------------------- pages: private and liked posts */
+.pf-seg4 { overflow-x: auto; scrollbar-width: none; }
+.pf-seg4::-webkit-scrollbar { display: none; }
+.pf-seg4 button { flex: none; padding: 0 12px; white-space: nowrap; }
+.pf-list { display: flex; flex-direction: column; gap: 2px; }
+.pf-row .dm-lph { width: 52px; height: 52px; border-radius: 10px; flex: none; background: var(--grad) center / cover; }
+.pf-tip { text-align: center; }
+.holding { transform: scale(0.97); transition: transform 0.15s; }
+
+/* ---------------------------------------------------------------------------- posting: public or only me */
+.so-who-seg button { font-size: 14px; }
+
+/* ---------------------------------------------------------------------------- settings: Rules and legal */
+.set-link { width: 100%; text-align: left; color: inherit; font: inherit; cursor: pointer; }
+.set-link .set-go { margin-left: auto; color: var(--dim); font-size: 22px; line-height: 1; }
+.set-link:active { filter: brightness(1.15); }

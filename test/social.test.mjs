@@ -386,7 +386,7 @@ try {
     const benPhone = await other.ev(`localStorage.getItem('fifteam-social-me')`);
     const page = JSON.parse(await other.ev(`JSON.stringify({ about: (document.querySelector('#sheet-panel .pf-about') || {}).textContent, tiles: document.querySelectorAll('#sheet-panel .pf-tile').length, tabs: [...document.querySelectorAll('#sheet-panel .pf-seg button')].map(b => b.textContent) })`));
     console.log("Alice's page, seen by Ben:", JSON.stringify(page));
-    check(page.about === "Bass head from Ohio" && page.tiles === 1 && page.tabs.join() === "Pics & videos · 1,Rebassed songs · 1", "her page: about me, her picture post, her song post");
+    check(page.about === "Bass head from Ohio" && page.tiles === 1 && page.tabs.join() === "Pics & videos · 1,Songs · 1", "her page: about me, her picture post, her song post");
     await other.ev(`document.querySelectorAll('#sheet-panel .pf-seg button')[1].click(), 1`); await sleep(200);
     check((await other.ev(`document.querySelectorAll('#sheet-panel .pf-song .so-song').length`)) === 1, "her rebassed songs tab");
     await other.ev(`document.querySelector('#sheet-panel .pf-follow').click(), 1`);
@@ -833,7 +833,7 @@ try {
   const others = await ev(`[...document.querySelectorAll('#sheet-panel .menu-item')].map(b => b.textContent).join(' | ')`);
   console.log("someone else's post, its menu:", others);
   check(!/Delete|Edit/.test(others) && /Report post/.test(others), "Edit and Delete only on your own posts (others' have Report)");
-  await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
+  await ev(`import('./js/ui.js').then(m => { m.closeSheet(); return 1; })`); await sleep(300);
 
   // a post deleted in Discord by the owner: gone from the feed
   msgs.delete(bob);

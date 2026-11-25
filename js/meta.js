@@ -68,7 +68,9 @@ function cleanMeta(d) {
   if (!d || typeof d !== "object") return out;
   for (const [k, v] of Object.entries(d.prefs || {}).slice(0, 5000)) if (PHONE.test(k) && v && typeof v === "object") {
     const dm = v.dm === "req" || v.dm === "off" ? v.dm : "all", priv = v.priv ? 1 : 0;
-    if (dm !== "all" || priv) out.prefs[k] = { dm, priv };
+    // (lk: whether others see the posts they've liked; once set, the entry is kept, so the server can tell a phone that
+    // switched it off from an older app that doesn't know about it)
+    if (dm !== "all" || priv || "lk" in v) out.prefs[k] = { dm, priv, ...("lk" in v ? { lk: v.lk ? 1 : 0 } : {}) };
   }
   for (const key of ["dmok", "dmreq", "fok", "freq", "blocks"]) for (const [k, v] of Object.entries(d[key] || {}).slice(0, 5000)) if (PHONE.test(k)) { const l = phones(v, 2000).filter((x) => x !== k); if (l.length) out[key][k] = l; }
   // votes: the 800 newest posts that have any
@@ -104,7 +106,7 @@ async function metaChange(key, fn, check) {
 }
 
 export const votesOf = (post) => M.d.votes[post] || [];
-export const prefsOf = (phone) => M.d.prefs[phone] || { dm: "all", priv: 0 };
+export const prefsOf = (phone) => ({ dm: "all", priv: 0, lk: 0, ...(M.d.prefs[phone] || {}) });
 const list = (key, phone) => M.d[key][phone] || [];
 /** Whether one follows another: asked for, and (a private account) let in. */
 const approved = (who, owner) => !prefsOf(owner).priv || list("fok", owner).includes(who);
@@ -156,14 +158,15 @@ export function setFollow(phone, on) {
 }
 /** This phone's privacy: { dm: "all" | "req" | "off", priv: true/false }. Going private keeps the followers it has. */
 export function setPrefs(next) {
-  const me = api.state.me, cur = prefsOf(me), p = { dm: next.dm || cur.dm, priv: next.priv != null ? (next.priv ? 1 : 0) : cur.priv };
+  const me = api.state.me, cur = prefsOf(me), had = "lk" in (M.d.prefs[me] || {}) || next.lk != null;
+  const p = { dm: next.dm || cur.dm, priv: next.priv != null ? (next.priv ? 1 : 0) : cur.priv, ...(had ? { lk: next.lk != null ? (next.lk ? 1 : 0) : cur.lk } : {}) };
   const keep = p.priv && !cur.priv ? followersOf(me) : null;
   const fn = (d) => {
     d.prefs = d.prefs || {}; d.fok = d.fok || {};
-    if (p.dm === "all" && !p.priv) delete d.prefs[me]; else d.prefs[me] = p;
+    if (p.dm === "all" && !p.priv && !("lk" in p)) delete d.prefs[me]; else d.prefs[me] = p;
     if (keep) d.fok[me] = [...new Set([...(d.fok[me] || []), ...keep])];
   };
-  return metaChange("prefs", fn, (d) => { const x = (d.prefs || {})[me] || { dm: "all", priv: 0 }; return x.dm === p.dm && !!x.priv === !!p.priv; });
+  return metaChange("prefs", fn, (d) => { const x = (d.prefs || {})[me] || { dm: "all", priv: 0 }; return x.dm === p.dm && !!x.priv === !!p.priv && (!("lk" in p) || !!x.lk === !!p.lk); });
 }
 const edit = (key, owner, who, on) => (d) => { d[key] = d[key] || {}; const l = (d[key][owner] || []).filter((x) => x !== who); if (on) l.push(who); if (l.length) d[key][owner] = l; else delete d[key][owner]; };
 const has = (key, owner, who) => (d) => ((d[key] || {})[owner] || []).includes(who);

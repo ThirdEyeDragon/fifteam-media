@@ -272,6 +272,93 @@ try {
   log("in #reports:", (reports[0] || {}).content, "| Ben sees:", toastR);
   const rc = (reports[0] || {}).content || "";
   check(/Report: Spam/.test(rc) && rc.includes("Alice (`alicephone`)") && rc.includes("By:** Ben") && rc.includes("my first rebass picture") && rc.includes("posting the same thing over and over") && /Thanks/.test(toastR), "Ben's report reaches #reports with the reason, the post and his message");
+  // ---------------------------------------------------------------- private posts, liked posts, shares, photos in messages
+  await A.ev(`document.getElementById('sheet').classList.remove('open'), 1`); await B.ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
+  // Alice makes her post private: gone from Ben's feed and her page (as he sees it); in her own Private tab
+  await A.ev(`import('./js/social.js').then(m => m.api.setPostPrivate(m.api.state.feed.find(p => p.id === ${JSON.stringify(post1)}), true)).then(() => 1)`);
+  const goneForBen = await B.until(`![...document.querySelectorAll('#so-body .so-post')].some(p => p.dataset.id === ${JSON.stringify(post1)})`, 8000);
+  await B.ev(`import('./js/profile.js').then(m => { m.openProfile({ by: ${JSON.stringify(alice)}, user: 'Alice' }); return 1; })`); await sleep(700);
+  const benSeesHer = await B.ev(`document.getElementById('sheet-panel').textContent`);
+  await A.ev(`import('./js/profile.js').then(m => { m.openProfile({ by: ${JSON.stringify(alice)}, user: 'Alice' }); return 1; })`); await sleep(700);
+  await A.ev(`[...document.querySelectorAll('#sheet-panel .pf-seg button')].find(b => b.textContent.includes('Private')).click(), 1`); await sleep(400);
+  const herPrivate = await A.ev(`[...document.querySelectorAll('#sheet-panel .pf-row')].map(r => r.textContent).join(' | ')`);
+  log(`private: gone from Ben's feed after ${goneForBen} ms | Ben's view of her page has it: ${/1 song|Pics & videos · 1/.test(benSeesHer)} | her Private tab: ${herPrivate}`);
+  check(goneForBen >= 0 && herPrivate.includes("my first rebass picture") && !/Private ·/.test(benSeesHer), "a private post: only she sees it, in her Private tab");
+  // and public again, by holding it down there
+  await A.ev(`document.querySelector('#sheet-panel .pf-row').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })), 1`); await sleep(400);
+  await A.ev(`document.querySelector('#sheet-panel .so-privacy').click(), 1`);
+  const backForBen = await B.until(`(document.getElementById('sheet').classList.remove('open'), [...document.querySelectorAll('#so-body .so-post')].some(p => p.dataset.id === ${JSON.stringify(post1)}))`, 8000);
+  log(`held down, made public: back in Ben's feed after ${backForBen} ms`);
+  check(backForBen >= 0, "held down on her page: public again");
+  // Ben likes it; his likes are his own unless he shows them
+  await B.ev(`document.querySelector('#so-body .so-post[data-id="${post1}"] .so-like').click(), 1`); await sleep(1200);
+  const tabsOf = async () => { await A.ev(`import('./js/profile.js').then(m => { m.openProfile({ by: ${JSON.stringify(ben)}, user: 'Ben' }); return 1; })`); await sleep(700); return A.ev(`[...document.querySelectorAll('#sheet-panel .pf-seg button')].map(b => b.textContent).join(' | ')`); };
+  const before = await tabsOf();
+  await B.ev(`document.getElementById('btn-settings').click(), 1`); await sleep(500);
+  await B.ev(`document.getElementById('set-lk').click(), 1`);
+  for (let i = 0; i < 40 && !(((await hubStore("meta")).d.prefs || {})[ben] || {}).lk; i++) await sleep(200);
+  await sleep(800);
+  const after = await tabsOf();
+  if (after.includes("Liked")) await A.ev(`[...document.querySelectorAll('#sheet-panel .pf-seg button')].find(b => b.textContent.includes('Liked')).click(), 1`);
+  await sleep(300);
+  const likedList = await A.ev(`[...document.querySelectorAll('#sheet-panel .pf-row')].map(r => r.textContent).join(' | ')`);
+  log("Ben's page, as Alice sees it: before", JSON.stringify(before), "| after he shows his likes:", JSON.stringify(after), "|", likedList);
+  check(!before.includes("Liked") && after.includes("♥ Liked · 1") && likedList.includes("Alice"), "liked posts: hidden by default; shown on his page once he switches it on");
+  // an app from before 2.16 writing the feed and the settings can't undo a private post or the likes setting (the server keeps them)
+  await A.ev(`import('./js/social.js').then(m => m.api.setPostPrivate(m.api.state.feed.find(p => p.id === ${JSON.stringify(post1)}), true)).then(() => 1)`);
+  const ix = await hubStore("index"), oldFeed = { ...ix.d, posts: ix.d.posts.map(({ priv, shares, ...rest }) => rest) };
+  const mt = await hubStore("meta"), oldMeta = { ...mt.d, prefs: Object.fromEntries(Object.entries(mt.d.prefs || {}).filter(([, v]) => v.dm !== "all" || v.priv)) };
+  await fetch(`${WK}/v1/store/index?v=${ix.v}`, { method: "PUT", body: JSON.stringify(oldFeed) });
+  await fetch(`${WK}/v1/store/meta?v=${mt.v}`, { method: "PUT", body: JSON.stringify(oldMeta) });
+  const kept = { priv: (await hubStore("index")).d.posts.find((p) => p.id === post1).priv, lk: (((await hubStore("meta")).d.prefs || {})[ben] || {}).lk };
+  log("after an older app's writes:", JSON.stringify(kept));
+  check(kept.priv === 1 && kept.lk === 1, "an older app's write can't undo a private post or the likes setting");
+  await A.ev(`import('./js/social.js').then(m => m.api.setPostPrivate(m.api.state.feed.find(p => p.id === ${JSON.stringify(post1)}), false)).then(() => 1)`); await sleep(800);
+  // Ben shares her post (Send, to Alice herself): she hears about it
+  await A.ev(`document.getElementById('sheet').classList.remove('open'), 1`); await B.ev(`document.getElementById('sheet').classList.remove('open'), 1`);
+  await A.ev(`(() => { Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' }); document.dispatchEvent(new Event('visibilitychange')); return 1; })()`); await sleep(400);
+  pushes.length = 0;
+  await B.until(`[...document.querySelectorAll('#so-body .so-post')].some(p => p.dataset.id === ${JSON.stringify(post1)})`, 6000);
+  await B.ev(`document.querySelector('#so-body .so-post[data-id="${post1}"] .so-send').click(), 1`);
+  await B.until(`[...document.querySelectorAll('#sheet-panel .dm-row')].some(r => r.textContent.includes('Alice') && r.querySelector('button.primary'))`, 8000);
+  await B.ev(`[...document.querySelectorAll('#sheet-panel .dm-row')].find(r => r.textContent.includes('Alice')).querySelector('button').click(), 1`);
+  for (let i = 0; i < 80 && !pushes.some((p) => /Shared/.test(openPush(p.body).body)); i++) await sleep(100);
+  const sh = pushes.map((p) => openPush(p.body)).find((n) => /Shared/.test(n.body));
+  log("Ben shares her post; to Alice:", JSON.stringify(sh));
+  check(!!sh && sh.title === "Ben" && sh.body === "Shared your post" && sh.data.post === post1, "a share notifies the post's owner");
+  await A.ev(`(() => { Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' }); document.dispatchEvent(new Event('visibilitychange')); return 1; })()`);
+  // a photo in a message: Ben picks one (the real picker), Alice sees it in the chat
+  await B.ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(200);
+  await B.ev(`import('./js/dms.js').then(m => m.openChat(${JSON.stringify(alice)})).then(() => 1)`);
+  await B.until(`!!document.querySelector('#sheet-panel .dm-attach')`, 6000);
+  // (the chat's header: their page, and ⋯ to report or block)
+  await B.ev(`document.querySelector('#sheet-panel .dm-more').click(), 1`); await sleep(300);
+  const moreMenu = await B.ev(`[...document.querySelectorAll('.dm-act .menu-item')].map(b => b.textContent).join(' | ')`);
+  await B.ev(`[...document.querySelectorAll('.dm-act .menu-item')].find(b => b.textContent === 'Cancel').click(), 1`);
+  log("the chat's ⋯:", moreMenu);
+  check(moreMenu.includes("See their page") && moreMenu.includes("Report Alice") && moreMenu.includes("Block Alice"), "in a chat: ⋯ to see their page, report or block them");
+  await B.send("Page.setInterceptFileChooserDialog", { enabled: true });
+  let chooser = null; B.on((m) => { if (m.method === "Page.fileChooserOpened") chooser = m.params; });
+  await B.ev(`document.querySelector('#sheet-panel .dm-attach').click(), 1`);
+  for (let i = 0; i < 40 && !chooser; i++) await sleep(100);
+  const picFile = join(dir, "photo.jpg");
+  const png = await B.ev(`(() => { const c = document.createElement('canvas'); c.width = 320; c.height = 240; const g = c.getContext('2d'); const gr = g.createLinearGradient(0, 0, 320, 0); gr.addColorStop(0, '#2f78ff'); gr.addColorStop(1, '#bb4dff'); g.fillStyle = gr; g.fillRect(0, 0, 320, 240); g.fillStyle = '#fff'; g.font = 'bold 60px sans-serif'; g.fillText('FT', 110, 140); return c.toDataURL('image/jpeg', 0.9).split(',')[1]; })()`);
+  writeFileSync(picFile, Buffer.from(png, "base64"));
+  if (chooser) await B.send("DOM.setFileInputFiles", { backendNodeId: chooser.backendNodeId, files: [picFile] });
+  await B.send("Page.setInterceptFileChooserDialog", { enabled: false });
+  const sentPic = await B.until(`[...document.querySelectorAll('#sheet-panel .dm-bubble.me .dm-pic img')].some(i => i.naturalWidth > 0)`, 15000);
+  await A.ev(`import('./js/dms.js').then(m => m.openChat(${JSON.stringify(ben)})).then(() => 1)`);
+  const gotPic = await A.until(`[...document.querySelectorAll('#sheet-panel .dm-bubble.them .dm-pic img')].some(i => i.naturalWidth > 0)`, 15000);
+  const size = await A.ev(`(() => { const i = [...document.querySelectorAll('#sheet-panel .dm-bubble.them .dm-pic img')].pop(); return i.naturalWidth + 'x' + i.naturalHeight; })()`);
+  const bins = [...msgs.values()].flatMap((x) => (x.attachments || []).filter((a) => a.filename === "m.bin")).map((a) => files.get(new URL(a.url).pathname));
+  const sealedOnServer = bins.length > 0 && bins.every((b) => b && !(b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff));
+  log(`photo: on Ben's side after ${sentPic} ms, on Alice's after ${gotPic} ms, ${size} | sent sealed: ${sealedOnServer}`);
+  check(sentPic >= 0 && gotPic >= 0 && size === "320x240" && sealedOnServer, "a photo sent in a message, sealed, and seen in the chat");
+  // the name in the chat opens their page
+  await A.ev(`document.querySelector('#sheet-panel .dm-who').click(), 1`); await sleep(600);
+  const pageOpen = await A.ev(`!!document.querySelector('#sheet-panel.pf-panel') && document.querySelector('#sheet-panel .pf-name').textContent`);
+  log("Alice taps Ben's name in the chat:", pageOpen);
+  check(/Ben/.test(pageOpen || ""), "tapping their name in a chat opens their page");
   log("errors:", [...A.errors, ...B.errors].filter((e) => !/favicon|ERR_|Failed to load resource/i.test(e)).join(" | ").slice(0, 600) || "none");
 } catch (e) { log("STOPPED:", e.stack); fails++; }
 finally {

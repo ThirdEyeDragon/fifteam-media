@@ -237,6 +237,28 @@ try {
   check(await until(() => (read(IDS.mod).premium || {})[ben], 6000), "and it's copied back to the feed service");
   console.log("#payments after /premium:", payments.map((p) => p.content).join(" | "));
   check(payments.some((p) => /Unlocked unlimited rebassing for \*\*Ben\*\* \(by <@1>\)/.test(p.content)), "the unlock is recorded in #payments, with who did it");
+  // an app from before 2.16 (which drops what it doesn't know) can't undo a private post, its shares, or the likes setting
+  { const ix = (await stores("index")).index; ix.d.posts[0].priv = 1; ix.d.posts[0].shares = [ben]; await put("index", ix.v, ix.d);
+    const now = (await stores("index")).index, old = { ...now.d, posts: now.d.posts.map(({ priv, shares, ...rest }) => rest) };
+    pushes.length = 0;
+    const w = await put("index", now.v, old);
+    const after = (await stores("index")).index.d.posts[0];
+    const mt = (await stores("meta")).meta; mt.d.prefs = { ...(mt.d.prefs || {}), [ben]: { dm: "all", priv: 0, lk: 1 } }; await put("meta", mt.v, mt.d);
+    const m2 = (await stores("meta")).meta, oldMeta = { ...m2.d, prefs: {} }; await put("meta", m2.v, oldMeta);
+    const lk = (((await stores("meta")).meta.d.prefs || {})[ben] || {}).lk;
+    console.log("older app's write:", w.status, "| post after:", JSON.stringify({ priv: after.priv, shares: after.shares }), "| likes setting after:", lk);
+    check(after.priv === 1 && JSON.stringify(after.shares) === JSON.stringify([ben]) && lk === 1, "an older app's write keeps a post private, its shares, and the likes setting");
+    await sleep(400);
+    check(pushes.length === 0, "and putting them back notifies nobody"); }
+  // a share: the post's owner hears about it
+  { await api("/v1/push", { method: "POST", body: JSON.stringify({ tk: idToken(alice), sub: aliceB.sub, prefs: { msg: true, act: true } }) });
+    ws.send(JSON.stringify({ t: "vis", vis: false })); await sleep(200);
+    const ix = (await stores("index")).index; ix.d.posts[0].shares = [ben, "carlphone1"]; pushes.length = 0;
+    await put("index", ix.v, ix.d);
+    await until(() => pushes.some((p) => p.to === "alice"), 4000);
+    const n = pushes.filter((p) => p.to === "alice").map((p) => openPush(aliceB, p.body));
+    console.log("share notification:", JSON.stringify(n));
+    check(n.some((x) => x.body === "Shared your post" && x.data.post === post1), "sharing a post notifies its owner"); }
   // reports: to #reports, with the reason, the post and their own words; not about yourself; at most 8 an hour
   const rep = (tk, body) => api("/v1/report", { method: "POST", body: JSON.stringify({ tk, ...body }) });
   const r1s = (await rep(idToken(ben), { who: alice, reason: "harass", text: "she keeps posting <@everyone> spam about me", post: post1 })).status;

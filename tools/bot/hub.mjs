@@ -61,6 +61,23 @@ const MERGE = {
   accounts(m, t) { m = obj(m); t = obj(t); const a = obj(m.a); for (const [k, v] of Object.entries(obj(t.a))) if (!a[k] || (+v.at || 0) > (+a[k].at || 0)) a[k] = v; m.a = a; return m; },
 };
 
+/** Fields newer apps write that older ones drop: put back from the copy before, where the change left them out. */
+function keepNew(k, prev, d) {
+  let changed = false;
+  if (k === "index" && prev && Array.isArray(prev.posts) && Array.isArray(d.posts)) {
+    const before = new Map(prev.posts.map((p) => [p && p.id, p]));
+    for (const p of d.posts) { const q = p && before.get(p.id); if (!q) continue; for (const f of ["priv", "shares"]) if (!(f in p) && f in q) { p[f] = q[f]; changed = true; } }
+  }
+  if (k === "meta" && prev && prev.prefs && typeof prev.prefs === "object") {
+    d.prefs = obj(d.prefs);
+    for (const [ph, q] of Object.entries(prev.prefs)) {
+      if (!q || !("lk" in q)) continue;
+      if (!d.prefs[ph]) { d.prefs[ph] = { ...q }; changed = true; } else if (!("lk" in d.prefs[ph])) { d.prefs[ph].lk = q.lk; changed = true; }
+    }
+  }
+  return changed;
+}
+
 // ---------------------------------------------------------------------------------------------------- accounts
 let JWKS = null;
 /** A Firebase ID token, checked (Google's signature, this project, not expired): the account, and its phone id. */
@@ -176,6 +193,9 @@ export class Hub extends DurableObject {
     const s = await this.load(k);
     if (v != null && +v !== s.v) return { status: 409, v: s.v };
     const prev = this.data(s);
+    // what an older app leaves out because it doesn't know it (a post's privacy and shares; who sees someone's likes):
+    // kept as it was, so a phone not yet updated can't undo it
+    if (from === "phone" && keepNew(k, prev, d)) raw = JSON.stringify(d);
     s.v++; s.raw = raw; s.d = d; s.dirty = true;
     this.ctx.storage.put("s:" + k, { v: s.v, raw, att: s.att, dirty: true });
     this.soon();
@@ -360,8 +380,9 @@ export class Hub extends DurableObject {
       for (const p of arr(next && next.posts)) {
         const was = before.get(p.id);
         if (!was) continue;                                  // (a new post: nobody to tell)
-        const owner = p.by, liked = new Set(arr(was.likes));
+        const owner = p.by, liked = new Set(arr(was.likes)), shared = new Set(arr(was.shares));
         for (const who of arr(p.likes)) if (!liked.has(who) && ok(who, owner)) notes.push({ to: owner, kind: "act", title: name(who), body: "Liked your post", tag: `like-${p.id}`, data: { post: p.id } });
+        for (const who of arr(p.shares)) if (!shared.has(who) && ok(who, owner)) notes.push({ to: owner, kind: "act", title: name(who), body: "Shared your post", tag: `share-${p.id}`, data: { post: p.id } });
         const old = new Set(arr(was.comments).map((c) => c.id)), comments = arr(p.comments);
         for (const c of comments) {
           if (old.has(c.id)) continue;

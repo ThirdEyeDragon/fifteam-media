@@ -15,7 +15,10 @@ import { bannedPhones } from "./ban.js";
 import { library } from "./library.js";
 import * as store from "./store.js";
 import { player } from "./player.js";
-import { squareJpeg } from "./image.js";
+import { squareJpeg, fitJpeg } from "./image.js";
+import { openProfile } from "./profile.js";
+import { openReport } from "./report.js";
+import { blocksOf, setBlock } from "./meta.js";
 import { hubOn, hubRead, hubWrite, live } from "./hub.js";
 import { pushing, syncPush } from "./push.js";
 import { offensive, OFFENSIVE } from "./filter.js";
@@ -70,7 +73,9 @@ async function seal(phone, body) {
 }
 const cleanSong = (s) => (s && typeof s === "object" && POST.test(s.m || "") && typeof s.iv === "string" && s.iv.length < 40
   ? { m: s.m, iv: s.iv, ...(typeof s.civ === "string" && s.civ.length < 40 ? { civ: s.civ } : {}), title: String(s.title || "Rebass").slice(0, 120), artist: String(s.artist || "").slice(0, 80), note: String(s.note || "").slice(0, 80), duration: +s.duration || 0 } : null);
-/** What a message holds: { t: its words, p: a post's id, s: a sealed song } (t "" and nothing else if this phone
+const cleanMedia = (x) => (x && typeof x === "object" && POST.test(x.m || "") && typeof x.iv === "string" && x.iv.length < 40 && ["i", "mp4", "webm"].includes(x.k)
+  ? { m: x.m, iv: x.iv, k: x.k, ...(typeof x.piv === "string" && x.piv.length < 40 ? { piv: x.piv } : {}), ...(+x.w > 0 && +x.h > 0 ? { w: +x.w, h: +x.h } : {}) } : null);
+/** What a message holds: { t: its words, p: a post's id, s: a sealed song, i: a sealed picture or video } (t "" and nothing else if this phone
  * can't open it: not for it, or its key was lost). */
 async function body(m) {
   if (D.plain.has(m.id)) return D.plain.get(m.id);
@@ -79,14 +84,14 @@ async function body(m) {
     const other = m.f === api.state.me ? m.t : m.f, key = await sharedKey(other);
     if (key) {
       const j = JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64u(m.iv) }, key, unb64u(m.c))));
-      const s = cleanSong(j.s);
-      b = { t: String(j.t || "").slice(0, 1000), ...(POST.test(j.p || "") ? { p: j.p } : {}), ...(s ? { s } : {}) };
+      const s = cleanSong(j.s), i = cleanMedia(j.i);
+      b = { t: String(j.t || "").slice(0, 1000), ...(POST.test(j.p || "") ? { p: j.p } : {}), ...(s ? { s } : {}), ...(i ? { i } : {}) };
     }
   } catch {}
   D.plain.set(m.id, b);
   return b;
 }
-const preview = (b) => b.t || (b.p ? "Sent a post" : b.s ? `♪ ${b.s.title}` : "");
+const preview = (b) => b.t || (b.p ? "Sent a post" : b.s ? `♪ ${b.s.title}` : b.i ? (b.i.k === "i" ? "📷 Photo" : "🎬 Video") : "");
 /** A message in a line of words (for the list of conversations, and notifications). */
 async function open(m) { return preview(await body(m)); }
 
@@ -251,7 +256,24 @@ export async function openChat(other, l = "") {
     const head = h("div", "dm-head");
     const back = h("button", "btn small", "‹"); back.setAttribute("aria-label", "All messages"); back.onclick = () => openInbox();
     const av = api.avatarEl(36, "", nameOf(other)); api.showPicture(av, { by: other, user: nameOf(other), id: "" });
-    head.append(back, av, h("b", "", nameOf(other)));
+    const who = h("button", "dm-who"); who.setAttribute("aria-label", `${nameOf(other)}'s page`);
+    who.append(av, api.nameLine(nameOf(other), other));
+    who.onclick = () => openProfile({ by: other, user: nameOf(other) });
+    const more = h("button", "btn small dm-more"); more.setAttribute("aria-label", "More"); more.append(api.icon("i-more"));
+    more.onclick = () => {
+      const isBlocked = blocksOf(api.state.me).includes(other), nm = nameOf(other);
+      actions(nm, [
+        ["See their page", () => openProfile({ by: other, user: nm })],
+        [`Report ${nm}`, () => openReport({ who: other, name: nm }), "danger"],
+        [isBlocked ? `Unblock ${nm}` : `Block ${nm}`, async () => {
+          if (!isBlocked && !confirm(`Block ${nm}? You won't see each other's posts or comments, and they can't message you or follow you.`)) return;
+          if (!(await setBlock(other, !isBlocked))) { toast("Couldn't save that. Try again."); return; }
+          toast(isBlocked ? `Unblocked ${nm}` : `Blocked ${nm}`); api.render();
+          if (!isBlocked) openInbox();
+        }, isBlocked ? "" : "danger"],
+      ]);
+    };
+    head.append(back, who, more);
     // an Audio Market chat: the listing it's about, on top (tap it to see it)
     if (l) {
       const it = marketItem(l), card = h("button", "dm-listing");
@@ -265,7 +287,25 @@ export async function openChat(other, l = "") {
     const f = h("form", "dm-form");
     const inp = h("input", "input"); inp.maxLength = 500; inp.placeholder = "Message"; inp.autocomplete = "off"; inp.setAttribute("aria-label", "Message");
     const go = h("button", "btn primary small", "Send"); go.type = "submit";
-    f.append(inp, go);
+    const at = h("button", "btn small dm-attach"); at.type = "button"; at.setAttribute("aria-label", "Send a photo or video"); at.append(api.icon("i-image"));
+    at.onclick = () => {
+      const pick = document.createElement("input"); pick.type = "file"; pick.accept = "image/*,video/*";
+      pick.onchange = async () => {
+        const file = pick.files && pick.files[0]; if (!file) return;
+        const words = inp.value.trim();
+        if (words && offensive(words)) { toast(OFFENSIVE, 3500); return; }
+        at.disabled = true; const was = inp.placeholder;
+        const say = (t) => { inp.placeholder = t; };
+        try {
+          const i = await upMedia(other, file, say);
+          inp.value = "";
+          await send(other, words, l, { i });
+        } catch (e) { toast(e.message === "nokey" ? `${nameOf(other)} needs to open FifTeam Media once more first.` : e.message || "Couldn't send that. Try again.", 3500); }
+        at.disabled = false; inp.placeholder = was;
+      };
+      pick.click();
+    };
+    f.append(at, inp, go);
     f.onsubmit = (e) => { e.preventDefault(); const v = inp.value.trim(); if (!v) return; if (offensive(v)) { toast(OFFENSIVE, 3500); return; } inp.value = ""; send(other, v, l); };
     if (l) p.append(msgs, f); else p.append(head, msgs, f);
   });
@@ -295,10 +335,11 @@ async function paintChat() {
   if (!api.state.profiles[other] || !api.state.profiles[other].pk) box.append(h("p", "status", `${nameOf(other)} needs to open FifTeam Media once more before you can message them.`));
   else if (!list.length) box.append(h("p", "status", l ? "Ask about it: is it still available, the price, picking it up…" : "Say hi."));
   list.forEach((m, i) => {
-    const x = texts[i], b = h("div", "dm-bubble " + (m.f === api.state.me ? "me" : "them") + (m.sending ? " sending" : "") + (x.p || x.s ? " dm-rich" : ""));
+    const x = texts[i], b = h("div", "dm-bubble " + (m.f === api.state.me ? "me" : "them") + (m.sending ? " sending" : "") + (x.p || x.s ? " dm-rich" : "") + (x.i ? " dm-media" : ""));
     if (x.p) b.append(postBubble(x.p));
     if (x.s) b.append(songBubble(m, x.s));
-    if (x.t || (!x.p && !x.s)) b.append(h("span", "", x.t || "🔒 This message can't be opened on this phone."));
+    if (x.i) b.append(mediaBubble(m, x.i));
+    if (x.t || (!x.p && !x.s && !x.i)) b.append(h("span", "", x.t || "🔒 This message can't be opened on this phone."));
     b.append(h("small", "", api.ago(m.at)));
     if (!m.sending) onHold(b, () => actions("", [
       ...(x.t ? [["Copy", () => { navigator.clipboard && navigator.clipboard.writeText(x.t).then(() => toast("Copied", 1200), () => {}); }]] : []),
@@ -346,7 +387,7 @@ async function removeMsgs(list) {
   list = list.filter((m) => m && MSG.test(m.id));
   if (!list.length) return false;
   const ids = new Set(list.map((m) => m.id)), files = [];
-  for (const m of list) { const b = D.plain.get(m.id); if (b && b.s) files.push(b.s.m); D.gone.add(m.id); }
+  for (const m of list) { const b = D.plain.get(m.id); if (b && b.s) files.push(b.s.m); if (b && b.i) files.push(b.i.m); D.gone.add(m.id); }
   const put = async () => {
     for (let attempt = 0; attempt < 5; attempt++) {
       const now = await readStore();
@@ -420,7 +461,7 @@ function postBubble(id) {
   return wrap;
 }
 /** A sealed file from a message's own store message, opened (and kept for the rest of the visit). */
-async function sealedFile(other, msgId, name, iv) {
+async function sealedFile(other, msgId, name, iv, type) {
   const k = msgId + "/" + name;
   if (D.files.has(k)) return D.files.get(k);
   const job = (async () => {
@@ -431,7 +472,7 @@ async function sealedFile(other, msgId, name, iv) {
     const r = await fetch(f.url, { cache: "no-store" });
     if (!r.ok) throw new Error("download");
     const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64u(iv) }, key, await r.arrayBuffer());
-    return new Blob([plain], { type: name === "song.bin" ? "audio/mpeg" : "image/jpeg" });
+    return new Blob([plain], { type: type || (name === "song.bin" ? "audio/mpeg" : "image/jpeg") });
   })();
   D.files.set(k, job); job.catch(() => D.files.delete(k));
   return job;
@@ -471,6 +512,58 @@ function songBubble(m, s) {
   };
   b.append(cov, play, meta, add);
   return b;
+}
+/** A picture or a video sent in a message: shown in the chat (a picture full screen with a tap; a video plays where it is). */
+function mediaBubble(m, x) {
+  const other = m.f === api.state.me ? m.t : m.f;
+  const box = h("div", "dm-pic" + (x.k === "i" ? "" : " dm-vid"));
+  if (x.w && x.h) box.style.aspectRatio = `${x.w} / ${x.h}`;
+  const img = h("img", ""); img.alt = x.k === "i" ? "A photo" : "A video"; img.decoding = "async";
+  box.append(img);
+  const still = x.k === "i" ? sealedFile(other, x.m, "m.bin", x.iv, "image/jpeg") : x.piv ? sealedFile(other, x.m, "p.bin", x.piv, "image/jpeg") : null;
+  if (still) still.then((bl) => { img.src = URL.createObjectURL(bl); img.onload = () => box.classList.add("in"); }, () => { box.classList.add("in", "gone"); box.append(h("small", "", "Couldn't load this")); });
+  else box.classList.add("in");
+  if (x.k === "i") box.onclick = () => { if (wasHeld(box.closest(".dm-bubble") || box) || !img.src) return; api.viewImage(img.src); };
+  else {
+    const play = h("span", "dm-vplay"); play.append(api.icon("i-play")); box.append(play);
+    box.onclick = async () => {
+      if (wasHeld(box.closest(".dm-bubble") || box) || box.querySelector("video")) return;
+      box.classList.add("busy");
+      try {
+        const bl = await sealedFile(other, x.m, "m.bin", x.iv, "video/" + x.k);
+        const v = document.createElement("video"); v.controls = true; v.playsInline = true; v.setAttribute("playsinline", ""); v.src = URL.createObjectURL(bl);
+        player.pause(); stopSongs();
+        box.replaceChildren(v); box.classList.remove("busy"); v.play().catch(() => {});
+      } catch { box.classList.remove("busy"); toast("Couldn't play that video. Are you online?"); }
+    };
+  }
+  return box;
+}
+/** A picture or video, sealed for one phone and put up in a message of its own (a video with a still to show first). */
+async function upMedia(other, file, say) {
+  const key = await sharedKey(other);
+  if (!key) throw new Error("nokey");
+  const vid = /^video\//.test(file.type) || /\.(mp4|mov|m4v|webm)$/i.test(file.name || "");
+  let main, poster = null, k = "i", w = 0, hh = 0;
+  if (vid) {
+    const { social } = await import("./social.js");
+    say("Getting the video ready…");
+    const v = await social.prepareVideo(file, 9 * 1024 * 1024, say);
+    main = v.blob; poster = v.poster || null; k = v.ext === "webm" ? "webm" : "mp4";
+  } else {
+    say("Getting the photo ready…");
+    main = await fitJpeg(file, 1600);
+  }
+  try { const bm = await createImageBitmap(poster || main); w = bm.width; hh = bm.height; bm.close && bm.close(); } catch {}
+  const seal1 = async (blob) => { const iv = crypto.getRandomValues(new Uint8Array(12)); return { iv: b64u(iv), blob: new Blob([await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, await blob.arrayBuffer())], { type: "application/octet-stream" }) }; };
+  const a = await seal1(main), p = poster ? await seal1(poster) : null;
+  const files = [["m.bin", a.blob], ...(p ? [["p.bin", p.blob]] : [])];
+  const fd = new FormData();
+  fd.append("payload_json", JSON.stringify({ content: "FifTeam sealed message file (only the two phones can open it)", username: "FifTeam", allowed_mentions: { parse: [] }, attachments: files.map(([n], i) => ({ id: i, filename: n })) }));
+  files.forEach(([n, bl], i) => fd.append(`files[${i}]`, bl, n));
+  say("Sending…");
+  const msg = await api.dc("?wait=true", { method: "POST", form: fd });
+  return { m: msg.id, iv: a.iv, k, ...(p ? { piv: p.iv } : {}), ...(w && hh ? { w, h: hh } : {}) };
 }
 function paintPlays() {
   document.querySelectorAll(".dm-play").forEach((b) => { const on = b.dataset.id === D.playing; b.querySelector("use").setAttribute("href", on ? "#i-pause" : "#i-play"); b.setAttribute("aria-label", on ? "Pause" : "Play"); b.classList.remove("busy"); });
@@ -550,7 +643,7 @@ export async function sendTo(item) {
           try {
             const extra = item.post ? { p: item.post.id } : { s: await upSong(o, item.song, look) };
             look("Sending…");
-            if (await send(o, words, "", extra)) sent.add(o);
+            if (await send(o, words, "", extra)) { sent.add(o); if (item.post) api.noteShare(item.post.id); }
           } catch (e) { toast(e.message === "nokey" ? `${nameOf(o)} needs to open FifTeam Media once more first.` : e.message || "Couldn't send that. Try again.", 3500); }
           busy.delete(o); look(sent.has(o) ? "Sent ✓" : "Send");
         };

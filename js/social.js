@@ -153,7 +153,10 @@ function clean(list) {
     } : null;
     const media = Array.isArray(p.media) ? p.media.filter((k) => k === "i" || k === "mp4" || k === "webm").slice(0, 10) : [];
     const music = (p.image || (media.includes("i") && !media.some((k) => k !== "i"))) && p.music && typeof p.music === "object" ? { title: str(p.music.title, 120) || "Music", artist: str(p.music.artist, 80), len: Math.max(1, Math.min(60, +p.music.len || 0)) } : null;
-    return { id: p.id, at: +p.at || 0, edited: +p.edited || 0, user: str(p.user, 24) || "someone", text: str(p.text, 500), image: !!p.image, avatar: !!p.avatar, song: s, likes, by: /^[a-z0-9]{6,16}$/.test(p.by) ? p.by : "", video, comments, music, media, playlist: pl && pl.items.length ? pl : null };
+    // (priv: only the poster sees it; shares: who sent it to someone. Always written, so the server can tell an
+    // older app that doesn't know them from a phone that changed them)
+    const shares = Array.isArray(p.shares) ? [...new Set(p.shares.filter((x) => typeof x === "string" && /^[a-z0-9]{6,16}$/.test(x)))].slice(0, 500) : [];
+    return { priv: p.priv ? 1 : 0, shares, id: p.id, at: +p.at || 0, edited: +p.edited || 0, user: str(p.user, 24) || "someone", text: str(p.text, 500), image: !!p.image, avatar: !!p.avatar, song: s, likes, by: /^[a-z0-9]{6,16}$/.test(p.by) ? p.by : "", video, comments, music, media, playlist: pl && pl.items.length ? pl : null };
   }).filter(Boolean);
 }
 /** A post's message (for its picture and song links), fetched once per load, a couple at a time. */
@@ -278,14 +281,14 @@ function openMe() {
   openProfile({ by: S.me, user: S.name });
 }
 /** A post this phone may see: not from a banned phone, and not from a private account that hasn't let it in. */
-const visible = (p) => !hidden(p) && canSee(S.me, p.by);
+const visible = (p) => !hidden(p) && canSee(S.me, p.by) && (!p.priv || mineAs(p));
 const commentsOf = (p) => p.comments.filter((c) => !hidden(c));
 /** The rebassed song with the most votes from the last seven days (none until one has a vote). */
 function weekly(posts) {
   const since = Date.now() - 7 * 86400e3, banned = bannedPhones();
   let best = null, bv = 0;
   for (const p of posts) {
-    if (!p.song || p.at < since) continue;
+    if (!p.song || p.priv || p.at < since) continue;
     const v = votesOf(p.id).filter((x) => !banned.has(x)).length;
     if (v > bv || (v && v === bv && p.likes.length > best.likes.length)) { best = p; bv = v; }
   }
@@ -430,7 +433,7 @@ function postCard(p) {
   const av = avatarEl(40, "", name);
   showPicture(av, p);
   av.classList.add("tap"); av.setAttribute("role", "button"); av.setAttribute("aria-label", `${name}'s profile`);
-  const nm = h("span", "so-name tap"); nm.append(nameLine(name, p.by), h("small", "", ago(p.at) + (p.edited ? " · edited" : "")));
+  const nm = h("span", "so-name tap"); nm.append(nameLine(name, p.by), h("small", "", ago(p.at) + (p.edited ? " · edited" : "") + (p.priv ? " · 🔒 only you" : "")));
   av.onclick = nm.onclick = () => openProfile({ by: p.by, user: p.user });
   who.append(av, nm); head.append(who);
   { const d = h("button", "so-more"); d.setAttribute("aria-label", "More"); d.append(icon("i-more")); d.onclick = () => (S.mine.has(p.id) || mineAs(p) ? postMenu(p) : otherMenu(p)); head.append(d); }
@@ -733,13 +736,32 @@ function otherMenu(p) {
     panel.append(pg, rp, ru);
   });
 }
+/** Your post, private (only you see it) or public again. */
+async function setPostPrivate(p, on) {
+  const want = on ? 1 : 0;
+  p.priv = want; render();
+  try {
+    await changeIndex((posts) => { const q = posts.find((x) => x.id === p.id); if (q) q.priv = want; }, (now) => { const q = now.find((x) => x.id === p.id); return !q || q.priv === want; });
+    toast(on ? "Private: only you see it now" : "Public: everyone sees it now", 2200); render();
+    return true;
+  } catch { p.priv = want ? 0 : 1; render(); toast("Couldn't change that. Try again."); return false; }
+}
+/** A post sent to someone in a message: its poster hears about it (once per person). */
+function noteShare(id) {
+  const p = S.feed.find((x) => x.id === id);
+  if (!p || mineAs(p) || p.shares.includes(S.me)) return;
+  p.shares = [...p.shares, S.me];
+  changeIndex((posts) => { const q = posts.find((x) => x.id === id); if (q && !q.shares.includes(S.me)) q.shares = [...q.shares, S.me]; }, (now) => { const q = now.find((x) => x.id === id); return !q || q.shares.includes(S.me); }).catch(() => {});
+}
 /** Your post's menu. */
 function postMenu(p) {
   openSheet((panel) => {
     panel.append(h("h3", "", "Your post"));
     const e = h("button", "menu-item so-edit"); e.append(icon("i-plus"), h("span", "", "Edit post"));
     e.onclick = () => editPost(p);
-    panel.append(e);
+    const pv = h("button", "menu-item so-privacy"); pv.append(icon("i-lock"), h("span", "", p.priv ? "Make public (everyone sees it)" : "Make private (only you see it)"));
+    pv.onclick = () => { closeSheet(); setPostPrivate(p, !p.priv); };
+    panel.append(e, pv);
     const d = h("button", "menu-item danger so-del"); d.append(icon("i-trash"), h("span", "", "Delete post"));
     d.onclick = () => { closeSheet(); removePost(p); };
     panel.append(d);
@@ -1180,7 +1202,7 @@ function composer(preset) {
     p.append(h("h3", "", "New post"));
     const text = h("textarea", "input so-compose"); text.rows = 3; text.maxLength = 500; text.placeholder = "Say something"; text.setAttribute("aria-label", "Your post");
     text.value = preset.text || "";
-    const again = (more) => composer({ items, song, music, text: text.value, ...more });
+    const again = (more) => composer({ items, song, music, text: text.value, priv: preset.priv, ...more });
     const prev = h("div", "stack-sm");
     const paint = () => {
       prev.replaceChildren();
@@ -1236,17 +1258,21 @@ function composer(preset) {
     const as = h("button", "btn small"); as.append(icon("i-bass"), "Rebassed song");
     as.onclick = () => { if (vids().length) { toast("A post can have videos or a song"); return; } pickRebass((sg) => again({ song: sg })); };
     addRow.append(ai, av, as);
+    // who sees it: everyone, or only you (you can change it later, from the post or your page)
+    const who = h("div", "seg so-who-seg"); who.setAttribute("role", "radiogroup");
+    for (const [k, label] of [["pub", "🌐 Public"], ["priv", "🔒 Only me"]]) { const b = h("button", (preset.priv ? k === "priv" : k === "pub") ? "on" : "", label); b.dataset.k = k; b.type = "button"; who.append(b); }
+    who.onclick = (e) => { const b = e.target.closest("button"); if (!b) return; preset.priv = b.dataset.k === "priv"; who.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b)); };
     const err = h("p", "set-err"), go = h("button", "btn primary block", "Post");
     go.onclick = async () => {
       if (!items.length && !song && !text.value.trim()) { err.textContent = "Write something, or add pictures, a video or a song."; return; }
       if (offensive(text.value)) { err.textContent = OFFENSIVE; return; }
       go.disabled = true; err.textContent = "";
       try {
-        await post(text.value.trim(), items, song, (msg) => { go.textContent = msg; }, pics() && !vids().length ? music : null);
-        closeSheet(); toast("Posted"); render(); $("view-social").scrollTop = 0;
+        await post(text.value.trim(), items, song, (msg) => { go.textContent = msg; }, pics() && !vids().length ? music : null, !!preset.priv);
+        closeSheet(); toast(preset.priv ? "Posted, only you can see it" : "Posted"); render(); $("view-social").scrollTop = 0;
       } catch (e) { err.textContent = e.message === "setup" ? "FifTeam Social isn't switched on yet." : e.message || "Couldn't post."; go.disabled = false; go.textContent = "Post"; }
     };
-    p.append(text, addRow, prev, err, go);
+    p.append(text, addRow, prev, who, err, go);
     paint();
     if (preset.pick === "image") ai.click(); else if (preset.pick === "video") av.click();
   });
@@ -1365,7 +1391,7 @@ async function libraryMp3(t, kbps) {
   const chs = [buf.getChannelData(0), buf.numberOfChannels > 1 ? buf.getChannelData(1) : buf.getChannelData(0)];
   return (await makeFile(chs, buf.sampleRate, t.title, "mp3", ctx, null, { title: t.title, artist: t.artist || "", album: "FifTeam Social", kbps })).file;
 }
-async function post(text, items, song, say, music) {
+async function post(text, items, song, say, music, priv = false) {
   await config();
   items = items || [];
   const files = [], imgsOnly = items.filter((x) => x.k === "i"), vidsOnly = items.filter((x) => x.k === "v");
@@ -1413,7 +1439,7 @@ async function post(text, items, song, say, music) {
     files.push(["song.mp4", await scramble(f)]);
   }
   say(files.length ? `Uploading (${sizeText(files.reduce((a, [, b]) => a + b.size, 0))})…` : "Posting…");
-  const entry = { at: Date.now(), user: S.name, text: text.slice(0, 500), image: !!img, video: vtype, ...(media ? { media } : {}), ...((img || (media && !vidsOnly.length)) && music ? { music: { title: music.track.title.slice(0, 120), artist: (music.track.artist || "").slice(0, 80), len: Math.round(music.len) } } : {}), comments: [], avatar: false, by: S.me, likes: [], song: song ? { title: song.title.slice(0, 120), artist: (song.artist || "").slice(0, 80), note: (song.note || "").slice(0, 80), duration: Math.round(song.duration || 0) } : null };
+  const entry = { priv: priv ? 1 : 0, shares: [], at: Date.now(), user: S.name, text: text.slice(0, 500), image: !!img, video: vtype, ...(media ? { media } : {}), ...((img || (media && !vidsOnly.length)) && music ? { music: { title: music.track.title.slice(0, 120), artist: (music.track.artist || "").slice(0, 80), len: Math.round(music.len) } } : {}), comments: [], avatar: false, by: S.me, likes: [], song: song ? { title: song.title.slice(0, 120), artist: (song.artist || "").slice(0, 80), note: (song.note || "").slice(0, 80), duration: Math.round(song.duration || 0) } : null };
   // the post's own message
   const lines = [`**${S.name}**`];
   if (entry.text) lines.push(entry.text);
@@ -1632,5 +1658,5 @@ function showPost(id) {
   }, 350);
 }
 function editName() { closeSheet(); S.editingName = true; if (location.hash !== "#social") location.hash = "#social"; render(); setTimeout(() => { const i = document.querySelector("#so-body .so-nameform input"); if (i) { i.focus(); i.select(); } }, 120); }
-export const api = { mineAs, openViewer, nameLine, visible, state: S, config, dc, avatarEl, showPicture, ago, icon, findPhone, ensureProfiles, openComments, nameOf, hidden, songBlock, showPost, pickAvatar, editName, fileOf, message, viewImage, render, trackSong };
+export const api = { setPostPrivate, noteShare, mineAs, openViewer, nameLine, visible, state: S, config, dc, avatarEl, showPicture, ago, icon, findPhone, ensureProfiles, openComments, nameOf, hidden, songBlock, showPost, pickAvatar, editName, fileOf, message, viewImage, render, trackSong };
 export const social = { state: S, prepareVideo };
