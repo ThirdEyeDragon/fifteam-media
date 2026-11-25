@@ -1,0 +1,4 @@
+# local tool state (account details), never published
+.wrangler/
+.dev.vars
+node_modules/
