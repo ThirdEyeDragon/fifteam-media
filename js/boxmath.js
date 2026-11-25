@@ -462,13 +462,13 @@ export function layout(B, quick = false) {
     }
     const g = arrange(N, xs1 - xs0, Hi, sub.cutout);
     if (!g.fit) warn.push(`${N > 1 ? "The subs don't" : "The sub doesn't"} fit on the front${ports.length ? " next to the port" : ""}: make the box ${Wi < Hi ? "wider" : "taller"}.`);
-    for (const [u, v] of g.at) subs.push({ at: [xs0 + u, y0 + v, 0], dir: [0, 0, -1], size: sz, cutout: sub.cutout, depth: sub.depth, panel: tf });
+    for (const [u, v] of g.at) subs.push({ at: [xs0 + u, y0 + v, 0], dir: [0, 0, -1], size: sz, cutout: sub.cutout, depth: sub.depth, pe: sub.pe, xmax: sub.xmax, panel: tf });
     if (sub.depth > Dmin - 0.01) warn.push(`The sub is deeper (${fmtLenSI(sub.depth)}) than the inside of the box: it won't fit.`);
   } else {
     const xd = ch[0][1];                                                       // the divider: xd .. xd + t
     const g = arrange(N, Dmin, Hi, sub.cutout);
     if (!g.fit) warn.push(`${N > 1 ? "The subs don't" : "The sub doesn't"} fit on the divider: make the box deeper or taller.`);
-    for (const [u, v] of g.at) subs.push({ at: [xd + t, y0 + v, tf + u], dir: [1, 0, 0], size: sz, cutout: sub.cutout, depth: sub.depth, panel: t });
+    for (const [u, v] of g.at) subs.push({ at: [xd + t, y0 + v, tf + u], dir: [1, 0, 0], size: sz, cutout: sub.cutout, depth: sub.depth, pe: sub.pe, xmax: sub.xmax, panel: t });
     const inner = ports.find((p) => p.inner && p.kind === "slot" && p.bend), room = ch[0][1] - ch[0][0] - (inner ? inner.sw + t : 0);
     if (sub.depth > room - 0.01) warn.push(`The sub is deeper (${fmtLenSI(sub.depth)}) than the rear chamber has room for${inner ? " beside its port" : ""}: make that chamber wider.`);
   }

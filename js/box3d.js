@@ -10,6 +10,28 @@ const FINISH = {
 };
 const AIR = [0.25, 0.85, 1.0], SEALED = [0.73, 0.45, 1.0], VENTED = [0.3, 0.55, 1.0];
 
+// ---------------------------------------------------------------------------------------------------- the sub, to scale
+const IN = 0.0254;
+/** How a sub is built, for drawing it to scale (metres): its motor grows with its size and its power rating (a
+ * 15″ rated 1500 W has a magnet about 8.6″ across, two slugs stacked), it always passes through the cutout and stays
+ * inside the mounting depth; the surround's roll grows with its excursion. */
+export function subParts(s) {
+  const z = Math.max(0.1, s.size || 0.3), rc = Math.max(0.04, (s.cutout || z * 0.92) / 2), rf = Math.max(z / 2, rc + 0.4 * IN);
+  const pe = Math.max(50, s.pe || 500), xmax = Math.max(0.003, s.xmax || 0.012), sizeIn = z / IN;
+  let dm = (0.9 + 0.22 * sizeIn + 0.115 * Math.sqrt(pe)) * IN;                 // the magnet's diameter
+  dm = Math.max(0.36 * z, Math.min(dm, 2 * rc * 0.92));
+  const slugs = Math.max(1, Math.min(3, Math.round(pe / (55 * sizeIn))));      // stacked magnets: more power, more of them
+  const panel = s.panel || 0.019, depth = Math.max(s.depth || z * 0.5, panel + 0.04);
+  let slugH = 0.17 * dm, plate = 0.06 * dm, gap = 0.028 * dm;                // (a thin plate between stacked slugs)
+  let motor = slugs * slugH + 2 * plate + (slugs - 1) * gap;
+  const room = (depth - panel) * 0.62;                                         // (the basket takes the rest)
+  if (motor > room) { const k = room / motor; slugH *= k; plate *= k; gap *= k; motor = room; }
+  // the surround: wider for more excursion (a big roll on a long-throw sub)
+  const roll = Math.min(z * 0.11, z * 0.035 + xmax * 1.4);
+  const rs1 = Math.min(rf * 0.94, rc * 0.985), rs0 = Math.max(rs1 - roll, z * 0.2);
+  return { z, rf, rc, rs1, rs0, dm, slugs, slugH, plate, gap, motor, depth, panel, rdc: z * 0.17, cd: z * 0.085 + xmax * 0.6 };
+}
+
 // ---------------------------------------------------------------------------------------------------- matrices
 const m4 = () => { const m = new Float32Array(16); m[0] = m[5] = m[10] = m[15] = 1; return m; };
 function mul4(a, b) {
@@ -121,8 +143,8 @@ function build(L, mode, finish) {
   };
   const toW = (d) => [d[0], d[1], -d[2]];          // a direction, layout -> world
   for (const s of L.subs) {
-    const at = W(s.at), dir = toW(s.dir), z = s.size;
-    const rf = z / 2, rc = s.cutout / 2, rs1 = Math.min(rf * 0.93, rc * 0.98), rs0 = rs1 - z * 0.06, rdc = z * 0.17, cd = z * 0.085;
+    const at = W(s.at), dir = toW(s.dir), S = subParts(s), z = S.z;
+    const { rf, rc, rs1, rs0, rdc, cd } = S;
     const ring = [];
     lathe([[rf, 0], [rf, 0.007], [rs1 + 0.004, 0.009], [rs1, 0.006]], at, dir, [0.2, 0.2, 0.23, 1]);                  // the frame
     for (let i = 0; i <= 8; i++) { const ph = (i / 8) * Math.PI; ring.push([(rs0 + rs1) / 2 + ((rs1 - rs0) / 2) * Math.cos(ph), 0.006 + ((rs1 - rs0) / 2) * 0.9 * Math.sin(ph)]); }
@@ -130,11 +152,22 @@ function build(L, mode, finish) {
     lathe([[rs0, 0.006], [rdc * 1.05, -cd]], at, dir, [0.1, 0.1, 0.12, 1]);                                              // the cone
     const cap = []; for (let i = 0; i <= 6; i++) { const ph = (i / 6) * (Math.PI / 2); cap.push([rdc * Math.cos(ph), -cd + z * 0.035 * Math.sin(ph)]); }
     lathe([[rdc * 1.05, -cd], ...cap], at, dir, [0.16, 0.16, 0.19, 1]);                                                  // the dust cap
-    // behind the wood: the basket and the magnet
-    const back = -s.panel, mag = z * 0.24, md = Math.max(s.depth, s.panel + 0.03);
+    // behind the wood: the basket down to the motor, then the motor (top plate, the magnet slugs, the back plate, the
+    // vented pole), all the way back to the sub's mounting depth
+    const back = -S.panel, md = S.depth, mr = S.dm / 2, front = -(md - S.motor);
     lathe([[rc, 0], [rc, back]], at, dir, [...FINISH.mdf.inner.map((v) => v * 0.8), 1], 40);                          // the cutout's edge
-    lathe([[rc * 0.96, back], [mag * 1.05, -(s.panel + (md - s.panel) * 0.55)]], at, dir, [0.3, 0.3, 0.34, 1], 24);
-    lathe([[mag, -(s.panel + (md - s.panel) * 0.55)], [mag, -md], [mag * 0.35, -md], [mag * 0.35, -md - 0.006], [0, -md - 0.006]], at, dir, [0.36, 0.37, 0.42, 1], 28);
+    lathe([[rc * 0.97, back], [rc * 0.9, back - 0.006], [mr * 0.78, front]], at, dir, [0.27, 0.27, 0.31, 1], 32);           // the basket
+    let h = front;
+    const plateC = [0.55, 0.56, 0.6, 1], slugC = [0.12, 0.12, 0.14, 1];
+    const disc = (r0, r1, h0, h1, col) => lathe([[r0, h0], [r1, h0], [r1, h1], [r0, h1], [r0, h0]], at, dir, col, 36);
+    disc(mr * 0.3, mr * 0.9, h, h - S.plate, plateC); h -= S.plate;                                                     // top plate
+    for (let i = 0; i < S.slugs; i++) {
+      disc(mr * 0.32, mr, h, h - S.slugH, slugC);                                                                      // a magnet slug
+      h -= S.slugH;
+      if (i < S.slugs - 1) { disc(mr * 0.34, mr * 1.012, h, h - S.gap, plateC); h -= S.gap; }                          // the plate between slugs
+    }
+    disc(0.012, mr * 0.96, h, h - S.plate, plateC); h -= S.plate;                                                      // back plate
+    lathe([[0.012, h], [0.012, h + 0.002], [0, h + 0.002]], at, dir, [0.05, 0.05, 0.06, 1], 18);                     // the pole vent
   }
   for (const p of L.ports) for (const tb of p.tubes || []) {
     const at = W(tb.at), dir = toW(tb.dir), r = tb.r, w = 0.003;

@@ -146,6 +146,17 @@ for (const [type, series, a, b, f1, f2, w1] of [["sealed", 0, 1.3], ["ported", 0
   check(misfit === 0 && slow === 0, `recommended shapes: ${n - misfit} of ${n} designs (8–18″, 1–4 subs, every type) fit${slow ? `, ${slow} slow` : ""}`);
 }
 
+// ---------------------------------------------------------------------------------------------------- the sub in 3D, to scale
+{
+  const { subParts } = await import("../js/box3d.js");
+  const big = subParts({ size: 15.4 * IN, cutout: 13.86 * IN, depth: 9.8 * IN, pe: 1500, xmax: 0.022, panel: 0.75 * IN });
+  const mid = subParts({ ...M.PRESETS[12], panel: 0.75 * IN }), lo = subParts({ ...M.PRESETS[12], pe: 250, panel: 0.75 * IN });
+  check(near(big.dm / IN, 8.6, 0.35) && big.slugs === 2 && big.dm < 2 * big.rc && big.motor < big.depth, `a 15″ 1500 W sub: an ${(big.dm / IN).toFixed(2)}″ magnet, ${big.slugs} slugs (a real one: 8.6″, double stack)`);
+  check(mid.slugs === 1 && mid.dm < big.dm && lo.dm < mid.dm && lo.motor < mid.motor, `more power, a bigger motor: 12″ at 250 W ${(lo.dm / IN).toFixed(2)}″, at 600 W ${(mid.dm / IN).toFixed(2)}″`);
+  const shallow = subParts({ size: 10 * IN, cutout: 9.1 * IN, depth: 3.2 * IN, pe: 1200, panel: 0.75 * IN });
+  check(shallow.motor <= (shallow.depth - shallow.panel) * 0.62 + 1e-9 && shallow.dm < 2 * shallow.rc, "the motor always fits the mounting depth and passes through the cutout");
+}
+
 // ---------------------------------------------------------------------------------------------------- wiring
 const w2 = M.wiring(2, true, 4).map((o) => o.ohms), w4 = M.wiring(4, true, 2).map((o) => o.ohms), w1 = M.wiring(1, false, 4).map((o) => o.ohms);
 check(w2.join() === "1,4,16" && w4.join() === "0.25,1,4,16" && w1.join() === "4", `wiring: 2 DVC 4 Ω -> ${w2.join("/")} Ω; 4 DVC 2 Ω -> ${w4.join("/")} Ω; 1 SVC 4 Ω -> ${w1} Ω`);

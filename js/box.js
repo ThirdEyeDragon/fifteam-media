@@ -183,7 +183,7 @@ function spec() {
   const P2 = { ...st.port2, fb: st.fr6 };
   return {
     type: st.type, series: st.series, shape: st.shape, w: st.w, h: st.h, d: st.d, dt: Math.min(st.dt, st.d), t: st.t, dbl: st.dbl, brace: st.brace, count: st.count,
-    sub: { size: st.drv.size, cutout: st.drv.cutout, depth: st.drv.depth, disp: st.drv.disp }, port: P1, port2: P2, split: st.split,
+    sub: { size: st.drv.size, cutout: st.drv.cutout, depth: st.drv.depth, disp: st.drv.disp, pe: st.drv.pe, xmax: st.drv.xmax }, port: P1, port2: P2, split: st.split,
   };
 }
 
