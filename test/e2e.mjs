@@ -168,6 +168,19 @@ await shot("05_rebass_live");
 // Custom notes: the song's bass taken out, the new bass placed by hand (real taps and drags on the editor), and heard
 await ev(`import('./js/rebass.js').then(m => { window.__rb = m.rebass.state; return 1; })`);
 const autoNotes = await ev(`__rb.res.stats.notes`);
+// every new bass note at the level chosen: each steady stretch of the new bass, measured at its own frequency
+await ev(`(() => { window.__band = (f, a, b) => { const S = __rb, buf = S.outBuf, x = buf.getChannelData(0), sr = buf.sampleRate, off = S.introN || 0;
+  const s0 = Math.floor(a * sr) + off, s1 = Math.floor(b * sr) + off, w = 2 * Math.PI * f / sr, c = 2 * Math.cos(w); let p1 = 0, p2 = 0;
+  for (let i = s0; i < s1; i++) { const s = x[i] + c * p1 - p2; p2 = p1; p1 = s; } return Math.sqrt(Math.max(0, p1 * p1 + p2 * p2 - c * p1 * p2)) / (s1 - s0); }; return 1; })()`);
+const lv = JSON.parse(await ev(`(() => { const r = __rb.res, m = r.map, n = m.length / 3, out = []; let a = 0, f = m[1];
+  for (let i = 1; i <= n; i++) { const fi = i < n ? m[i * 3 + 1] : -1; if (fi === f) continue;
+    const t0 = r.t0 + a * r.hop, t1 = r.t0 + i * r.hop;
+    if (f > 0 && t1 - t0 > 0.2) out.push(20 * Math.log10(2 * __band(f, t0 + 0.3 * (t1 - t0), t1 - 0.3 * (t1 - t0)) + 1e-12));
+    a = i; f = fi; }
+  return JSON.stringify(out); })()`));
+const sorted = [...lv].sort((x, y) => x - y), med = sorted[sorted.length >> 1], near = lv.filter((x) => Math.abs(x - med) <= 1.5).length / (lv.length || 1);
+console.log(`new bass notes' levels (${lv.length} steady notes): median ${med.toFixed(1)} dB, ${(near * 100).toFixed(0)}% within 1.5 dB of it, range ${sorted[0].toFixed(1)} to ${sorted[sorted.length - 1].toFixed(1)} dB`);
+check(lv.length > 10 && near >= 0.9, "every new bass note at the same level");
 await click('#rb-how button[data-k="custom"]');
 await until(`!document.getElementById('rb-ne').hidden && document.getElementById('rb-busy').hidden && !!(__rb.res && __rb.res.stats.custom)`, 90000, "Custom notes");
 await show('#rb-notes'); await sleep(400);
@@ -181,7 +194,7 @@ const quiet = await ev(`[41.2, 55, 61.7].map(f => __band(f, 1, 4.6)).map(v => v.
 const at = (t, hz) => ev(`(() => { const c = document.querySelector('#rb-ne canvas'), r = c.getBoundingClientRect(), g = __rb.guide, tune = g.tune - Math.floor(g.tune);
   const st = (f) => 69 + 12 * Math.log2(f / 440), lo = Math.floor(st(18) - tune) + tune, hi = Math.ceil(st(125) - tune) + tune, rows = Math.round(hi - lo) + 1, rh = (r.height - 22 - 18) / rows;
   const s = Math.round(st(${hz}) - tune) + tune, span = Math.min(8, __rb.origBuf.duration);
-  return [r.left + 44 + (${t} / span) * (r.width - 44), r.top + 22 + (hi - s) * rh + rh / 2, rh]; })()`);
+  return [r.left + 50 + (${t} / span) * (r.width - 50), r.top + 22 + (hi - s) * rh + rh / 2, rh]; })()`);
 const tap = async ([x, y]) => { for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: 1 }); await sleep(120); };
 const drag = async ([x, y], dx, dy) => {
   await cdp("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
@@ -198,7 +211,7 @@ const [ax, ay, rh] = await at(2.5, 55);
 await tap(await at(5.5, 41.2));
 await drag([ax + 6, ay], 0, -2 * rh);
 await tap(await at(5.5, 41.2));
-const [ex, ey] = await at(1.0, 41.2), noteEdge = await ev(`(() => { const c = document.querySelector('#rb-ne canvas'), r = c.getBoundingClientRect(), span = Math.min(8, __rb.origBuf.duration), n = __rb.custom.find(n => Math.abs(n.f - 41.2) < 1); return r.left + 44 + ((n.t + n.d) / span) * (r.width - 44) - 3; })()`);
+const [ex, ey] = await at(1.0, 41.2), noteEdge = await ev(`(() => { const c = document.querySelector('#rb-ne canvas'), r = c.getBoundingClientRect(), span = Math.min(8, __rb.origBuf.duration), n = __rb.custom.find(n => Math.abs(n.f - 41.2) < 1); return r.left + 50 + ((n.t + n.d) / span) * (r.width - 50) - 3; })()`);
 await tap([ex + 4, ey]);                                                 // (chosen first: its edge shows)
 await drag([noteEdge, ey], 40, 0);
 await sleep(500);

@@ -10,7 +10,7 @@ const NAMES = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A�
 export const hz2st = (f) => 69 + 12 * Math.log2(f / 440);
 export const st2hz = (m) => 440 * Math.pow(2, (m - 69) / 12);
 export const noteName = (st) => { const r = Math.round(st); return NAMES[((r % 12) + 12) % 12] + (Math.floor(r / 12) - 1); };
-const MAX_NOTES = 4000, GUTTER = 44, RULER = 22, HITS = 18;
+const MAX_NOTES = 4000, GUTTER = 50, RULER = 22, HITS = 18;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
 /**
@@ -120,7 +120,7 @@ export function noteEditor(host, opts) {
       g.restore();
       // a light edge along the top
       g.fillStyle = "rgba(255,255,255,0.28)"; roundRect(g, xs + 1, y + 1, Math.max(2, wd - 2), Math.max(1, hh * 0.35), Math.min(r, hh * 0.18)); g.fill();
-      if (wd > 34 && hh >= 9) { g.fillStyle = "rgba(255,255,255,0.95)"; g.font = `700 ${Math.min(10, hh - 2)}px Inter, system-ui, sans-serif`; g.textBaseline = "middle"; g.fillText(noteName(st), xs + 6, y + hh / 2 + 0.5); }
+      if (wd > 40 && hh >= 9) { g.fillStyle = "rgba(255,255,255,0.95)"; g.font = `700 ${Math.min(10, hh - 2)}px Inter, system-ui, sans-serif`; g.textBaseline = "middle"; g.fillText(`${Math.round(n.f)} Hz`, xs + 6, y + hh / 2 + 0.5); }
       if (sel) {
         g.strokeStyle = "#fff"; g.lineWidth = 2; roundRect(g, xs, y, wd, hh, r); g.stroke();
         // the grip on its right edge (drag it to make the note longer or shorter)
@@ -128,18 +128,18 @@ export function noteEditor(host, opts) {
         g.fillRect(gx, y + hh * 0.25, 1.5, hh * 0.5); g.fillRect(gx + 3, y + hh * 0.25, 1.5, hh * 0.5);
       }
     });
-    // the keyboard down the side: white keys for the naturals, black for the sharps, each C named (with its Hz)
+    // the frequencies down the side: each row's Hz (every other row when they're too close together to read)
     g.fillStyle = "#0d0b26"; g.fillRect(0, RULER, GUTTER, GH);
-    for (let st = E.lo; st <= E.hi + 1e-6; st++) {
-      const y = yOf(st), k = ((Math.round(st) % 12) + 12) % 12, sharp = [1, 3, 6, 8, 10].includes(k);
-      if (!sharp) { g.fillStyle = "rgba(236,232,255,0.92)"; g.fillRect(GUTTER - 16, y + 0.5, 14, Math.max(1, rh - 1)); }
-      else { g.fillStyle = "#1b1840"; g.fillRect(GUTTER - 16, y + 0.5, 10, Math.max(1, rh - 1)); }
-      if (k === 0 || (rh >= 12 && (k === 4 || k === 9))) {
-        g.fillStyle = k === 0 ? "#fff" : "rgba(255,255,255,0.55)"; g.font = `700 ${Math.max(8, Math.min(10, rh + 1))}px Inter, system-ui, sans-serif`; g.textBaseline = "middle";
-        g.fillText(noteName(st), 3, y + rh / 2);
-        if (k === 0 && rh >= 7) { g.fillStyle = "rgba(255,255,255,0.45)"; g.font = "600 8px Inter, system-ui, sans-serif"; g.fillText(`${Math.round(st2hz(st))}`, 3, y + rh / 2 + 9); }
-      }
+    const every = rh >= 11 ? 1 : 2;
+    g.font = `700 ${Math.max(8, Math.min(10.5, rh))}px Inter, system-ui, sans-serif`; g.textBaseline = "middle"; g.textAlign = "right";
+    let row = 0;
+    for (let st = E.hi; st >= E.lo - 1e-6; st--, row++) {
+      if (row % every) continue;
+      const y = yOf(st), hz = st2hz(st);
+      g.fillStyle = Math.round(hz) % 10 === 0 || every > 1 ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.62)";
+      g.fillText(`${hz < 100 ? hz.toFixed(hz < 30 ? 1 : 0) : Math.round(hz)} Hz`, GUTTER - 5, y + rh / 2);
     }
+    g.textAlign = "left";
     g.fillStyle = "rgba(160,130,255,0.35)"; g.fillRect(GUTTER - 1, RULER, 1, GH);
     // the play position: a glowing line, with a marker on the time strip
     const ph = opts.playhead && opts.playhead();

@@ -118,7 +118,7 @@ function renderCustom(p) {
     const u = an0.t0 + i * an0.hop;
     while (j < notes.length && notes[j].t + notes[j].d < u) j++;
     let f = 0, v = 0;
-    for (let k = j; k < notes.length && notes[k].t <= u; k++) if (u <= notes[k].t + notes[k].d && (notes[k].v == null ? 1 : notes[k].v) >= v) { f = notes[k].f; v = notes[k].v == null ? 1 : notes[k].v; }
+    for (let k = j; k < notes.length && notes[k].t <= u; k++) if (u <= notes[k].t + notes[k].d) { f = notes[k].f; v = 1; }
     map[i * 3] = an0.f0[i] * sp; map[i * 3 + 1] = f; map[i * 3 + 2] = f ? Math.max(0.05, v) * 0.6 : an0.env[i] * 0.3;
   }
   let ref = null;
@@ -135,8 +135,7 @@ function renderCustom(p) {
 function songNotes(p) {
   if (!an0) throw new Error("No song loaded");
   const sp = p.speed || 1, plan = planMapping(an0, p.lo, p.hi, sp);
-  const top = Math.max(1e-6, ...an0.notes.map((g) => g.peak));
-  const list = an0.notes.map((g) => ({ t: g.on, d: Math.max(0.05, g.off - g.on), f: st2hz(plan.target.get(g.q)), v: Math.max(0.35, Math.min(1, g.peak / top)) }));
+  const list = an0.notes.map((g) => ({ t: g.on, d: Math.max(0.05, g.off - g.on), f: st2hz(plan.target.get(g.q)), v: 1 }));
   postMessage({ type: "notes", list });
 }
 

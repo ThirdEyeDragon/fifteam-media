@@ -471,11 +471,18 @@ export function analyzeBassLine(mono, sr, progress, dbg, opts = {}) {
     for (let k = 0; k < fo && kb - k >= ka; k++) amp[kb - k] *= k / fo;
   }
   if (full) {
-    // against the bass line's own loudness round that moment (its loudest within 200 ms either side): full while the
-    // bass is within 6 dB of that, following it below (gaps, pulses, re-hits, a note dying away)
-    const h = Math.round(0.2 * fs), R = slidingMax(amp, h);
+    // every note at the same level (the level chosen): each against its own loudest moment, not its neighbours' (a
+    // quiet note next to a loud one comes out just as loud), full while the original note is within 12 dB of that,
+    // following it below only for real gaps and re-hits
+    const ref = new Float32Array(n);
+    for (const g of notes) {
+      const k0 = Math.max(0, Math.floor(g.on * fs)), k1 = Math.min(n - 1, Math.ceil(g.off * fs));
+      let pk = 0; for (let k = k0; k <= k1; k++) if (amp[k] > pk) pk = amp[k];
+      for (let k = k0; k <= k1; k++) if (pk > ref[k]) ref[k] = pk;
+    }
+    const h = Math.round(0.2 * fs), R = slidingMax(amp, h), K = Math.min(T, 0.25);
     for (const [ka, kb] of chains) {
-      for (let k = ka; k <= kb; k++) level[k] = Math.min(1, amp[k] / Math.max(1e-12, T * R[k]));
+      for (let k = ka; k <= kb; k++) level[k] = Math.min(1, amp[k] / Math.max(1e-12, K * (ref[k] || R[k])));
       // clean edges: a quick rise (3 ms) and a smooth release (10 ms), raised cosine
       const fi = Math.max(1, Math.round(0.003 * fs)), fo = Math.max(1, Math.round(0.010 * fs));
       for (let k = 0; k < fi && ka + k <= kb; k++) level[ka + k] *= 0.5 - 0.5 * Math.cos((Math.PI * k) / fi);
@@ -642,7 +649,7 @@ export function renderNotes(notes, sr, length, speed = 1, progress) {
   notes.forEach((n, i) => {
     const s0 = Math.max(0, Math.round((n.t / speed) * sr)), s1 = Math.min(length, Math.round(((n.t + n.d) / speed) * sr));
     if (s1 <= s0) return;
-    const end = Math.min(length, s1 + Rel), w = (TAU * n.f) / sr, v = n.v == null ? 1 : n.v;
+    const end = Math.min(length, s1 + Rel), w = (TAU * n.f) / sr, v = 1;     // (every note at the level chosen)
     let ph = 0;
     for (let s = s0; s < end; s++) {
       const k = s - s0;

@@ -10,7 +10,7 @@ import { openShareSheet, fingerprint } from "./share.js";
 import { noteName, linToDb } from "./dsp.js";
 import { pickImage } from "./image.js";
 import { rebassAllowed, noteRebass, openUnlock } from "./premium.js";
-import { noteEditor, hz2st, noteName as stName } from "./notes.js";
+import { noteEditor } from "./notes.js";
 
 const S = {
   src: null, worker: null, loaded: false, origBuf: null, refBuf: null, refKey: "", outBuf: null, res: null, version: 0,
@@ -392,7 +392,7 @@ function paintNe() {
 function paintSel(n) {
   const box = $("rb-ne-sel");
   box.hidden = !n;
-  if (n) $("rb-ne-what").textContent = `${stName(hz2st(n.f))} · ${n.f.toFixed(1)} Hz · ${n.d.toFixed(2)} s`;
+  if (n) $("rb-ne-what").textContent = `${n.f.toFixed(1)} Hz · ${n.d.toFixed(2)} s long`;
 }
 /** The editor, once the song's bass is out (made again for a new song). */
 function makeEditor() {
