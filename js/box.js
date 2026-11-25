@@ -3,9 +3,10 @@
 // measurements: the box sizes itself to the volume (or keeps your exact measurements), works out the port, and shows
 // it all live in 3D, with the simulated response, cone travel, port air speed, impedance and group delay, what to
 // watch out for, the cut list and how to wire the subs. Designs can be saved.
-import { $, toast, bus } from "./ui.js";
+import { $, toast, bus, openSheet, closeSheet } from "./ui.js";
 import * as M from "./boxmath.js";
 import { boxView } from "./box3d.js";
+import { SUBS, subFrom, subName, subKey, findSub } from "./subs.js";
 
 const KEY = "fifteam-box", SAVED = "fifteam-boxes";
 const { IN, FT3, L: LTR, CM } = M;
@@ -20,25 +21,35 @@ function defaults() {
     count: 1, power: 600,
     qtc: 0.707, vbS: 1.3 * FT3,                     // sealed
     vbP: 1.75 * FT3, fbP: 32,                       // ported
-    s4: 0.7, g4: 0, vr4: 1.3 * FT3, vf4: 0.7 * FT3, fb4: 45,
+    s4: 0.7, g4: 0, c4: 50, vr4: 1.3 * FT3, vf4: 0.7 * FT3, fb4: 45,
     vr6: 2.1 * FT3, fr6: 27, vf6: 0.6 * FT3, ff6: 59, lo6: 30, hi6: 80,
     shape: "rect", w: 24 * IN, h: 15 * IN, d: 16 * IN, dt: 11 * IN, t: 0.75 * IN, dbl: false, brace: 0,
     fixed: false, solve: "w", split: 0.55,
     port: { kind: "slot", w: 1.6 * IN, dia: 4 * IN, n: 1, auto: true, len: 0 },
     port2: { kind: "slot", w: 1.5 * IN, dia: 3 * IN, n: 1, auto: true, len: 0 },
     cab: false, cabF: 50, ql: 10,
-    finish: "mdf", view: "solid", chart: "spl", pin: true,
+    finish: "mdf", paint: "#7a4bff", view: "solid", chart: "spl", pin: true,
+    style4: "std", style6: "std",                    // bandpass styles: standard (side by side), series (6th), hallway
+    lim: { w: 0, h: 0, d: 0 },                       // the space you have (0: no limit)
+    sub: null, est: [], quick: null,                 // a sub from the list (its brand and model), and what its maker doesn't publish
     wire: { dual: true, ohms: 4, amp: 1 },
     fu: { "drv.vas": "cm", "drv.sd": "cm" },          // fields with their own units (as spec sheets give them: litres, cm²)
     designed: { ported: true },
   };
 }
 let st = null;
+/** A saved (or shared) design over the defaults (older ones: their 6th-order "series" switch becomes its style). */
+function merge(d, s) {
+  const o = { ...d, ...s, drv: { ...d.drv, ...s.drv }, port: { ...d.port, ...s.port }, port2: { ...d.port2, ...s.port2 }, wire: { ...d.wire, ...s.wire }, designed: { ...s.designed }, fu: { ...d.fu, ...s.fu }, lim: { ...d.lim, ...s.lim } };
+  if (s.series && !s.style6) o.style6 = "series";
+  o.count = Math.max(1, Math.min(20, o.count | 0 || 1));
+  return o;
+}
 function load() {
   const d = defaults();
   try {
     const s = JSON.parse(localStorage.getItem(KEY) || "null");
-    if (s && s.v === 1) return { ...d, ...s, drv: { ...d.drv, ...s.drv }, port: { ...d.port, ...s.port }, port2: { ...d.port2, ...s.port2 }, wire: { ...d.wire, ...s.wire }, designed: { ...s.designed }, fu: { ...d.fu, ...s.fu } };
+    if (s && s.v === 1) return merge(d, s);
   } catch {}
   return d;
 }
@@ -103,7 +114,7 @@ function field(path, label, kind, o = {}) {
     if (!ok) return;
     set(path, kind === "n" ? Math.round(v) : v * unit(kind, path)[0]);
     if (o.on) o.on();
-    if (path.startsWith("drv.")) { st.preset = "custom"; paintPresets(); }
+    if (path.startsWith("drv.")) { st.preset = "custom"; st.sub = null; st.est = []; paintPresets(); paintSubName(); }
     schedule();
   });
   inp.addEventListener("blur", () => { inp.classList.remove("bad"); paintField(f); });
@@ -181,6 +192,11 @@ function paintCheck() {
 
 // ---------------------------------------------------------------------------------------------------- designs for each type
 const vented = () => st.type !== "sealed";
+/** The bandpass style: "std" (the chambers side by side), "series" (6th: the rear one ported into the front one) or
+ * "hall" (hallway: subs on two dividers facing each other across the middle chamber, a rear chamber behind each). */
+const styleOf = () => (st.type === "bp6" ? st.style6 : st.type === "bp4" ? st.style4 : "std");
+const isSeries = () => st.type === "bp6" && st.style6 === "series";
+const designKey = (type = st.type) => type + (type === "bp6" ? ":" + st.style6 : type === "bp4" ? ":" + st.style4 : "");
 const drvNow = () => M.driver(st.drv);
 /** Recommended volumes and tunings for the box type (and the sub, and how many). */
 function design(type = st.type, quiet = false) {
@@ -189,13 +205,21 @@ function design(type = st.type, quiet = false) {
     if (st.qtc <= d.qts * 1.02) st.qtc = Math.max(0.707, +(d.qts * 1.2).toFixed(2));
     st.vbS = M.sealedVolume(d, N, st.qtc);
   } else if (type === "ported") st.vbP = M.ventedVolumeFor(d, N, st.fbP);
-  else if (type === "bp4") { const b = M.bp4Design(d, N, st.s4, st.g4); st.vr4 = b.vr; st.vf4 = b.vf; st.fb4 = +b.fb.toFixed(1); }
-  else { const b = M.bp6Design(d, N, st.series, st.lo6, st.hi6); st.vr6 = b.vr; st.fr6 = +b.fr.toFixed(1); st.vf6 = b.vf; st.ff6 = +b.ff.toFixed(1); }
-  st.designed[type + (type === "bp6" ? (st.series ? "s" : "p") : "")] = true;
+  else if (type === "bp4") { const b = M.bp4At(d, N, st.s4, st.c4); st.vr4 = b.vr; st.vf4 = b.vf; st.fb4 = +b.fb.toFixed(1); }
+  else { const b = M.bp6Design(d, N, isSeries(), st.lo6, st.hi6); st.vr6 = b.vr; st.fr6 = +b.fr.toFixed(1); st.vf6 = b.vf; st.ff6 = +b.ff.toFixed(1); }
+  st.designed[designKey(type)] = true;
   // the ports: sized for the air flow at this power (after a first look)
-  if (type !== "sealed") { st.port.auto = true; st.port2.auto = true; compute(); sizePorts(true); }
-  const moved = reshape();
-  if (sanity().length) toast("Check your sub's numbers first: one looks like the wrong unit (see Your sub)", 4500);
+  // (from the same neutral ports every time, so the same sub always gets the same design)
+  if (type !== "sealed") {
+    for (const P of [st.port, st.port2]) { P.auto = true; if (P.kind === "round" && P.n > 1) P.kind = "slot"; P.w = 1.5 * IN; P.dia = 4 * IN; P.n = 1; }
+    compute(); sizePorts(true, portRule);
+  }
+  grown = false;
+  let moved = reshape();
+  // (a port along a hallway's top grows with the middle chamber's width: sized again for the new box, and shaped again)
+  if (type !== "sealed") { compute(); sizePorts(true, portRule); moved = reshape() || moved; compute(); sizePorts(true, portRule, true); compute(); }
+  if (grown) toast(`${st.count > 1 ? "These subs need" : "This sub needs"} a bigger box than that to fit: ${fmt("vol", st.vbS)}, Qtc ${st.qtc.toFixed(2)}`, 4500);
+  else if (sanity().length) toast("Check your sub's numbers first: one looks like the wrong unit (see Your sub)", 4500);
   else if (!quiet) toast(M.misfits(res.L) ? "Designed, but something doesn't fit: see the notes under How it plays" : moved ? "Designed for this sub, and re-sized so it all fits" : "Designed for this sub", 3500);
 }
 /** A good shape for the design (unless the measurements are your own): the most compact box where the sub and the
@@ -205,8 +229,8 @@ function reshape() {
   if (st.fixed) return false;
   const before = [st.w, st.h, st.d].join();
   for (let k = 0; k < 7; k++) {
-    const f = M.shapeBox(spec(), st.solve, ...targets());
-    if (f) { st.w = f.w; st.h = f.h; st.d = f.d; if (st.shape === "wedge") st.dt = f.dt; if (f.split != null) st.split = f.split; }
+    const f = M.shapeBox(spec(), st.solve, ...targets(), st.lim);
+    if (f) { st.w = f.w; st.h = f.h; st.d = f.d; if (st.shape === "wedge") st.dt = f.dt; if (f.split != null) st.split = f.split; if (f.grow) setTargets(f.grow); }
     const R = compute();
     if (!M.misfits(R.L) || !R.L.ports.length) break;
     let shrunk = false;
@@ -217,27 +241,78 @@ function reshape() {
       shrunk = true;
     });
     if (!shrunk) break;
-    if (k === 6) { const g = M.shapeBox(spec(), st.solve, ...targets()); if (g) { st.w = g.w; st.h = g.h; st.d = g.d; if (st.shape === "wedge") st.dt = g.dt; if (g.split != null) st.split = g.split; } compute(); }
+    if (k === 6) { const g = M.shapeBox(spec(), st.solve, ...targets(), st.lim); if (g) { st.w = g.w; st.h = g.h; st.d = g.d; if (st.shape === "wedge") st.dt = g.dt; if (g.split != null) st.split = g.split; } compute(); }
   }
   return before !== [st.w, st.h, st.d].join();
 }
-/** Port sizes for clean air flow at the power used. */
-function sizePorts(quiet) {
+/** Port sizes for the air flow at the power used: by default under 26 m/s, between 10 and 24 in² per ft³ (a quick
+ * build can ask for more air, or less). The area is shared between a port's copies (a hallway's two rear ports). */
+let portRule = { v: 26, lo: 10, hi: 24 };
+function sizePorts(quiet, rule = portRule, capOnly = false) {
   const R = res || compute();
   R.L.ports.forEach((p, i) => {
     const P = p.key === "port2" ? st.port2 : st.port;
-    const S = M.portAreaFor(R.sim, i, R.L.net[p.k], 26, R.fmin);
-    if (P.kind === "slot") P.w = Math.max(0.5 * IN, S / R.L.Hi);
-    else P.dia = Math.max(1.5 * IN, 2 * Math.sqrt(S / P.n / Math.PI));
+    // (capOnly: kept as it is, only made bigger if it's too small to reach the tuning)
+    let S = capOnly ? p.S : M.portAreaFor(R.sim, i, R.L.net[p.k], rule.v, R.fmin, rule.lo, rule.hi);
+    // (a port must come out at least 2″ longer than the wood it starts in: one that would be shorter is too small to
+    // reach the tuning in that much air, so it's made bigger, up to 40 in² per ft³)
+    const V = R.L.net[p.k], one = (A) => (P.kind === "slot" ? A / p.copies : A / p.copies / P.n);
+    const top = 40 * (V / FT3) * IN * IN;
+    while (S < top && M.lenFor(V, S, one(S), p.fbWant) < p.through + 2 * IN) S *= 1.1;
+    S /= p.copies;
+    // (a slot under ⅜″ is no good to build: a port that small is a round tube, or a few)
+    if (P.kind === "slot" && S / p.span < 0.3 * IN) { P.kind = "round"; P.n = Math.max(1, Math.min(4, Math.round(S / (Math.PI * (2 * IN) ** 2)))); }
+    // (a hallway's top port: no deeper than 30% of the inside's height, or it crowds the subs off the dividers)
+    if (P.kind === "slot") P.w = p.top ? Math.max(0.3 * IN, Math.min(S / p.span, 0.3 * R.L.Hi, R.L.topRoom)) : S / p.span;
+    else P.dia = Math.max(1.25 * IN, 2 * Math.sqrt(S / P.n / Math.PI));
   });
   if (!quiet) { toast("Port sized for clean air flow"); schedule(); }
 }
+
+// ---------------------------------------------------------------------------------------------------- quick builds
+/** Whole designs in one tap, each for a kind of bass, worked out for the sub picked (its Fs moves the tunings). */
+const QUICK = [
+  ["daily", "Daily", "Ported, flat and deep: about 32 Hz, the flattest box there, quiet port", { type: "ported", fb: (fs) => clamp(fs, 30, 34), vol: 1, rule: { v: 24, lo: 12, hi: 18 } }],
+  ["deep", "Deep", "Ported low: about 28 Hz in a bigger box, for the lowest notes", { type: "ported", fb: (fs) => clamp(fs * 0.85, 25, 29), vol: 1, rule: { v: 24, lo: 12, hi: 18 } }],
+  ["loud", "Loud", "Ported higher: about 38 Hz, louder where most music hits, a big port", { type: "ported", fb: (fs) => clamp(fs * 1.2, 36, 42), vol: 1.1, rule: { v: 22, lo: 14, hi: 20 } }],
+  ["windy", "Windy", "The most air out of the port: a big box at about 33 Hz with a huge port (18 to 30 in² per ft³), so you feel it move", { type: "ported", fb: (fs) => clamp(fs, 31, 35), vol: 1.25, rule: { v: 15, lo: 18, hi: 30 } }],
+  ["spl", "SPL", "Built for numbers: tuned high (about 46 Hz) in a tight box, a big port", { type: "ported", fb: (fs) => clamp(fs * 1.45, 44, 52), vol: 0.9, rule: { v: 20, lo: 16, hi: 26 } }],
+  ["compact", "Compact", "Sealed and small: tight, punchy (Qtc 0.85), fits anywhere", { type: "sealed", qtc: 0.85 }],
+  ["sq", "SQ", "Sealed and accurate: flat (Qtc 0.71), for sound quality", { type: "sealed", qtc: 0.707 }],
+  ["band", "Bandpass", "4th order around 50 Hz: loud in its band, the subs protected inside", { type: "bp4", style: "std", s4: 0.6, c4: 50, rule: { v: 24, lo: 12, hi: 22 } }],
+  ["hall", "Hallway", "6th order hallway: subs facing each other into a ported middle chamber, both rear chambers ported, 30–75 Hz", { type: "bp6", style: "hall", lo: 30, hi: 75, rule: { v: 24, lo: 12, hi: 22 } }],
+];
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+function quickBuild(key) {
+  const q = QUICK.find((x) => x[0] === key); if (!q) return;
+  const o = q[3], d = drvNow();
+  st.quick = key; st.type = o.type; st.fixed = false;
+  if (o.type === "sealed") st.qtc = Math.max(o.qtc, +(d.qts * 1.15).toFixed(2));
+  if (o.type === "bp4") { st.style4 = o.style; st.s4 = o.s4; st.c4 = Math.round(clamp(o.c4, d.fs * 1.15, 65)); }
+  if (o.type === "bp6") { st.style6 = o.style; st.lo6 = o.lo; st.hi6 = o.hi; }
+  if (o.type === "ported") st.fbP = Math.round(o.fb(d.fs));
+  portRule = o.rule || { v: 26, lo: 10, hi: 24 };
+  st.port.kind = st.port2.kind = "slot";
+  design(o.type, true);
+  if (o.type === "ported" && o.vol !== 1) { st.vbP = M.ventedVolumeFor(d, st.count, st.fbP) * o.vol; compute(); sizePorts(true, portRule); reshape(); }
+  portRule = { v: 26, lo: 10, hi: 24 };
+  paintAll();
+  toast(`${q[1]}: ${res.L.net.map((v) => fmt("vol", v)).join(" + ")}${res.L.ports.length ? " at " + res.L.ports.map((p) => p.fb.toFixed(0)).join("/") + " Hz" : ""}`, 3500);
+}
+/** The design's volumes, set (a box grown to hold the subs): a sealed box's Qtc follows. */
+function setTargets(v) {
+  if (st.type === "sealed") { st.vbS = v[0]; st.qtc = +M.sealedQ(drvNow(), st.count, v[0]).qtc.toFixed(3); grown = true; }
+  else if (st.type === "ported") st.vbP = v[0];
+  else if (st.type === "bp4") { st.vr4 = v[0]; st.vf4 = v[1]; }
+  else { st.vr6 = v[0]; st.vf6 = v[1]; }
+}
+let grown = false;
 const targets = () => (st.type === "sealed" ? [st.vbS] : st.type === "ported" ? [st.vbP] : st.type === "bp4" ? [st.vr4, st.vf4] : [st.vr6, st.vf6]);
 function spec() {
   const P1 = { ...st.port, fb: st.type === "ported" ? st.fbP : st.type === "bp4" ? st.fb4 : st.ff6 };
   const P2 = { ...st.port2, fb: st.fr6 };
   return {
-    type: st.type, series: st.series, shape: st.shape, w: st.w, h: st.h, d: st.d, dt: Math.min(st.dt, st.d), t: st.t, dbl: st.dbl, brace: st.brace, count: st.count,
+    type: st.type, series: isSeries(), style: styleOf(), shape: st.shape, w: st.w, h: st.h, d: st.d, dt: Math.min(st.dt, st.d), t: st.t, dbl: st.dbl, brace: st.brace, count: st.count,
     sub: { size: st.drv.size, cutout: st.drv.cutout, depth: st.drv.depth, disp: st.drv.disp, pe: st.drv.pe, xmax: st.drv.xmax }, port: P1, port2: P2, split: st.split,
   };
 }
@@ -255,7 +330,7 @@ function compute() {
   }
   const L = M.layout(B);
   L.ports.forEach((p) => { const P = p.key === "port2" ? st.port2 : st.port; if (P.auto) P.len = p.len; });
-  const sim = M.simulate({ drv, count: st.count, power: st.power, type: st.type, series: st.series, V: L.net, ports: L.ports.map((p) => ({ S: p.S, S1: p.S1, len: p.len })), ql: st.ql }, FR);
+  const sim = M.simulate({ drv, count: st.count, power: st.power, type: st.type, series: isSeries(), V: L.net, ports: L.ports.map((p) => ({ S: p.S, S1: p.S1, len: p.len })), ql: st.ql }, FR);
   const tunes = L.ports.map((p) => p.fb);
   // (where the cone's travel and the port's air are judged: above the subsonic filter recommended for a ported box, at
   // 0.8 x its lowest tuning; from 20 Hz for a sealed one)
@@ -295,6 +370,9 @@ const TYPE_INFO = {
   ported: "Louder and deeper than sealed around the tuning, from a bigger box with a port. The most popular for car audio.",
   bp4: "The sub fires into a ported chamber, with a sealed chamber behind it: all the sound comes out of the port. Loud in a band, very protected.",
   bp6: "Both chambers ported: wide, loud bandpass bass. The hardest to build right; the numbers matter.",
+  "bp4:hall": "Hallway: the subs face each other on two dividers, firing into a ported middle chamber, a sealed chamber behind each. Loud and tight in a band.",
+  "bp6:hall": "Hallway: the subs face each other on two dividers into a ported middle chamber, and the chambers behind them are ported too. The SPL wall layout.",
+  "bp6:series": "Series: the rear chamber ports into the front one, and only the front one ports out. A smooth, wide band.",
 };
 function tile(label, value, note, cls = "") { const t = h("div", "bx-tile " + cls); t.append(h("small", "", label), h("b", "", value)); if (note) t.append(h("span", "", note)); return t; }
 function paintResults() {
@@ -305,11 +383,12 @@ function paintResults() {
   const gain = (i) => sim.spl[i] + cabin(sim.f[i]);
   // volumes and tunings
   if (L.net.length === 1) tiles.append(tile("Net volume", fmt("vol", L.net[0]), `${fmt("vol", L.gross[0])} inside`));
+  else if (L.hall) tiles.append(tile(st.type === "bp4" ? "Sealed chambers" : "Rear chambers", fmt("vol", L.net[0]), "net, both, behind the subs"), tile("Middle chamber", fmt("vol", L.net[1]), "net, the subs fire into it"));
   else tiles.append(tile(st.type === "bp4" ? "Sealed chamber" : "Rear chamber", fmt("vol", L.net[0]), "net, behind the sub"), tile(st.type === "bp4" ? "Ported chamber" : "Front chamber", fmt("vol", L.net[1]), "net, the sub fires into it"));
   if (st.type === "sealed") {
     const q = M.sealedQ(drv, st.count, L.net[0]);
     tiles.append(tile("Qtc", q.qtc.toFixed(2), q.qtc < 0.6 ? "deep, smooth" : q.qtc < 0.75 ? "flat" : q.qtc < 0.95 ? "punchy" : "boomy"), tile("Resonance", `${q.fc.toFixed(1)} Hz`, "Fc"));
-  } else L.ports.forEach((p) => tiles.append(tile(L.ports.length > 1 ? cap(M.portName(st, p)) + " tuning" : "Tuning", `${p.fb.toFixed(1)} Hz`, `${M.portName(st, p) === "port" ? "port" : M.portName(st, p)} ${cutLen(p.len)} long`)));
+  } else L.ports.forEach((p) => tiles.append(tile(L.ports.length > 1 ? cap(M.portName(spec(), p)) + " tuning" : "Tuning", `${p.fb.toFixed(1)} Hz`, `${M.portName(spec(), p) === "port" ? "port" : M.portName(spec(), p)} ${cutLen(p.len)} long`)));
   if (st.type === "sealed" || st.type === "ported") {
     const ref = sim.ref, base = sim.spl.map((v, i) => v + cabin(sim.f[i]));
     const f3 = M.cutoff({ f: sim.f, spl: base }, ref), f10 = M.cutoff({ f: sim.f, spl: base }, ref, 10);
@@ -326,7 +405,7 @@ function paintResults() {
   tiles.append(tile("Cone travel", `${(xpk * 1000).toFixed(1)} mm`, `Xmax ${(drv.xmax * 1000).toFixed(1)} mm · at ${sim.f[xi].toFixed(0)} Hz`, over ? "bad" : xpk > drv.xmax * 0.85 ? "mid" : "good"));
   L.ports.forEach((p, i) => {
     let v = 0; for (let k = 0; k < sim.f.length; k++) if (sim.f[k] >= R.fmin) v = Math.max(v, sim.vel[i][k]);
-    tiles.append(tile(L.ports.length > 1 ? cap(M.portName(st, p)) + " air" : "Port air speed", `${v.toFixed(1)} m/s`, `${fmt("area", p.S)} port · ${(p.S / IN / IN / (L.net[p.k] / FT3)).toFixed(1)} in²/ft³`, v > 30 ? "bad" : v > 17 ? "mid" : "good"));
+    tiles.append(tile(L.ports.length > 1 ? cap(M.portName(spec(), p)) + " air" : "Port air speed", `${v.toFixed(1)} m/s`, `${fmt("area", p.S)} port · ${(p.S / IN / IN / (L.net[p.k] / FT3)).toFixed(1)} in²/ft³`, v > 30 ? "bad" : v > 17 ? "mid" : "good"));
   });
   tiles.append(tile("Power", `${st.power} W`, `${Math.round(st.power / st.count)} W per sub · rated ${drv.pe} W`, st.power / st.count > drv.pe * 1.25 ? "bad" : ""));
 
@@ -343,9 +422,9 @@ function paintResults() {
   }
   L.ports.forEach((p, i) => {
     let v = 0; for (let k = 0; k < sim.f.length; k++) if (sim.f[k] >= R.fmin) v = Math.max(v, sim.vel[i][k]);
-    if (v > 30) W.push(`Air in the ${M.portName(st, p)} reaches ${v.toFixed(0)} m/s at full power: it will chuff (huff and whistle). Make it bigger: tap "Size the ports for clean air".`);
-    else if (v > 17) ok.push(`The ${M.portName(st, p)}'s air reaches ${v.toFixed(0)} m/s at full power: fine for most, may be heard on test tones.`);
-    if (p.pipe < 160) ok.push(`The ${M.portName(st, p)}'s own resonance is about ${Math.round(p.pipe)} Hz: keep the sub's low-pass under ${Math.round(p.pipe * 0.75)} Hz.`);
+    if (v > 30) W.push(`Air in the ${M.portName(spec(), p)} reaches ${v.toFixed(0)} m/s at full power: it will chuff (huff and whistle). Make it bigger: tap "Size the ports for clean air".`);
+    else if (v > 17) ok.push(`The ${M.portName(spec(), p)}'s air reaches ${v.toFixed(0)} m/s at full power: fine for most, may be heard on test tones.`);
+    if (p.pipe < 160) ok.push(`The ${M.portName(spec(), p)}'s own resonance is about ${Math.round(p.pipe)} Hz: keep the sub's low-pass under ${Math.round(p.pipe * 0.75)} Hz.`);
   });
   if (st.type === "sealed") {
     const q = M.sealedQ(drv, st.count, L.net[0]).qtc;
@@ -353,9 +432,14 @@ function paintResults() {
     if (drv.ebp > 100) ok.push(`This sub's EBP is ${drv.ebp.toFixed(0)}: it's built more for a ported box.`);
   } else if (st.type === "ported" && drv.ebp < 50) ok.push(`This sub's EBP is ${drv.ebp.toFixed(0)}: it's built more for a sealed box.`);
   for (const c of sanity()) W.unshift(c.msg);
+  // the space you have
+  const big = [["w", "wide", L.W], ["h", "tall", L.H], ["d", "deep", L.D]].filter(([k, , v]) => st.lim[k] > 0 && v > st.lim[k] + 1e-4);
+  if (big.length) W.unshift(`It doesn't fit your space: ${big.map(([k, word, v]) => `${cutLen(v - st.lim[k])} too ${word}`).join(", ")}. A smaller box, fewer subs, or a sealed box would fit.`);
   if (drv.guessedQms) W.push("Qes has to be bigger than Qts: Qms was taken as 8 until the sub's real Qes is entered.");
   if (st.power / st.count > drv.pe * 1.25) W.push(`${Math.round(st.power / st.count)} W per sub is well over its ${drv.pe} W rating.`);
-  if (st.preset !== "custom") ok.push(`These are typical ${st.preset}-inch numbers. Enter your sub's own (on its spec sheet) for real results.`);
+  if (M.PRESETS[st.preset]) ok.push(`These are typical ${st.preset}-inch numbers. Pick your sub from the list, or enter its spec sheet, for real results.`);
+  const dbs = st.sub && findSub(st.sub);
+  if (dbs && st.est.length) ok.push(`${subName(dbs)}: its maker doesn't publish ${st.est.join(", ")}, so typical values for its size are used there.`);
   const wl = $("bx-warn"); wl.replaceChildren();
   for (const w of W) { const r = h("div", "bx-w bad"); r.append(icon("i-warn"), h("span", "", w)); wl.append(r); }
   for (const w of ok) { const r = h("div", "bx-w"); r.append(icon("i-info"), h("span", "", w)); wl.append(r); }
@@ -384,7 +468,7 @@ function paintChart() {
     series.push({ y: main, col: "grad", name: `${st.power} W` }, { y: max, col: "#ff6fa0", dash: true, name: "Xmax limit" });
     unitTxt = "dB"; dec = 1;
   } else if (k === "x") { series.push({ y: sim.x.map((v) => v * 1000), col: "grad", name: "travel" }); guides.push({ y: drv.xmax * 1000, label: "Xmax", col: "#ff6fa0" }); unitTxt = "mm"; dec = 1; }
-  else if (k === "vel") { L.ports.forEach((p, i) => series.push({ y: sim.vel[i], col: i ? "#4fd1ff" : "grad", name: M.portName(st, p) })); guides.push({ y: 17, label: "17", col: "#ffb35c" }, { y: 30, label: "30", col: "#ff6fa0" }); unitTxt = "m/s"; dec = 1; }
+  else if (k === "vel") { L.ports.forEach((p, i) => series.push({ y: sim.vel[i], col: i ? "#4fd1ff" : "grad", name: M.portName(spec(), p) })); guides.push({ y: 17, label: "17", col: "#ffb35c" }, { y: 30, label: "30", col: "#ff6fa0" }); unitTxt = "m/s"; dec = 1; }
   else if (k === "z") { series.push({ y: sim.z, col: "grad", name: "Ω" }); unitTxt = "Ω"; dec = 1; }
   else { series.push({ y: sim.gd.map((v) => v * 1000), col: "grad", name: "ms" }); unitTxt = "ms"; dec = 1; }
   let lo = Infinity, hi = -Infinity;
@@ -462,22 +546,27 @@ function paintSaved() {
   list.forEach((s, i) => {
     const r = h("div", "bx-srow");
     const n = h("button", "bx-sname"); n.type = "button"; n.append(h("b", "", s.name), h("small", "", s.what));
-    n.onclick = () => { const d = defaults(); st = { ...d, ...s.st, drv: { ...d.drv, ...s.st.drv }, port: { ...d.port, ...s.st.port }, port2: { ...d.port2, ...s.st.port2 }, wire: { ...d.wire, ...s.st.wire } }; paintAll(); toast(`Opened ${s.name}`); $("view-box").scrollTo({ top: 0, behavior: "smooth" }); };
+    n.onclick = () => { st = merge(defaults(), s.st); paintAll(); toast(`Opened ${s.name}`); $("view-box").scrollTo({ top: 0, behavior: "smooth" }); };
     const del = h("button", "btn small bx-sdel"); del.type = "button"; del.setAttribute("aria-label", `Delete ${s.name}`); del.append(icon("i-trash"));
     del.onclick = () => { if (!confirm(`Delete "${s.name}"?`)) return; const l = savedList(); l.splice(i, 1); try { localStorage.setItem(SAVED, JSON.stringify(l)); } catch {} paintSaved(); };
     r.append(n, del); box.append(r);
   });
 }
 function describe() {
-  const L = res.L, T = { sealed: "Sealed", ported: "Ported", bp4: "4th order bandpass", bp6: `6th order bandpass (${st.series ? "series" : "parallel"})` }[st.type];
-  return `${st.count}× ${st.preset === "custom" ? "sub" : st.preset + "″"} · ${T} · ${L.net.map((v) => fmt("vol", v)).join(" + ")}${L.ports.length ? " · " + L.ports.map((p) => p.fb.toFixed(0) + " Hz").join(" / ") : ""}`;
+  const L = res.L, T = typeName();
+  return `${st.count}× ${subLabel()} · ${T} · ${L.net.map((v) => fmt("vol", v)).join(" + ")}${L.ports.length ? " · " + L.ports.map((p) => p.fb.toFixed(0) + " Hz").join(" / ") : ""}`;
+}
+const subLabel = () => { const s = st.sub && findSub(st.sub); return s ? `${s.brand} ${s.model}` : M.PRESETS[st.preset] ? st.preset + "″ sub" : "sub"; };
+function typeName() {
+  const sty = styleOf();
+  return { sealed: "Sealed", ported: "Ported", bp4: sty === "hall" ? "4th order hallway" : "4th order bandpass", bp6: sty === "hall" ? "6th order hallway" : sty === "series" ? "6th order bandpass (series)" : "6th order bandpass" }[st.type];
 }
 /** The whole build as text: to copy, or to send. */
 function sheet() {
   const { L, sim } = res, lines = [`FifTeam Media sub box: ${describe()}`, ""];
   lines.push(`Outside: ${cutLen(L.W)} wide × ${cutLen(L.H)} tall × ${cutLen(L.D)} deep${L.Dt < L.D ? ` (${cutLen(L.Dt)} at the top)` : ""}, ${cutLen(st.t)} wood${st.dbl ? ", double front" : ""}`);
-  L.net.forEach((v, k) => lines.push(`${L.net.length > 1 ? (k ? "Front chamber" : "Rear chamber") : "Box"}: ${fmt("vol", v)} net (${fmt("vol", L.gross[k])} inside)`));
-  for (const p of L.ports) lines.push(`${cap(M.portName(st, p))}: ${p.kind === "slot" ? `slot ${cutLen(p.sw)} × ${cutLen(L.Hi)}` : `${p.n}× ${cutLen(p.dia)} round`}, ${cutLen(p.len)} long${p.bend ? " (bent along the back)" : ""}, tuned to ${p.fb.toFixed(1)} Hz`);
+  L.net.forEach((v, k) => lines.push(`${L.net.length > 1 ? (k ? (L.hall ? "Middle chamber" : "Front chamber") : (L.hall ? "Rear chambers (both)" : "Rear chamber")) : "Box"}: ${fmt("vol", v)} net (${fmt("vol", L.gross[k])} inside)`));
+  for (const p of L.ports) lines.push(`${cap(M.portName(spec(), p))}: ${p.copies > 1 ? p.copies + "× " : ""}${p.kind === "slot" ? `slot ${cutLen(p.sw)} × ${cutLen(p.span)}` : `${p.n}× ${cutLen(p.dia)} round`}, ${cutLen(p.len)} long${p.bend ? " (bent)" : ""}, tuned to ${p.fb.toFixed(1)} Hz`);
   lines.push("", "Cut list:");
   for (const c of L.cut) lines.push(`  ${c.n}× ${c.name}: ${cutLen(c.a)} × ${cutLen(c.b)}${c.b2 ? ` / ${cutLen(c.b2)}` : ""}${c.note ? ` (${c.note})` : ""}`);
   lines.push("", `Sub cutout ${cutLen(st.drv.cutout)}. Power ${st.power} W. Peak cone travel ${(Math.max(...sim.x.filter((x, i) => sim.f[i] >= res.fmin && sim.f[i] <= 200)) * 1000).toFixed(1)} mm (Xmax ${(st.drv.xmax * 1000).toFixed(1)} mm).`);
@@ -492,14 +581,31 @@ function paintDesign() {
   document.querySelectorAll("#bx-qtc .chip").forEach((c) => c.classList.toggle("on", Math.abs(+c.dataset.k - st.qtc) < 0.005));
   document.querySelectorAll("#bx-fbp .chip").forEach((c) => c.classList.toggle("on", c.dataset.k !== "flat" && Math.abs(+c.dataset.k - st.fbP) < 0.05));
   document.querySelectorAll("#bx-s4 .chip").forEach((c) => c.classList.toggle("on", Math.abs(+c.dataset.k - st.s4) < 0.005));
-  document.querySelectorAll("#bx-g4 .chip").forEach((c) => c.classList.toggle("on", Math.abs(+c.dataset.k - st.g4) < 0.05));
+  document.querySelectorAll("#bx-c4 .chip").forEach((c) => c.classList.toggle("on", Math.abs(+c.dataset.k - st.c4) < 0.05));
   const drv = res && res.drv;
   if (drv) $("bx-drv-note").textContent = `Vas ${(drv.vas / FT3).toFixed(2)} ft³ = ${(drv.vas / LTR).toFixed(1)} L · Sd ${(drv.sd / IN / IN).toFixed(1)} in² = ${(drv.sd / CM / CM).toFixed(0)} cm² · Qms ${drv.qms.toFixed(2)} · BL ${drv.bl.toFixed(1)} T·m · Mms ${(drv.mms * 1000).toFixed(0)} g · ${drv.sens.toFixed(1)} dB at 2.83 V · EBP ${drv.ebp.toFixed(0)} (${drv.ebp < 50 ? "sealed" : drv.ebp > 100 ? "ported" : "either box"})`;
   $("bx-solve-row").hidden = st.fixed;
   $("bx-split-row").hidden = !st.fixed || (st.type !== "bp4" && st.type !== "bp6");
   $("bx-split").value = Math.round(st.split * 100); $("bx-split-v").textContent = `${Math.round(st.split * 100)}% / ${100 - Math.round(st.split * 100)}%`;
   document.querySelectorAll(".bx-target").forEach((e) => (e.hidden = st.fixed));
-  $("bx-series").hidden = st.type !== "bp6";
+}
+/** The bandpass style buttons for the type. */
+function paintStyle() {
+  const el = $("bx-style"); if (!el) return;
+  const items = st.type === "bp6" ? [["std", "Standard"], ["series", "Series"], ["hall", "Hallway"]] : st.type === "bp4" ? [["std", "Standard"], ["hall", "Hallway"]] : [];
+  el.hidden = !items.length;
+  if (el.dataset.t !== st.type) {
+    el.dataset.t = st.type; el.replaceChildren();
+    for (const [k, label] of items) { const b = h("button", "", label); b.type = "button"; b.dataset.k = k; el.append(b); }
+  }
+  el.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.k === styleOf()));
+}
+function paintSubName() {
+  const el = $("bx-subname"); if (!el) return;
+  const s = st.sub && findSub(st.sub);
+  el.replaceChildren();
+  if (s) { el.append(h("b", "", subName(s)), h("small", "", `${s.size}″${s.rms ? ` · ${s.rms} W RMS` : ""} · specs from ${s.src}${st.est.length ? ` · not published: ${st.est.join(", ")} (typical values used)` : ""}`)); }
+  else el.append(h("small", "", M.PRESETS[st.preset] ? `Typical ${st.preset}″ numbers` : "Your own numbers"));
 }
 function paintPorts() {
   const box = $("bx-ports"); if (!box || !res) return;
@@ -509,16 +615,15 @@ function paintPorts() {
     const el = $("bx-" + key), p = L.ports.find((q) => q.key === key), P = st[key];
     el.hidden = !p;
     if (!p) continue;
-    el.querySelector(".bx-pname").textContent = L.ports.length > 1 ? cap(M.portName(st, p)) : "The port";
+    el.querySelector(".bx-pname").textContent = L.ports.length > 1 ? cap(M.portName(spec(), p)) : "The port";
     el.querySelectorAll(".seg button").forEach((b) => b.classList.toggle("on", b.dataset.k === P.kind));
     el.querySelector(".bx-pslot").hidden = P.kind !== "slot"; el.querySelector(".bx-pround").hidden = P.kind !== "round";
     el.querySelector(".bx-pauto").checked = P.auto;
-    el.querySelector(".bx-pinfo").textContent = `${fmt("area", p.S)} · ${cutLen(p.len)} long (${cutLen(p.lin)} inside${p.bend ? ", bent along the back" : ""}) · tuned to ${p.fb.toFixed(1)} Hz${P.kind === "slot" ? ` · ${cutLen(p.sw)} × ${cutLen(L.Hi)} slot` : ""}`;
+    el.querySelector(".bx-pinfo").textContent = `${fmt("area", p.S)}${p.copies > 1 ? ` (${p.copies} ports)` : ""} · ${cutLen(p.len)} long (${cutLen(p.lin)} inside${p.bend ? ", bent" : ""}) · tuned to ${p.fb.toFixed(1)} Hz${P.kind === "slot" ? ` · ${cutLen(p.sw)} × ${cutLen(p.span)} slot${p.top ? " along the top" : ""}` : ""}`;
   }
 }
 function paintAll() {
   document.querySelectorAll("#bx-type button").forEach((b) => b.classList.toggle("on", b.dataset.k === st.type));
-  document.querySelectorAll("#bx-series button").forEach((b) => b.classList.toggle("on", b.dataset.k === (st.series ? "s" : "p")));
   document.querySelectorAll("#bx-units button").forEach((b) => b.classList.toggle("on", b.dataset.k === st.units));
   document.querySelectorAll("#bx-shape button").forEach((b) => b.classList.toggle("on", b.dataset.k === st.shape));
   document.querySelectorAll("#bx-solve button").forEach((b) => b.classList.toggle("on", b.dataset.k === st.solve));
@@ -531,12 +636,17 @@ function paintAll() {
   document.querySelectorAll("#bx-amp .chip").forEach((c) => c.classList.toggle("on", +c.dataset.k === st.wire.amp));
   document.querySelectorAll("#bx-cabf .chip").forEach((c) => c.classList.toggle("on", +c.dataset.k === st.cabF));
   $("bx-cabf").hidden = !st.cab; $("bx-cab").checked = st.cab; $("bx-fixed").checked = st.fixed; $("bx-dbl").checked = st.dbl;
-  $("bx-type-info").textContent = TYPE_INFO[st.type];
-  $("bx-count").textContent = st.count;
+  $("bx-type-info").textContent = TYPE_INFO[st.type + ":" + styleOf()] || TYPE_INFO[st.type];
+  if (document.activeElement !== $("bx-count")) $("bx-count").value = st.count;
   $("bx-3dcard").classList.toggle("pinned", st.pin); $("bx-pin").classList.toggle("on", st.pin);
   document.querySelectorAll("#bx-thick .chip").forEach((c) => c.classList.toggle("on", Math.abs(+c.dataset.k * IN - st.t) < 1e-4));
   paintPresets();
-  if (view) { view.setMode(st.view); view.setFinish(st.finish); }
+  if (view) { view.setMode(st.view); view.setFinish(st.finish, st.paint); }
+  $("bx-paint-row").hidden = st.finish !== "paint"; $("bx-paint").value = st.paint;
+  document.querySelectorAll("#bx-swatches .bx-sw").forEach((b) => b.classList.toggle("on", b.dataset.c.toLowerCase() === st.paint.toLowerCase()));
+  paintStyle(); paintSubName();
+  document.querySelectorAll("#bx-quick .chip").forEach((c) => c.classList.toggle("on", c.dataset.k === st.quick));
+  const q = QUICK.find((x) => x[0] === st.quick); $("bx-quick-info").textContent = q ? q[2] : "Pick one and the whole box is designed for your sub: type, volume, tuning, port and size.";
   run();
 }
 
@@ -569,29 +679,38 @@ function buildScreen(root) {
   types.onclick = (e) => {
     const b = e.target.closest("button"); if (!b || b.dataset.k === st.type) return;
     st.type = b.dataset.k;
-    const key = st.type + (st.type === "bp6" ? (st.series ? "s" : "p") : "");
-    if (!st.designed[key]) design(st.type, true);
+    st.quick = null;
+    if (!st.designed[designKey()]) design(st.type, true);
     paintAll();
   };
-  const ser = seg("bx-series", [["p", "Both ported out"], ["s", "Series (rear into front)"]], st.series ? "s" : "p");
-  ser.onclick = (e) => { const b = e.target.closest("button"); if (!b) return; st.series = b.dataset.k === "s"; if (!st.designed["bp6" + b.dataset.k]) design("bp6", true); paintAll(); };
-  sT.append(types, ser, h("p", "status bx-info", "")); sT.lastChild.id = "bx-type-info";
+  const sty = h("div", "seg"); sty.id = "bx-style";
+  sty.onclick = (e) => {
+    const b = e.target.closest("button"); if (!b || b.dataset.k === styleOf()) return;
+    if (st.type === "bp6") st.style6 = b.dataset.k; else st.style4 = b.dataset.k;
+    design(st.type, true); paintAll();
+  };
+  sT.append(types, sty, h("p", "status bx-info", "")); sT.lastChild.id = "bx-type-info";
   root.append(sT);
 
   // the sub
   const sD = section("bx-sec-sub", "i-bass", "Your sub", "Its Thiele/Small numbers, from the spec sheet");
-  const pre = chips("bx-presets", [["8", "8″"], ["10", "10″"], ["12", "12″"], ["15", "15″"], ["18", "18″"], ["custom", "My sub"]], (k) => {
-    if (k === "custom") { st.preset = "custom"; paintPresets(); toast("Type in your sub's numbers below"); return; }
-    st.preset = k; const p = M.PRESETS[k]; Object.assign(st.drv, p); st.power = Math.round(p.pe * st.count);
+  const pick = h("button", "btn primary block bx-pick"); pick.type = "button"; pick.append(icon("i-search"), `Choose your sub (${SUBS.length} real subs)`);
+  pick.onclick = () => openSubList();
+  const nameLine = h("div", "bx-subname"); nameLine.id = "bx-subname";
+  const pre = chips("bx-presets", [["8", "Typical 8″"], ["10", "10″"], ["12", "12″"], ["15", "15″"], ["18", "18″"], ["custom", "My own"]], (k) => {
+    if (k === "custom") { st.preset = "custom"; st.sub = null; st.est = []; paintPresets(); paintSubName(); toast("Type in your sub's numbers below"); return; }
+    st.preset = k; st.sub = null; st.est = []; const p = M.PRESETS[k]; Object.assign(st.drv, p); st.power = Math.round(p.pe * st.count);
     design(st.type, true); paintAll(); toast(`Typical ${k}-inch sub, box re-designed for it`);
   });
   const cnt = h("div", "row between bx-count");
   const minus = h("button", "btn small", "−"), plus = h("button", "btn small", "+"); minus.type = plus.type = "button";
-  const cl = h("div", "row"); cl.append(minus, h("b", "bx-countv"), plus); cl.querySelector("b").id = "bx-count";
-  const setCount = (n) => { if (n < 1 || n > 4 || n === st.count) return; st.power = Math.round((st.power / st.count) * n); st.count = n; design(st.type, true); paintAll(); toast(`${n} sub${n > 1 ? "s" : ""}: box re-designed`); };
+  const cv2 = h("input", "input bx-countv"); cv2.id = "bx-count"; cv2.inputMode = "numeric"; cv2.setAttribute("aria-label", "How many subs (1 to 20)");
+  cv2.onchange = () => { const n = parseInt(cv2.value, 10); if (n >= 1 && n <= 20) setCount(n); else cv2.value = st.count; };
+  const cl = h("div", "row"); cl.append(minus, cv2, plus);
+  const setCount = (n) => { if (n < 1 || n > 20 || n === st.count) return; st.power = Math.round((st.power / st.count) * n); st.count = n; design(st.type, true); paintAll(); toast(`${n} sub${n > 1 ? "s" : ""}: box re-designed`); };
   minus.onclick = () => setCount(st.count - 1); plus.onclick = () => setCount(st.count + 1);
-  cnt.append(h("span", "label", "How many subs"), cl);
-  sD.append(pre, cnt,
+  cnt.append(h("span", "label", "How many subs (1–20)"), cl);
+  sD.append(pick, nameLine, pre, cnt,
     grid(3, field("drv.fs", "Fs", "hz"), field("drv.qts", "Qts", "q"), field("drv.qes", "Qes", "q"),
       field("drv.vas", "Vas", "vol", { swap: true, dec: 2 }), field("drv.re", "Re", "ohm"), field("drv.le", "Le", "mh", { zero: true }),
       field("drv.sd", "Sd (cone area)", "area", { swap: true }), field("drv.xmax", "Xmax (one way)", "mm"), field("drv.pe", "Power rating", "w")),
@@ -604,7 +723,9 @@ function buildScreen(root) {
   root.append(sD);
 
   // the design
-  const sG = section("bx-sec-design", "i-spark", "Design", "The volume and tuning: recommended, or your own");
+  const sG = section("bx-sec-design", "i-spark", "Design", "Build it for me, or set the volume and tuning yourself");
+  const quick = chips("bx-quick", QUICK.map((q) => [q[0], q[1]]), (k) => quickBuild(k));
+  const qi = h("p", "status bx-info"); qi.id = "bx-quick-info";
   const dz = h("div", "stack bx-design"); dz.id = "bx-design";
   const blk = (t, ...kids) => { const b = h("div", "bx-dblock"); b.dataset.t = t; b.append(...kids); return b; };
   const tgt = (el) => { el.classList.add("bx-target"); return el; };
@@ -624,8 +745,8 @@ function buildScreen(root) {
     blk("bp4",
       h("span", "label", "Shape: flat and wide, or more output"),
       chips("bx-s4", [["0.7", "Flat (S 0.7)"], ["0.6", "S 0.6"], ["0.5", "Punchy (S 0.5)"]], (k) => { st.s4 = +k; design("bp4", true); paintAll(); }),
-      h("span", "label", "Gain over the sub alone (more gain, narrower band)"),
-      chips("bx-g4", [["0", "+0 dB"], ["2", "+2 dB"], ["4", "+4 dB"], ["6", "+6 dB"]], (k) => { st.g4 = +k; design("bp4", true); paintAll(); }),
+      h("span", "label", "Tuning: the middle of its band (lower is deeper, higher is louder)"),
+      chips("bx-c4", [["40", "40 Hz"], ["45", "45 Hz"], ["50", "50 Hz"], ["55", "55 Hz"], ["60", "60 Hz"]], (k) => { st.c4 = +k; design("bp4", true); paintAll(); }),
       grid(3, tgt(field("vr4", "Sealed chamber", "vol")), tgt(field("vf4", "Ported chamber", "vol")), field("fb4", "Tuning", "hz"))),
     blk("bp6",
       h("span", "label", "The band it should play"),
@@ -634,8 +755,8 @@ function buildScreen(root) {
       grid(2, tgt(field("vr6", "Rear chamber", "vol")), field("fr6", "Rear tuning", "hz"), tgt(field("vf6", "Front chamber", "vol")), field("ff6", "Front tuning", "hz"))),
   );
   const rec = h("button", "btn primary block", "Recommended for this sub"); rec.type = "button"; rec.prepend(icon("i-spark"));
-  rec.onclick = () => { design(); paintAll(); };
-  sG.append(dz, rec);
+  rec.onclick = () => { st.quick = null; design(); paintAll(); };
+  sG.append(h("span", "label", "Build it for me"), quick, qi, h("span", "label", "Or set it yourself"), dz, rec);
   root.append(sG);
 
   // the measurements
@@ -662,9 +783,22 @@ function buildScreen(root) {
   const sv = h("span", "val"); sv.id = "bx-split-v";
   const sl = h("div", "row between"); sl.append(h("span", "label", "Divider: rear / front chamber"), sv);
   splitRow.append(sl, split);
-  const fin = seg("bx-finish", [["mdf", "MDF"], ["black", "Black carpet"], ["gray", "Gray carpet"]], st.finish);
+  const fin = seg("bx-finish", [["mdf", "MDF"], ["paint", "Paint"], ["black", "Black carpet"], ["gray", "Gray carpet"]], st.finish);
   fin.onclick = (e) => { const b = e.target.closest("button"); if (!b) return; st.finish = b.dataset.k; paintAll(); };
-  sM.append(un, shp, fixedSw, solveRow, dims, h("span", "label", "Wood thickness"), thick, grid(2, field("t", "Wood", "len"), field("brace", "Bracing (volume)", "vol", { zero: true })), dbl, splitRow, h("span", "label", "Finish (for the 3D view)"), fin);
+  const paintRow = h("div", "row wrap bx-paint-row"); paintRow.id = "bx-paint-row";
+  const col = h("input", "bx-color"); col.type = "color"; col.id = "bx-paint"; col.setAttribute("aria-label", "Pick any colour");
+  col.oninput = () => { st.paint = col.value; view && view.setFinish("paint", st.paint); persist(); document.querySelectorAll("#bx-swatches .bx-sw").forEach((b) => b.classList.remove("on")); };
+  const swatches = h("div", "row wrap bx-swatches"); swatches.id = "bx-swatches";
+  for (const [c, nm] of [["#111114", "Black"], ["#f2f2f2", "White"], ["#c8102e", "Red"], ["#1f5fe0", "Blue"], ["#7a4bff", "Purple"], ["#ff4fa3", "Pink"], ["#1fae5b", "Green"], ["#ffc21a", "Yellow"], ["#ff7a1a", "Orange"], ["#6b7280", "Gray"]]) {
+    const b = h("button", "bx-sw"); b.type = "button"; b.dataset.c = c; b.style.background = c; b.setAttribute("aria-label", nm); b.title = nm;
+    b.onclick = () => { st.paint = c; paintAll(); };
+    swatches.append(b);
+  }
+  paintRow.append(swatches, col);
+  // the space you have: the box is kept inside it (0: no limit)
+  const reshapeSoon = (() => { let tm = 0; return () => { clearTimeout(tm); tm = setTimeout(() => { if (!st.fixed) { reshape(); paintAll(); } }, 600); }; })();
+  const space = grid(3, field("lim.w", "Max width", "len", { zero: true, on: reshapeSoon }), field("lim.h", "Max height", "len", { zero: true, on: reshapeSoon }), field("lim.d", "Max depth", "len", { zero: true, on: reshapeSoon }));
+  sM.append(un, shp, fixedSw, solveRow, dims, h("span", "label", "The space you have (optional: 0 is no limit)"), space, h("span", "label", "Wood thickness"), thick, grid(2, field("t", "Wood", "len"), field("brace", "Bracing (volume)", "vol", { zero: true })), dbl, splitRow, h("span", "label", "Finish (for the 3D view)"), fin, paintRow);
   root.append(sM);
 
   // the ports
@@ -675,7 +809,7 @@ function buildScreen(root) {
     const kind = seg(null, [["slot", "Slot"], ["round", "Round"]], st[key].kind);
     kind.onclick = (e) => { const b = e.target.closest("button"); if (!b || b.dataset.k === st[key].kind) return; st[key].kind = b.dataset.k; compute(); sizePorts(true); const moved = reshape(); if (M.misfits(res.L)) toast(b.dataset.k === "round" ? "A round port that long can't fit straight here: a slot port can bend" : "The port still doesn't fit: see the notes under How it plays", 4000); else if (moved) toast("Box re-shaped so the port fits"); paintAll(); };
     const slot = grid(2, field(key + ".w", "Slot width", "len")); slot.classList.add("bx-pslot");
-    const round = grid(2, field(key + ".dia", "Diameter (inside)", "len"), field(key + ".n", "How many", "n", { min: 1, max: 6 })); round.classList.add("bx-pround");
+    const round = grid(2, field(key + ".dia", "Diameter (inside)", "len"), field(key + ".n", "How many", "n", { min: 1, max: 8 })); round.classList.add("bx-pround");
     const auto = sw("Length from the tuning", "Off: type the length and see the tuning", st[key].auto, (on) => { st[key].auto = on; schedule(); });
     auto.querySelector("input").classList.add("bx-pauto");
     const len = grid(2, field(key + ".len", "Length (with the wood)", "len", { ro: () => st[key].auto }));
@@ -726,7 +860,7 @@ function buildScreen(root) {
   root.append(sW);
 
   // saved designs
-  const sS = section("bx-sec-saved", "i-save", "Saved designs", "On this phone");
+  const sS = section("bx-sec-saved", "i-save", "Save and share", "Keep your designs, or post one for everyone");
   const nm = h("input", "input"); nm.placeholder = "Name this design"; nm.maxLength = 60; nm.id = "bx-name";
   const sv2 = h("button", "btn primary", "Save"); sv2.type = "button"; sv2.prepend(icon("i-save"));
   sv2.onclick = () => {
@@ -741,12 +875,88 @@ function buildScreen(root) {
   const list = h("div", "stack-sm"); list.id = "bx-saved";
   const reset = h("button", "btn small bx-reset", "Start over"); reset.type = "button";
   reset.onclick = () => { if (!confirm("Start a new design? (Saved designs stay.)")) return; st = defaults(); design("ported", true); paintAll(); $("view-box").scrollTo({ top: 0 }); };
-  sS.append(sr, list, reset);
+  const share = h("button", "btn block bx-share"); share.type = "button"; share.append(icon("i-share"), "Share this box on Social");
+  share.onclick = () => shareBox();
+  sS.append(share, sr, list, reset);
   root.append(sS);
 
   cv.addEventListener("pointerdown", () => hint.classList.add("gone"), { once: true });
   view = boxView(cv, ov);
   if (!view.webgl) hint.textContent = "Drag to turn · pinch to zoom (simple view: this phone has no 3D graphics)";
+}
+
+// ---------------------------------------------------------------------------------------------------- the list of real subs
+function applySub(s) {
+  const { drv, estNames } = subFrom(s.row);
+  st.drv = drv; st.sub = subKey(s); st.est = estNames; st.preset = "db";
+  st.fu = { ...st.fu, "drv.vas": "cm", "drv.sd": "cm" };
+  st.power = Math.round(drv.pe * st.count);
+  st.quick ? quickBuild(st.quick) : design(st.type, true);
+  paintAll();
+  toast(`${subName(s)}: box designed for it`);
+}
+function openSubList() {
+  let q = "", brand = "";
+  openSheet((p) => {
+    p.classList.add("bx-subsheet");
+    p.append(h("h3", "", "Choose your sub"));
+    const search = h("input", "input"); search.type = "search"; search.placeholder = "Search: brand, model or size"; search.setAttribute("aria-label", "Search subs");
+    const brands = chips("bx-brands", [["", "All"], ...[...new Set(SUBS.map((s) => s.brand))].map((b) => [b, b])], (k) => { brand = k; paint(); });
+    const list = h("div", "bx-sublist");
+    const paint = () => {
+      brands.querySelectorAll(".chip").forEach((c) => c.classList.toggle("on", c.dataset.k === brand));
+      list.replaceChildren();
+      const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+      const found = SUBS.filter((s) => (!brand || s.brand === brand) && words.every((w) => `${s.brand} ${s.model} ${s.coils} ${s.size}in ${s.size}″`.toLowerCase().includes(w)));
+      for (const s of found) {
+        const r = h("button", "bx-subrow" + (st.sub === subKey(s) ? " on" : "")); r.type = "button";
+        const left = h("div", "bx-subl"); left.append(h("b", "", `${s.brand} ${s.model}`), h("small", "", `${s.size}″ ${s.coils || ""}${s.rms ? ` · ${s.rms} W RMS` : ""} · Fs ${s.fs} · Qts ${s.qts} · Vas ${s.vas} L${s.full ? "" : " · partial specs"}`));
+        r.append(left, h("span", "bx-subsize", `${s.size}″`));
+        r.onclick = () => { closeSheet(); applySub(s); };
+        list.append(r);
+      }
+      if (!found.length) list.append(h("p", "status", "No subs match. Try another word, or type your sub's numbers in yourself."));
+    };
+    search.oninput = () => { q = search.value; paint(); };
+    p.append(search, brands, list, h("p", "status bx-subsrc", "Numbers as their makers publish them (or the speaker databases that collect them). Missing ones are filled with typical values for the size, and the app says which."));
+    paint();
+  });
+}
+
+// ---------------------------------------------------------------------------------------------------- sharing
+const SHARE_KEYS = ["units", "type", "style4", "style6", "count", "power", "qtc", "vbS", "vbP", "fbP", "s4", "g4", "c4", "vr4", "vf4", "fb4", "vr6", "fr6", "vf6", "ff6", "lo6", "hi6", "shape", "w", "h", "d", "dt", "t", "dbl", "brace", "split", "solve", "finish", "paint", "preset", "sub", "est", "drv", "port", "port2", "wire", "fu"];
+/** The design as a short code (base64url JSON), for a post. */
+function encodeBox() {
+  const o = { v: 1, fixed: true }; for (const k of SHARE_KEYS) o[k] = st[k];
+  const bytes = new TextEncoder().encode(JSON.stringify(o));
+  let s = ""; bytes.forEach((b) => (s += String.fromCharCode(b)));
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function decodeBox(code) {
+  const b = atob(code.replace(/-/g, "+").replace(/_/g, "/")), bytes = Uint8Array.from(b, (c) => c.charCodeAt(0));
+  const o = JSON.parse(new TextDecoder().decode(bytes));
+  if (!o || o.v !== 1 || typeof o.drv !== "object") throw new Error("bad");
+  const out = {}; for (const k of SHARE_KEYS) if (k in o) out[k] = o[k];
+  out.fixed = true; out.v = 1; out.designed = { [o.type + (o.type === "bp6" ? ":" + o.style6 : o.type === "bp4" ? ":" + o.style4 : "")]: true };
+  return out;
+}
+let pendingShare = null;
+/** Someone's shared box, opened in the designer (their exact measurements). */
+function openShared(code) {
+  if (!built) { pendingShare = code; location.hash = "#box"; return; }
+  try { st = merge(defaults(), decodeBox(code)); } catch { toast("Couldn't open that box"); return; }
+  location.hash = "#box"; paintAll(); $("view-box").scrollTo({ top: 0 });
+  toast(`Opened: ${describe()}`, 3500);
+}
+async function shareBox() {
+  if (!view || !res) return;
+  const L = res.L, title = `${st.count}× ${subLabel()}`;
+  const lines = [`${typeName()} · ${L.net.map((v) => fmt("vol", v)).join(" + ")}${L.ports.length ? " · " + L.ports.map((p) => p.fb.toFixed(0) + " Hz").join("/") : ""}`, `${cutLen(L.W)} × ${cutLen(L.H)} × ${cutLen(L.D)} · ${st.power} W`];
+  let img = null; try { img = await view.snapshot(title, lines); } catch {}
+  if (!img) { toast("Couldn't take a picture of the box"); return; }
+  const { shareBoxPost } = await import("./social.js");
+  location.hash = "#social";
+  setTimeout(() => shareBoxPost({ img, box: encodeBox(), text: `${title} · ${lines[0]}` }), 250);
 }
 
 // ---------------------------------------------------------------------------------------------------- the pinned view and the top bar
@@ -759,12 +969,13 @@ function keepUnderBar() {
   fit();
 }
 
-export const box = { get state() { return st; }, get result() { return res; }, get view() { return view; }, design, run, sheet };
+export const box = { get state() { return st; }, get result() { return res; }, get view() { return view; }, design, run, sheet, quickBuild, applySub, encode: encodeBox, openShared };
 let built = false;
 function open() {
-  if (built) { view && view.redraw(); paintChart(); return; }
+  if (built) { view && view.redraw(); paintChart(); if (pendingShare) { const c = pendingShare; pendingShare = null; openShared(c); } return; }
   built = true;
   st = load();
+  if (pendingShare) { try { st = merge(defaults(), decodeBox(pendingShare)); } catch {} pendingShare = null; }
   buildScreen($("bx-root"));
   keepUnderBar();
   paintSaved();

@@ -238,8 +238,8 @@ try {
   console.log("#payments after /premium:", payments.map((p) => p.content).join(" | "));
   check(payments.some((p) => /Unlocked unlimited rebassing for \*\*Ben\*\* \(by <@1>\)/.test(p.content)), "the unlock is recorded in #payments, with who did it");
   // an app from before 2.16 (which drops what it doesn't know) can't undo a private post, its shares, or the likes setting
-  { const ix = (await stores("index")).index; ix.d.posts[0].priv = 1; ix.d.posts[0].shares = [ben]; await put("index", ix.v, ix.d);
-    const now = (await stores("index")).index, old = { ...now.d, posts: now.d.posts.map(({ priv, shares, ...rest }) => rest) };
+  { const ix = (await stores("index")).index; ix.d.posts[0].priv = 1; ix.d.posts[0].shares = [ben]; ix.d.posts[0].box = "eyJ2IjoxLCJ0eXBlIjoicG9ydGVkIn0"; await put("index", ix.v, ix.d);
+    const now = (await stores("index")).index, old = { ...now.d, posts: now.d.posts.map(({ priv, shares, box, ...rest }) => rest) };
     pushes.length = 0;
     const w = await put("index", now.v, old);
     const after = (await stores("index")).index.d.posts[0];
@@ -247,7 +247,7 @@ try {
     const m2 = (await stores("meta")).meta, oldMeta = { ...m2.d, prefs: {} }; await put("meta", m2.v, oldMeta);
     const lk = (((await stores("meta")).meta.d.prefs || {})[ben] || {}).lk;
     console.log("older app's write:", w.status, "| post after:", JSON.stringify({ priv: after.priv, shares: after.shares }), "| likes setting after:", lk);
-    check(after.priv === 1 && JSON.stringify(after.shares) === JSON.stringify([ben]) && lk === 1, "an older app's write keeps a post private, its shares, and the likes setting");
+    check(after.priv === 1 && JSON.stringify(after.shares) === JSON.stringify([ben]) && after.box === "eyJ2IjoxLCJ0eXBlIjoicG9ydGVkIn0" && lk === 1, "an older app's write keeps a post private, its shares, its sub box design, and the likes setting");
     await sleep(400);
     check(pushes.length === 0, "and putting them back notifies nobody"); }
   // a share: the post's owner hears about it

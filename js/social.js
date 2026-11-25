@@ -156,7 +156,8 @@ function clean(list) {
     // (priv: only the poster sees it; shares: who sent it to someone. Always written, so the server can tell an
     // older app that doesn't know them from a phone that changed them)
     const shares = Array.isArray(p.shares) ? [...new Set(p.shares.filter((x) => typeof x === "string" && /^[a-z0-9]{6,16}$/.test(x)))].slice(0, 500) : [];
-    return { priv: p.priv ? 1 : 0, shares, id: p.id, at: +p.at || 0, edited: +p.edited || 0, user: str(p.user, 24) || "someone", text: str(p.text, 500), image: !!p.image, avatar: !!p.avatar, song: s, likes, by: /^[a-z0-9]{6,16}$/.test(p.by) ? p.by : "", video, comments, music, media, playlist: pl && pl.items.length ? pl : null };
+    const box = typeof p.box === "string" && /^[A-Za-z0-9_-]{20,8000}$/.test(p.box) ? p.box : "";
+    return { ...(box ? { box } : {}), priv: p.priv ? 1 : 0, shares, id: p.id, at: +p.at || 0, edited: +p.edited || 0, user: str(p.user, 24) || "someone", text: str(p.text, 500), image: !!p.image, avatar: !!p.avatar, song: s, likes, by: /^[a-z0-9]{6,16}$/.test(p.by) ? p.by : "", video, comments, music, media, playlist: pl && pl.items.length ? pl : null };
   }).filter(Boolean);
 }
 /** A post's message (for its picture and song links), fetched once per load, a couple at a time. */
@@ -510,6 +511,11 @@ function postCard(p) {
   if (p.video) { vid = videoBlock(p); card.append(vid); }
   if (p.song) { song = songBlock(p); card.append(song); }
   if (p.playlist) card.append(playlistBlock(p));
+  if (p.box) {
+    const ob = h("button", "btn small so-boxopen"); ob.type = "button"; ob.append(icon("i-box"), "Open this box in Box");
+    ob.onclick = () => import("./box.js").then((m) => m.box.openShared(p.box));
+    card.append(ob);
+  }
   // the counts, then Like, Comment and (a rebassed song) Vote
   const stats = h("div", "so-stats");
   const sl = h("span", "so-slikes"), sv = h("span", "so-svotes"), sc = h("button", "so-scom");
@@ -1265,7 +1271,7 @@ function composer(preset) {
     p.append(h("h3", "", "New post"));
     const text = h("textarea", "input so-compose"); text.rows = 3; text.maxLength = 500; text.placeholder = "Say something"; text.setAttribute("aria-label", "Your post");
     text.value = preset.text || "";
-    const again = (more) => composer({ items, song, music, text: text.value, priv: preset.priv, ...more });
+    const again = (more) => composer({ items, song, music, text: text.value, priv: preset.priv, box: preset.box, ...more });
     const prev = h("div", "stack-sm");
     const paint = () => {
       prev.replaceChildren();
@@ -1291,6 +1297,11 @@ function composer(preset) {
             chip.append(rm); prev.append(chip);
           }
         }
+      }
+      if (preset.box) {
+        const bc = h("div", "so-mchip so-boxchip"); bc.append(icon("i-box"), h("span", "", "Your box design comes with it: anyone can open it in Box"));
+        const rm = h("button", "cs-x", "×"); rm.setAttribute("aria-label", "Don't attach the design"); rm.onclick = () => { preset.box = ""; paint(); };
+        bc.append(rm); prev.append(bc);
       }
       if (song) {
         const sb = h("div", "so-song"), c = h("span", "so-cover"); c.style.backgroundImage = `url("${song.cover ? URL.createObjectURL(song.cover) : placeholderArt(song.title, "rebass")}")`;
@@ -1331,7 +1342,7 @@ function composer(preset) {
       if (offensive(text.value)) { err.textContent = OFFENSIVE; return; }
       go.disabled = true; err.textContent = "";
       try {
-        await post(text.value.trim(), items, song, (msg) => { go.textContent = msg; }, pics() && !vids().length ? music : null, !!preset.priv);
+        await post(text.value.trim(), items, song, (msg) => { go.textContent = msg; }, pics() && !vids().length ? music : null, !!preset.priv, preset.box || "");
         closeSheet(); toast(preset.priv ? "Posted, only you can see it" : "Posted"); render(); $("view-social").scrollTop = 0;
       } catch (e) { err.textContent = e.message === "setup" ? "FifTeam Social isn't switched on yet." : e.message || "Couldn't post."; go.disabled = false; go.textContent = "Post"; }
     };
@@ -1454,7 +1465,7 @@ async function libraryMp3(t, kbps) {
   const chs = [buf.getChannelData(0), buf.numberOfChannels > 1 ? buf.getChannelData(1) : buf.getChannelData(0)];
   return (await makeFile(chs, buf.sampleRate, t.title, "mp3", ctx, null, { title: t.title, artist: t.artist || "", album: "FifTeam Social", kbps })).file;
 }
-async function post(text, items, song, say, music, priv = false) {
+async function post(text, items, song, say, music, priv = false, box = "") {
   await config();
   items = items || [];
   const files = [], imgsOnly = items.filter((x) => x.k === "i"), vidsOnly = items.filter((x) => x.k === "v");
@@ -1502,11 +1513,12 @@ async function post(text, items, song, say, music, priv = false) {
     files.push(["song.mp4", await scramble(f)]);
   }
   say(files.length ? `Uploading (${sizeText(files.reduce((a, [, b]) => a + b.size, 0))})…` : "Posting…");
-  const entry = { priv: priv ? 1 : 0, shares: [], at: Date.now(), user: S.name, text: text.slice(0, 500), image: !!img, video: vtype, ...(media ? { media } : {}), ...((img || (media && !vidsOnly.length)) && music ? { music: { title: music.track.title.slice(0, 120), artist: (music.track.artist || "").slice(0, 80), len: Math.round(music.len) } } : {}), comments: [], avatar: false, by: S.me, likes: [], song: song ? { title: song.title.slice(0, 120), artist: (song.artist || "").slice(0, 80), note: (song.note || "").slice(0, 80), duration: Math.round(song.duration || 0) } : null };
+  const entry = { ...(box ? { box } : {}), priv: priv ? 1 : 0, shares: [], at: Date.now(), user: S.name, text: text.slice(0, 500), image: !!img, video: vtype, ...(media ? { media } : {}), ...((img || (media && !vidsOnly.length)) && music ? { music: { title: music.track.title.slice(0, 120), artist: (music.track.artist || "").slice(0, 80), len: Math.round(music.len) } } : {}), comments: [], avatar: false, by: S.me, likes: [], song: song ? { title: song.title.slice(0, 120), artist: (song.artist || "").slice(0, 80), note: (song.note || "").slice(0, 80), duration: Math.round(song.duration || 0) } : null };
   // the post's own message
   const lines = [`**${S.name}**`];
   if (entry.text) lines.push(entry.text);
   if (entry.music) lines.push(`♪ ${entry.music.title}${entry.music.artist ? " · " + entry.music.artist : ""}`);
+  if (entry.box) lines.push("📦 Sub box design");
   if (entry.song) lines.push(`🎵 ${entry.song.title}${entry.song.artist ? " · " + entry.song.artist : ""}${entry.song.note ? " · " + entry.song.note : ""}`);
   const f = new FormData();
   f.append("payload_json", JSON.stringify({
@@ -1625,6 +1637,11 @@ function pullToRefresh() {
   set(0);
 }
 
+/** A sub box from the Box screen: its picture and design, ready to post. */
+export function shareBoxPost({ img, box, text }) {
+  showTab("feed");
+  composer({ items: [{ k: "i", blob: img }], text, box });
+}
 export function initSocial() {
   cachedFeed();           // (the profiles and posts from last time, at once: Messages and pages open without waiting)
   bus.on("view", (v) => { if (v === "social") refresh(); else { stopSong(); stopClip(); pauseVideos(); } });

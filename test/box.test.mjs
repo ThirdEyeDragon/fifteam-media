@@ -164,9 +164,80 @@ for (const [type, series, a, b, f1, f2, w1] of [["sealed", 0, 1.3], ["ported", 0
   check(shallow.motor <= (shallow.depth - shallow.panel) * 0.62 + 1e-9 && shallow.dm < 2 * shallow.rc, "the motor always fits the mounting depth and passes through the cutout");
 }
 
+// ---------------------------------------------------------------------------------------------------- the textbook check
+// The simulation, lossless and without the coil's inductance, against the closed-form transfer functions: sealed (2nd
+// order high-pass), vented (Small's 4th order) and 4th-order bandpass. They must agree everywhere from 10 to 300 Hz.
+{
+  const fr = M.freqs(10, 300, 300), worst = (a, b) => Math.max(...a.map((v, i) => Math.abs(v - b[i])));
+  const ws = 2 * Math.PI * d12.fs, at = (f) => 2 * Math.PI * f;
+  // sealed
+  const Vb = 1.2 * FT3, a = d12.vas / Vb, wc = ws * Math.sqrt(1 + a), qtc = d12.qts * Math.sqrt(1 + a);
+  const rs = M.simulate({ drv: d12, count: 1, power: 1, type: "sealed", V: [Vb], ports: [], le: false, lossless: true }, fr);
+  const gs = fr.map((f) => { const x = at(f) / wc; return 20 * Math.log10((x * x) / Math.hypot(1 - x * x, x / qtc)); });
+  const es = worst(rs.spl.map((v) => v - rs.ref), gs);
+  // vented (Small 1973): G = s⁴T0⁴ / (s⁴T0⁴ + a1 s³T0³ + a2 s²T0² + a3 sT0 + 1), no box losses
+  const Vv = 2 * FT3, fb = 32, S = 0.012, len = M.lenFor(Vv, S, S, fb);
+  const rv = M.simulate({ drv: d12, count: 1, power: 1, type: "ported", V: [Vv], ports: [{ S, S1: S, len }], le: false, lossless: true }, fr);
+  const h = fb / d12.fs, al = d12.vas / Vv, T0 = 1 / Math.sqrt(ws * 2 * Math.PI * fb), a1 = 1 / (Math.sqrt(h) * d12.qts), a2 = (al + 1 + h * h) / h, a3 = Math.sqrt(h) / d12.qts;
+  const gv = fr.map((f) => { const x = at(f) * T0, re = x ** 4 - a2 * x * x + 1, im = -a1 * x ** 3 + a3 * x; return 20 * Math.log10(x ** 4 / Math.hypot(re, im)); });
+  const ev = worst(rv.spl.map((v) => v - rv.ref), gv);
+  // 4th-order bandpass: H = s²ωb² / [(s² + s ωc/Qbp + ωc²)(s² + ωb²) + s² ωs² Vas/Vf]
+  const b4 = M.bp4Design(d12, 1, 0.7, 2), wb = 2 * Math.PI * b4.fb, wc4 = ws * Math.sqrt(1 + d12.vas / b4.vr), q4 = d12.qts * Math.sqrt(1 + d12.vas / b4.vr);
+  const r4 = M.simulate({ drv: d12, count: 1, power: 1, type: "bp4", V: [b4.vr, b4.vf], ports: [{ S: 0.01, S1: 0.01, len: M.lenFor(b4.vf, 0.01, 0.01, b4.fb) }], le: false, lossless: true }, fr);
+  const g4 = fr.map((f) => {
+    const w = at(f), Ar = wc4 * wc4 - w * w, Ai = (w * wc4) / q4, Br = wb * wb - w * w;
+    const re = Ar * Br - w * w * ws * ws * (d12.vas / b4.vf), im = Ai * Br;
+    return 20 * Math.log10((w * w * wb * wb) / Math.hypot(re, im));
+  });
+  const e4 = worst(r4.spl.map((v) => v - r4.ref), g4);
+  check(es < 0.01 && ev < 0.01 && e4 < 0.01, `the simulation matches the textbook: sealed within ${es.toFixed(4)} dB, vented ${ev.toFixed(4)} dB, 4th-order bandpass ${e4.toFixed(4)} dB (10–300 Hz)`);
+  // the excursion: well under the box's resonance a sealed box's cone moves as the force over the total stiffness
+  const r0 = M.simulate({ drv: d12, count: 1, power: 1, type: "sealed", V: [Vb], ports: [], le: false, lossless: true }, [2]);
+  const e = Math.sqrt(d12.re), k = 1 / d12.cms + (M.RHO * M.C * M.C * d12.sd * d12.sd) / Vb, x0 = (Math.SQRT2 * d12.bl * e) / d12.re / k;
+  check(near(r0.x[0], x0, x0 * 0.01), `cone travel at 2 Hz in a sealed box: ${(r0.x[0] * 1000).toFixed(3)} mm, force/stiffness says ${(x0 * 1000).toFixed(3)} mm`);
+}
+
+// ---------------------------------------------------------------------------------------------------- a hallway, 20 subs
+{
+  const B = { ...base, type: "bp6", style: "hall", count: 4, w: 48 * IN, h: 16 * IN, d: 24 * IN, split: 0.72, port: { kind: "slot", w: 2 * IN, auto: true, fb: 55 }, port2: { kind: "slot", w: 0.9 * IN, auto: true, fb: 30 } };
+  const L = M.layout(B);
+  const wr = L.rooms[0].x[1] - L.rooms[0].x[0], gr = 2 * wr * L.Hi * L.Davg;
+  const p1 = L.ports[0], p2 = L.ports[1];
+  check(L.rooms.length === 3 && near(L.gross[0], gr, 1e-9) && near(L.rooms[2].x[1] - L.rooms[2].x[0], wr, 1e-9) && p2.copies === 2 && near(p2.S, 2 * p2.S1, 1e-12) && p1.top
+    && L.subs.length === 4 && L.subs.filter((s) => s.dir[0] > 0).length === 2 && L.cut.some((c) => c.name === "Divider" && c.n === 2) && near(p1.fb, 55, 0.01) && near(p2.fb, 30, 0.01),
+    `hallway: two rear rooms (${(wr / IN).toFixed(1)}″ each, ${(L.net[0] / FT3).toFixed(2)} ft³ together), two subs facing two, a top port ${(p1.len / IN).toFixed(1)}″ at 55 Hz, two rear ports ${(p2.len / IN).toFixed(1)}″ at 30 Hz`);
+  const f = M.fitBox({ ...B }, "w", 3 * FT3, 1.2 * FT3), Lf = f && M.layout(f);
+  check(!!Lf && near(Lf.net[0], 3 * FT3, 0.01 * FT3) && near(Lf.net[1], 1.2 * FT3, 0.01 * FT3), `hallway sized to 3 + 1.2 ft³: ${Lf && (Lf.W / IN).toFixed(1)}″ wide`);
+  // 20 subs on a front
+  const d10 = M.driver(M.PRESETS[10]), P10 = M.PRESETS[10], s10 = { size: P10.size, cutout: P10.cutout, depth: P10.depth, disp: P10.disp };
+  const V20 = M.ventedVolumeFor(d10, 20, 32);
+  const B20 = { ...base, type: "ported", count: 20, sub: s10, port: { kind: "slot", w: (14 * (V20 / FT3) * IN * IN) / (40 * IN), auto: true, fb: 32 } };
+  const t0 = Date.now(), f20 = M.shapeBox(B20, "w", V20), ms = Date.now() - t0, L20 = f20 && M.layout(f20);
+  check(!!L20 && L20.subs.length === 20 && !M.misfits(L20) && near(L20.net[0], V20, V20 * 0.002) && ms < 6000, `20 10″ subs, ported: a ${L20 && [L20.W, L20.H, L20.D].map((v) => (v / IN).toFixed(0)).join("×")}″ wall, ${(V20 / FT3).toFixed(1)} ft³, everything fits (${ms} ms)`);
+  // the space you have
+  const fl = M.shapeBox({ ...base, type: "ported", port: { kind: "slot", w: 1.6 * IN, auto: true, fb: 32 } }, "w", 1.75 * FT3, undefined, { h: 14 * IN, d: 16 * IN });
+  check(!!fl && fl.h <= 14 * IN + 1e-6 && fl.d <= 16 * IN + 1e-6, `kept inside the space given (14″ tall, 16″ deep): ${(fl.w / IN).toFixed(1)}×${(fl.h / IN).toFixed(0)}×${(fl.d / IN).toFixed(0)}″`);
+}
+
+// ---------------------------------------------------------------------------------------------------- the list of real subs
+{
+  const { SUBS, subFrom, subName } = await import("../js/subs.js");
+  let odd = [];
+  for (const s of SUBS) {
+    const { drv } = subFrom(s.row), d = M.driver(drv), g = (d.mms * 1000) / (drv.sd * 1e4), v = M.ventedVolumeFor(d, 1, 32) / FT3;
+    if (!(g > 0.08 && g < 2.5) || d.guessedQms || !(v > 0.15 && v < 15)) odd.push(subName(s));
+  }
+  const brands = new Set(SUBS.map((s) => s.brand));
+  check(SUBS.length >= 80 && SUBS.filter((s) => s.full).length >= 60 && brands.size >= 8 && SUBS.filter((s) => s.brand === "Skar Audio").length >= 15 && !odd.length,
+    `${SUBS.length} real subs (${SUBS.filter((s) => s.full).length} with full specs), ${brands.size} brands, each a believable sub with a sensible box${odd.length ? ": odd: " + odd.join(", ") : ""}`);
+}
+
 // ---------------------------------------------------------------------------------------------------- wiring
 const w2 = M.wiring(2, true, 4).map((o) => o.ohms), w4 = M.wiring(4, true, 2).map((o) => o.ohms), w1 = M.wiring(1, false, 4).map((o) => o.ohms);
 check(w2.join() === "1,4,16" && w4.join() === "0.25,1,4,16" && w1.join() === "4", `wiring: 2 DVC 4 Ω -> ${w2.join("/")} Ω; 4 DVC 2 Ω -> ${w4.join("/")} Ω; 1 SVC 4 Ω -> ${w1} Ω`);
+const w20 = M.wiring(20, true, 4), w6 = M.wiring(6, false, 4).map((o) => o.ohms);
+check(w20.length >= 6 && w20.every((o, i) => !i || o.ohms > w20[i - 1].ohms) && w6.join() === "0.667,2.667,6,24".split(",").map(Number).map((v, i) => [4 / 6, 4 * 4 / 6 / 1, 6, 24][i] && v).join() || (w6.includes(4 / 6) && w6.includes(6) && w6.includes(24)),
+  `wiring 20 DVC 4 Ω subs: ${w20.map((o) => +o.ohms.toFixed(2)).join(", ")} Ω; 6 SVC 4 Ω: ${w6.map((v) => +v.toFixed(2)).join(", ")} Ω`);
 
 console.log(failed ? "FAIL" : "box: all ok");
 process.exit(failed ? 1 : 0);

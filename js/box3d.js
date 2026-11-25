@@ -50,8 +50,10 @@ const norm = (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] 
 
 // ---------------------------------------------------------------------------------------------------- the meshes
 /** Triangles (position, normal, colour) and lines, from the layout. tri: { opaque: [], clear: [{ v: [30 floats], c: centre }] } */
-function build(L, mode, finish) {
-  const F = FINISH[finish] || FINISH.mdf;
+const rgbOf = (hex) => { const m = /^#?([0-9a-f]{6})$/i.exec(hex || ""); const n = m ? parseInt(m[1], 16) : 0x7a4bff; return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]; };
+function build(L, mode, finish, paint) {
+  // (painted: the colour chosen on the outside, a satin look; MDF inside)
+  const F = finish === "paint" ? { wall: rgbOf(paint).map((v) => Math.min(1, v * 0.92 + 0.04)), inner: FINISH.mdf.inner, edge: [...rgbOf(paint).map((v) => v * 0.45), 0.7] } : FINISH[finish] || FINISH.mdf;
   const W = (p) => [p[0] - L.W / 2, p[1] - L.H / 2, (L.D + L.Dt) / 4 - p[2]];   // layout (z from the front) -> world (front toward +z)
   const opaque = [], clear = [], lines = [];
   const tri = (a, b, c, n, col) => {
@@ -239,7 +241,7 @@ export function boxView(canvas, overlay) {
     if (!V.L || !canvas.isConnected) return;
     const { w, h, dpr, cw, ch } = size();
     if (cw < 2 || ch < 2) return;
-    if (V.dirty) { V.mesh = build(V.L, V.mode, V.finish); V.dirty = false; V.uploaded = false; }
+    if (V.dirty) { V.mesh = build(V.L, V.mode, V.finish, V.paint); V.dirty = false; V.uploaded = false; }
     const { mv, mvp } = matrices(w / h);
     if (gl) {
       gl.viewport(0, 0, w, h); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -347,7 +349,30 @@ export function boxView(canvas, overlay) {
       req();
     },
     setMode(m) { V.mode = m; V.dirty = true; req(); },
-    setFinish(f) { V.finish = f; V.dirty = true; req(); },
+    setFinish(f, paint) { V.finish = f; if (paint) V.paint = paint; V.dirty = true; req(); },
+    /** A picture of the box (as it's turned now) with its name under it, for sharing: a square JPEG. */
+    snapshot(title = "", lines = []) {
+      if (!V.L) return Promise.resolve(null);
+      draw();                                                   // (drawn now, so the picture can be read straight away)
+      const S = 1080, c = document.createElement("canvas"); c.width = c.height = S;
+      const g = c.getContext("2d");
+      const bg = g.createLinearGradient(0, 0, 0, S); bg.addColorStop(0, "#1a1446"); bg.addColorStop(1, "#08071a");
+      g.fillStyle = bg; g.fillRect(0, 0, S, S);
+      const glow = g.createRadialGradient(S / 2, S * 0.38, 20, S / 2, S * 0.38, S * 0.55); glow.addColorStop(0, "rgba(122,75,255,0.35)"); glow.addColorStop(1, "rgba(122,75,255,0)");
+      g.fillStyle = glow; g.fillRect(0, 0, S, S);
+      // the box: as big as it fits above the words
+      const area = { x: 40, y: 40, w: S - 80, h: S - 300 }, k = Math.min(area.w / canvas.width, area.h / canvas.height);
+      const w = canvas.width * k, h = canvas.height * k, x = area.x + (area.w - w) / 2, y = area.y + (area.h - h) / 2;
+      try { g.drawImage(canvas, x, y, w, h); if (overlay) g.drawImage(overlay, x, y, w, h); } catch {}
+      // the words
+      const line = g.createLinearGradient(80, 0, S - 80, 0); line.addColorStop(0, "#2f78ff"); line.addColorStop(0.55, "#7a4bff"); line.addColorStop(1, "#bb4dff");
+      g.fillStyle = line; g.fillRect(80, S - 250, S - 160, 4);
+      g.fillStyle = "#fff"; g.textBaseline = "top"; g.font = "700 50px Sora, Inter, system-ui, sans-serif";
+      g.fillText(title.slice(0, 38), 80, S - 225);
+      g.fillStyle = "rgba(220,215,255,0.85)"; g.font = "500 33px Inter, system-ui, sans-serif";
+      lines.slice(0, 3).forEach((t, i) => g.fillText(String(t).slice(0, 56), 80, S - 160 + i * 44));
+      return new Promise((res) => c.toBlob((b) => res(b), "image/jpeg", 0.9));
+    },
     reset() { V.yaw = -0.62; V.pitch = 0.38; V.zoom = 1; V.vy = V.vp = 0; req(); },
     redraw: req,
     /** For tests: how many solid and see-through triangles it drew. */

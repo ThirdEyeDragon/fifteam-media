@@ -1130,3 +1130,34 @@ img, svg, canvas, video { -webkit-touch-callout: none; -webkit-user-drag: none; 
 .bx-sdel { width: 40px; padding: 0; flex: none; }
 .bx-reset { align-self: flex-start; color: var(--dim); }
 #bx-sec-saved .row .input { flex: 1; }
+
+/* ---------------------------------------------------------------------------- Box: subs list, styles, paint, sharing */
+#bx-style[hidden], #bx-paint-row[hidden] { display: none; }
+.bx-pick { gap: 8px; }
+.bx-pick svg { width: 18px; height: 18px; }
+.bx-subname { display: flex; flex-direction: column; gap: 2px; padding: 2px 2px 0; }
+.bx-subname b { font: 700 16px/1.25 var(--font-head); }
+.bx-subname small { color: var(--muted); font-size: 12.5px; line-height: 1.4; }
+.bx-count .row { gap: 6px; }
+input.bx-countv { width: 56px; height: 40px; padding: 0 6px; text-align: center; font: 700 17px var(--font-head); }
+.bx-subsheet { max-height: 88vh; }
+.bx-subsheet #bx-brands { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }
+.bx-subsheet #bx-brands .chip { flex: none; }
+.bx-sublist { display: flex; flex-direction: column; gap: 6px; max-height: 56vh; overflow-y: auto; overscroll-behavior: contain; }
+.bx-subrow { display: flex; align-items: center; gap: 10px; text-align: left; padding: 10px 12px; border-radius: 14px; background: rgba(255, 255, 255, 0.04); border: 1px solid var(--line); }
+.bx-subrow.on { border-color: rgba(160, 130, 255, 0.7); background: rgba(122, 75, 255, 0.16); }
+.bx-subrow:active { transform: scale(0.99); }
+.bx-subl { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.bx-subl b { font-size: 14.5px; }
+.bx-subl small { color: var(--dim); font-size: 12px; line-height: 1.35; }
+.bx-subsize { flex: none; width: 42px; height: 42px; border-radius: 50%; display: grid; place-items: center; font: 700 13px var(--font-head); background: var(--grad); color: #fff; }
+.bx-subsrc { font-size: 12px; }
+.bx-paint-row { gap: 10px; align-items: center; }
+.bx-swatches { gap: 8px; }
+.bx-sw { width: 30px; height: 30px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.25); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.3); }
+.bx-sw.on { border-color: #fff; box-shadow: 0 0 0 3px rgba(160, 130, 255, 0.7); }
+.bx-color { width: 46px; height: 34px; padding: 0; border: 1px solid var(--line); border-radius: 10px; background: transparent; cursor: pointer; }
+.bx-share { gap: 8px; }
+.so-boxopen { align-self: flex-start; gap: 8px; margin: 2px 0 4px; }
+.so-boxopen svg, .so-boxchip svg { width: 18px; height: 18px; flex: none; }
+.so-boxchip { display: flex; align-items: center; gap: 8px; }

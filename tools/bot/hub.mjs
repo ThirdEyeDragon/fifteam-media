@@ -66,7 +66,7 @@ function keepNew(k, prev, d) {
   let changed = false;
   if (k === "index" && prev && Array.isArray(prev.posts) && Array.isArray(d.posts)) {
     const before = new Map(prev.posts.map((p) => [p && p.id, p]));
-    for (const p of d.posts) { const q = p && before.get(p.id); if (!q) continue; for (const f of ["priv", "shares"]) if (!(f in p) && f in q) { p[f] = q[f]; changed = true; } }
+    for (const p of d.posts) { const q = p && before.get(p.id); if (!q) continue; for (const f of ["priv", "shares", "box"]) if (!(f in p) && f in q) { p[f] = q[f]; changed = true; } }
   }
   if (k === "meta" && prev && prev.prefs && typeof prev.prefs === "object") {
     d.prefs = obj(d.prefs);

@@ -444,6 +444,44 @@ await ev(`document.getElementById('view-box').scrollTop = 1400`); await sleep(50
 const pinned = await ev(`(() => { const r = document.getElementById('bx-3dcard').getBoundingClientRect(); return r.top >= -1 && r.top < 120; })()`);
 check(pinned, "the 3D view stays at the top while the inputs scroll");
 await shot("14_box_scrolled");
+// real subs from the list, quick builds, a hallway, 20 subs, paint, and sharing a box to Social
+await ev(`document.getElementById('view-box').scrollTop = 0`);
+await click(".bx-pick"); await sleep(500);
+const listRows = await ev(`document.querySelectorAll('.bx-subrow').length`);
+await ev(`(() => { const i = document.querySelector('.bx-subsheet input[type=search]'); i.value = 'sundown z v.6 12'; i.dispatchEvent(new Event('input')); return 1; })()`); await sleep(200);
+const found = await ev(`[...document.querySelectorAll('.bx-subrow b')].map(b => b.textContent).join(' | ')`);
+await click(".bx-subrow"); await sleep(800);
+const picked = await ev(`document.getElementById('bx-subname').textContent`);
+console.log(`box: list ${listRows} subs | search: ${found} | picked: ${picked}`);
+check(listRows >= 80 && /Z v\.6 12/.test(found) && /Sundown Audio Z v\.6 12/.test(picked), "a real sub from the list, found by searching, and the box designed for it");
+const quick = [];
+for (const k of ["daily", "windy", "spl", "sq", "band", "hall"]) {
+  await click(`#bx-quick [data-k="${k}"]`); await sleep(400);
+  quick.push(await bx(`(b) => '${k}:' + b.state.type + ' ' + b.result.L.net.map(v => (v / 0.0283168).toFixed(2)).join('+') + ' fit ' + (b.result.L.warn.filter(w => /fit|too long|deeper|too narrow|too small|too big/.test(w)).length === 0)`));
+}
+console.log("box: quick builds:", quick.join(" | "));
+check(quick.every((q) => q.endsWith("fit true")) && /hall:bp6/.test(quick.join()), "every quick build designs a box that fits (a hallway too)");
+await ev(`(() => { const i = document.getElementById('bx-count'); i.value = '20'; i.dispatchEvent(new Event('change')); return 1; })()`); await sleep(1500);
+await click('#bx-quick [data-k="daily"]'); await sleep(1500);
+const twenty = await bx(`(b) => ({ subs: b.result.L.subs.length, fit: b.result.L.warn.filter(w => /fit|too long|deeper/.test(w)).length, wires: document.querySelectorAll('#bx-wire-list .bx-wrow').length })`);
+console.log("box: 20 subs:", JSON.stringify(twenty));
+check(twenty.subs === 20 && twenty.fit === 0 && twenty.wires >= 4, "20 subs: all on the front, it fits, and the ways to wire them");
+await ev(`(() => { const i = document.getElementById('bx-count'); i.value = '2'; i.dispatchEvent(new Event('change')); return 1; })()`); await sleep(800);
+await click('#bx-finish [data-k="paint"]'); await click('#bx-swatches [data-c="#c8102e"]'); await sleep(300);
+check(await bx(`(b) => b.view.state.finish === 'paint' && b.view.state.paint === '#c8102e'`), "the box painted red");
+await ev(`document.getElementById('view-box').scrollTop = 0`); await sleep(300);
+await shot("15_box_painted");
+const boxCode = await bx(`(b) => b.encode()`);
+// (posting needs a username on Social: this test phone gets one)
+await ev(`import('./js/social.js').then(m => { if (!m.social.state.name) m.social.state.name = 'Tester'; return 1; })`);
+await click(".bx-share"); await sleep(2000);
+const comp = await ev(`(() => { const p = document.getElementById('sheet-panel'); return location.hash + ' | ' + p.querySelectorAll('.so-pthumb').length + ' picture | ' + (p.querySelector('.so-boxchip') ? 'design attached' : 'no design'); })()`);
+console.log("box: share:", comp);
+check(/#social \| 1 picture \| design attached/.test(comp), "Share on Social: a picture of the box with its design, ready to post");
+await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
+await ev(`import('./js/box.js').then(m => { m.box.openShared(${JSON.stringify(boxCode)}); return 1; })`); await sleep(1000);
+const opened = await bx(`(b) => location.hash + ' ' + b.state.fixed + ' ' + b.state.count + ' ' + b.state.paint`);
+check(opened === "#box true 2 #c8102e", `a shared box opens in Box as it was built (${opened})`);
 
 // the library's rebassed list
 await ev(`location.hash = '#library'`); await sleep(300);
