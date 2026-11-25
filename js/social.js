@@ -307,6 +307,7 @@ function render() {
   if (!body) return;
   S.ids = sigIds(S.feed); S.shownError = S.error;
   body.replaceChildren();
+  if (S.tab === "rebass") { renderRebasses(body); return; }
   // you: your picture (your profile) and "what's on your mind", or first of all a username
   const you = h("div", "card so-you");
   if (S.name && !S.editingName) {
@@ -358,6 +359,68 @@ function render() {
   if (top) { const w = h("section", "so-week"); const t = h("div", "so-week-h"); t.append(h("span", "so-trophy", "🏆"), h("b", "", "Rebass of the week"), h("small", "", "top votes · 7 days")); w.append(t, postCard(top)); body.append(w); }
   for (const p of posts.slice(0, S.shown)) body.append(postCard(p));
   if (posts.length > S.shown) { const m = h("button", "btn block", "Show more"); m.onclick = () => { S.shown += 30; render(); }; body.append(m); }
+}
+// ---------------------------------------------------------------------------------------------------- Community Rebass
+// The Rebasses tab: only the rebassed songs people have posted (and their shared rebass playlists), apart from the feed,
+// newest first, or the most votes this week, or the most liked. A song that ends starts the next one down.
+const RB_SORT = "fifteam-rebass-sort";
+try { S.rbSort = localStorage.getItem(RB_SORT) || "new"; } catch { S.rbSort = "new"; }
+function rebassList() {
+  const all = S.feed.filter((p) => !S.gone.has(p.id) && visible(p) && !p.priv && (p.song || p.playlist));
+  const banned = bannedPhones(), votes = (p) => votesOf(p.id).filter((x) => !banned.has(x)).length;
+  if (S.rbSort === "top") { const since = Date.now() - 7 * 86400e3; return all.filter((p) => p.at >= since).sort((a, b) => votes(b) - votes(a) || b.likes.length - a.likes.length || b.at - a.at); }
+  if (S.rbSort === "liked") return all.sort((a, b) => b.likes.length - a.likes.length || votes(b) - votes(a) || b.at - a.at);
+  return all.sort((a, b) => b.at - a.at);
+}
+function renderRebasses(body) {
+  const head = h("div", "card so-rbhead");
+  const t = h("div", "so-rbtitle"); t.append(h("span", "so-rbico", "🔥"), h("div", "", null));
+  t.lastChild.append(h("b", "", "Community Rebass"), h("small", "", "Every rebassed song people have posted, in one place"));
+  const sort = h("div", "chips so-rbsort");
+  for (const [k, label] of [["new", "Newest"], ["top", "Top this week"], ["liked", "Most liked"]]) {
+    const c = h("button", "chip" + (S.rbSort === k ? " on" : ""), label); c.dataset.k = k;
+    c.onclick = () => { S.rbSort = k; try { localStorage.setItem(RB_SORT, k); } catch {} S.shown = 30; render(); };
+    sort.append(c);
+  }
+  const post = h("button", "btn small primary so-rbpost"); post.append(icon("i-bass"), "Post a rebass");
+  post.onclick = () => (S.name ? pickRebass((song) => composer({ song })) : toast("Pick a username in the Feed tab first"));
+  head.append(t, sort, post);
+  body.append(head);
+  if (S.error) body.append(h("p", "status", S.error));
+  const list = rebassList();
+  S.rbList = list.filter((p) => p.song).map((p) => p.id);
+  if (!list.length) {
+    const e = h("div", "card so-empty");
+    e.append(h("b", "", S.loading ? "Loading…" : S.rbSort === "top" ? "No rebasses this week yet" : "No rebasses yet"), h("p", "status", S.loading ? "" : "Post the first one: tap Post a rebass."));
+    body.append(e); return;
+  }
+  if (seen) seen.disconnect();
+  seen = "IntersectionObserver" in window ? new IntersectionObserver((es) => { for (const x of es) if (x.isIntersecting) { seen.unobserve(x.target); x.target._fill && x.target._fill(); } }, { rootMargin: "400px" }) : null;
+  // (newest first: the rebass of the week on top, as in the feed)
+  const top = S.rbSort === "new" ? weekly(list) : null;
+  if (top) { const w = h("section", "so-week"); const tt = h("div", "so-week-h"); tt.append(h("span", "so-trophy", "🏆"), h("b", "", "Rebass of the week"), h("small", "", "top votes · 7 days")); w.append(tt, postCard(top)); body.append(w); }
+  const rest = list.filter((p) => p !== top);
+  for (const p of rest.slice(0, S.shown)) body.append(postCard(p));
+  if (rest.length > S.shown) { const m = h("button", "btn block", "Show more"); m.onclick = () => { S.shown += 30; render(); }; body.append(m); }
+}
+/** In the Rebasses tab, a song that ends: the next one down plays (scrolled into view). */
+function playNextRebass(id) {
+  if (S.tab !== "rebass" || location.hash !== "#social" || !S.rbList) return;
+  const i = S.rbList.indexOf(id), next = i >= 0 ? S.rbList[i + 1] : null;
+  if (!next) return;
+  const card = document.querySelector(`#so-body .so-post[data-id="${next}"]`), p = S.feed.find((x) => x.id === next);
+  const block = card && card.querySelector(".so-song");
+  if (!card || !p || !block) return;
+  card.scrollIntoView({ behavior: "smooth", block: "center" });
+  playSong(p, block);
+}
+/** Feed, Rebasses or Audio Market. */
+function showTab(k) {
+  S.tab = k === "rebass" ? "rebass" : "feed";
+  showMarket(k === "market");
+  document.querySelectorAll("#so-tabs button").forEach((b) => b.classList.toggle("on", b.dataset.k === k));
+  try { localStorage.setItem("fifteam-social-tab", k); } catch {}
+  if (k !== "market") { S.shown = 30; render(); $("view-social").scrollTop = 0; }
 }
 /** A choice of profile picture: cropped square, small, kept on the phone and put on the feed, where it shows on every
  * post this phone has made or will make, for everyone. */
@@ -942,7 +1005,7 @@ function paintPlay() {
 }
 async function playSong(p, block) {
   stopClip();
-  if (!S.audio) { S.audio = new Audio(); S.audio.onended = () => { S.playing = null; paintPlay(); }; }
+  if (!S.audio) { S.audio = new Audio(); S.audio.onended = () => { const was = S.playing; S.playing = null; paintPlay(); if (was) playNextRebass(was); }; }
   if (S.playing === p.id) { S.audio.pause(); S.playing = null; paintPlay(); return; }
   const btn = block.querySelector(".so-play");
   try {
@@ -1572,9 +1635,9 @@ export function initSocial() {
   // Feed or Audio Market (the last one looked at)
   const tabs = $("so-tabs");
   if (tabs) {
-    tabs.onclick = (e) => { const b = e.target.closest("button"); if (b) { stopClip(); showMarket(b.dataset.k === "market"); } };
+    tabs.onclick = (e) => { const b = e.target.closest("button"); if (b) { stopClip(); showTab(b.dataset.k); } };
     let last = "feed"; try { last = localStorage.getItem("fifteam-social-tab") || "feed"; } catch {}
-    if (last === "market") showMarket(true);
+    if (last === "market" || last === "rebass") showTab(last);
   }
   paintMe();
   const me = $("btn-me"); if (me) me.onclick = openMe;

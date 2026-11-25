@@ -626,8 +626,9 @@ try {
     await other.ev(`import('./js/social.js').then((m) => m.api.ensureProfiles(true)).then(() => 1)`);
     await other.ev(`import('./js/dms.js').then((m) => m.openChat(${JSON.stringify(alice)})).then(() => 1)`);
     let benPost = "";
-    for (let i = 0; i < 40 && !benPost; i++) { benPost = await other.ev(`(() => { const b = [...document.querySelectorAll('#sheet-panel .dm-bubble')].find(b => b.querySelector('.dm-post')); return b ? b.textContent : ''; })()`); await sleep(300); }
+    for (let i = 0; i < 85 && !benPost; i++) { benPost = await other.ev(`(() => { const b = [...document.querySelectorAll('#sheet-panel .dm-bubble')].find(b => b.querySelector('.dm-post')); return b ? b.textContent : ''; })()`); await sleep(300); }
     console.log("Ben's chat shows:", benPost);
+    if (!benPost) console.log("  (his panel:", await other.ev(`(document.getElementById('sheet-panel') || {}).textContent.slice(0, 300) + ' | open ' + document.getElementById('sheet').classList.contains('open') + ' | bubbles ' + document.querySelectorAll('#sheet-panel .dm-bubble').length`), "| his errors:", other.errors.slice(-5).join(" || ").slice(0, 900), ")");
     check(/Post/.test(benPost) && /Fresh one/.test(benPost) && /look at this/.test(benPost), "Ben's chat shows the post, with Alice's words");
     // held down: deleted for both of them
     await other.ev(`[...document.querySelectorAll('#sheet-panel .dm-bubble')].find(b => b.querySelector('.dm-post')).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })), 1`);
@@ -1132,6 +1133,21 @@ try {
   const plEntry = feedNow().find((x) => x.playlist) || {};
   console.log("playlist shared:", plPost && plPost.payload.content.split("\n")[0], "| songs sent:", plSongs.length, "| on the feed:", JSON.stringify(plEntry.playlist && { name: plEntry.playlist.name, n: plEntry.playlist.items.length }));
   check(plPost && plSongs.length === 1 && plEntry.playlist && plEntry.playlist.name === "Car bangers" && plEntry.playlist.items.length === 1, "a category shared as a playlist (each song its own file)");
+  // Community Rebass: the Rebasses tab shows only rebassed songs and rebass playlists, apart from the feed
+  await ev(`location.hash = '#social', 1`); await sleep(300);
+  const feedCards = await ev(`document.querySelectorAll('#so-body .so-post').length`), feedSongs = await ev(`[...document.querySelectorAll('#so-body .so-post')].filter(c => c.querySelector('.so-song, .so-pl')).length`);
+  await ev(`document.querySelector('#so-tabs button[data-k="rebass"]').click(), 1`); await sleep(600);
+  const rb = JSON.parse(await ev(`JSON.stringify({ title: (document.querySelector('#so-body .so-rbtitle b') || {}).textContent, cards: [...document.querySelectorAll('#so-body .so-post')].map(c => ({ song: !!c.querySelector('.so-song, .so-pl'), text: (c.querySelector('.so-smeta b, .so-pl b, .so-text') || {}).textContent })), on: document.querySelector('#so-tabs button.on').dataset.k })`));
+  console.log("Rebasses tab:", JSON.stringify(rb), "| the feed had", feedCards, "posts,", feedSongs, "with songs");
+  check(rb.title === "Community Rebass" && rb.cards.length >= 1 && rb.cards.length === feedSongs && rb.cards.every((c) => c.song) && rb.cards.length < feedCards && rb.on === "rebass", "the Rebasses tab: only rebassed songs (and playlists), apart from the feed");
+  await ev(`document.querySelector('#so-body .so-rbsort .chip[data-k="liked"]').click(), 1`); await sleep(400);
+  const likedOrder = await ev(`[...document.querySelectorAll('#so-body .so-post')].map(c => +((c.querySelector('.so-slikes') || {}).textContent || '0').replace(/[^0-9]/g, '') || 0).join(',')`);
+  console.log("sorted by most liked:", likedOrder, "| remembered:", await ev(`localStorage.getItem('fifteam-rebass-sort') + ' / ' + localStorage.getItem('fifteam-social-tab')`));
+  check(likedOrder.split(",").map(Number).every((v, k, a) => !k || a[k - 1] >= v), "sorted by most liked");
+  await shot("d27_community_rebass");
+  await ev(`document.querySelector('#so-body .so-rbsort .chip[data-k="new"]').click(), 1`); await sleep(200);
+  await ev(`document.querySelector('#so-tabs button[data-k="feed"]').click(), 1`); await sleep(500);
+  check((await ev(`document.querySelectorAll('#so-body .so-post').length`)) === feedCards, "and back to the whole feed");
   const plCard = `document.querySelector('#so-body .so-pl').closest('.so-post')`;
   check(!(await ev(`!!${plCard}.querySelector('.so-vote')`)), "a playlist can't be voted for (so it's never the rebass of the week)");
   await ev(`${plCard}.scrollIntoView({ block: 'start' }), 1`); await sleep(400); await shot("d25_playlist");

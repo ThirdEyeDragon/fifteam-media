@@ -1029,3 +1029,15 @@ img, svg, canvas, video { -webkit-touch-callout: none; -webkit-user-drag: none; 
 .set-link { width: 100%; text-align: left; color: inherit; font: inherit; cursor: pointer; }
 .set-link .set-go { margin-left: auto; color: var(--dim); font-size: 22px; line-height: 1; }
 .set-link:active { filter: brightness(1.15); }
+
+/* ---------------------------------------------------------------------------- Community Rebass (the Rebasses tab) */
+.so-rbhead { gap: 12px; }
+.so-rbtitle { display: flex; align-items: center; gap: 12px; }
+.so-rbtitle > div { display: flex; flex-direction: column; min-width: 0; }
+.so-rbtitle b { font: 700 18px/1.2 var(--font-head); }
+.so-rbtitle small { color: var(--dim); font-size: 13px; margin-top: 2px; }
+.so-rbico { width: 44px; height: 44px; flex: none; border-radius: 50%; display: grid; place-items: center; font-size: 22px; background: linear-gradient(135deg, #ff9a3d, #ff5fa2 55%, #bb4dff); box-shadow: 0 4px 16px rgba(255, 110, 140, 0.35); }
+.so-rbsort { flex-wrap: wrap; }
+.so-rbpost { align-self: flex-start; }
+.so-rbpost svg { width: 16px; height: 16px; }
+.so-tabs button { padding-left: 6px; padding-right: 6px; }
