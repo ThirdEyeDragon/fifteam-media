@@ -1079,6 +1079,11 @@ img, svg, canvas, video { -webkit-touch-callout: none; -webkit-user-drag: none; 
 .bx-f.ro .input { background: rgba(122, 75, 255, 0.16); border-color: rgba(160, 130, 255, 0.45); color: #fff; font-weight: 600; }
 .bx-f .input.bad { border-color: #ff6f8a; background: rgba(255, 95, 122, 0.08); }
 .bx-drvnote { font-size: 12.5px; line-height: 1.45; }
+.bx-unit { flex: none; padding: 0 6px; border-radius: 6px; font-size: 11px; font-weight: 700; color: #fff; background: rgba(122, 75, 255, 0.35); border: 1px solid rgba(160, 130, 255, 0.5); line-height: 16px; }
+.bx-check:empty { display: none; }
+.bx-check .bx-w { flex-wrap: wrap; }
+.bx-check .bx-w span { flex: 1; min-width: 60%; }
+.bx-fix { margin-left: auto; height: 32px; }
 .bx-count .btn { width: 40px; padding: 0; font-size: 20px; }
 .bx-countv { min-width: 30px; text-align: center; font: 700 18px var(--font-head); }
 .bx-design .bx-dblock { display: flex; flex-direction: column; gap: 10px; }

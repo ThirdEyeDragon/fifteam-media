@@ -38,6 +38,13 @@ check(near(M.sealedQ(d12, 2, 2 * Vs).qtc, 0.707, 1e-6), "sealed: two subs in twi
   check(v / FT3 > 1.4 && v / FT3 < 2.2, `ported 12″ at 32 Hz: recommended ${(v / FT3).toFixed(2)} ft³`);
   const v4 = M.ventedVolumeFor(M.driver(M.PRESETS[18]), 4, 32), v1 = M.ventedVolumeFor(M.driver(M.PRESETS[18]), 1, 32);
   check(near(v4 / v1, 4, 0.1), `ported: four 18s need four times one's box (${(v1 / FT3).toFixed(1)} -> ${(v4 / FT3).toFixed(1)} ft³)`);
+  // a real sub (Skar VXF-15's published numbers): one at 32 Hz in about 3 to 3.5 ft³, the flattest there
+  const vxf = M.driver({ fs: 31.4, qts: 0.36, qes: 0.38, vas: 76.8e-3, re: 3.9, le: 3.88e-3, sd: 779e-4, xmax: 0.03, pe: 1500 });
+  const vx1 = M.ventedVolumeFor(vxf, 1, 32), vx2 = M.ventedVolumeFor(vxf, 2, 32);
+  check(vx1 / FT3 > 2.8 && vx1 / FT3 < 3.6 && near(vx2 / vx1, 2, 0.05) && near(vxf.mms * 1000, 303, 25) && near(vxf.bl, 24.9, 1.5), `a VXF-15 at 32 Hz: ${(vx1 / FT3).toFixed(2)} ft³ (two: ${(vx2 / FT3).toFixed(2)}); its cone ${(vxf.mms * 1000).toFixed(0)} g, BL ${vxf.bl.toFixed(1)} (spec: 303 g, 24.9)`);
+  // the flattest: a bigger box at that tuning humps, a smaller one sags
+  const shape = (V) => { const S = 0.03, r2 = M.simulate({ drv: vxf, count: 1, power: 1, type: "ported", V: [V], ports: [{ S, S1: S, len: M.lenFor(V, S, S, 32) }], le: false }); let a = -99, b = 99; r2.f.forEach((f, i) => { if (f >= 32 && f <= 112) { a = Math.max(a, r2.spl[i] - r2.ref); b = Math.min(b, r2.spl[i] - r2.ref); } }); return a - b; };
+  check(shape(vx1) < shape(vx1 * 1.4) && shape(vx1) < shape(vx1 / 1.4), `ported: flatter than 40% bigger or smaller (${shape(vx1).toFixed(2)} vs ${shape(vx1 * 1.4).toFixed(2)} / ${shape(vx1 / 1.4).toFixed(2)} dB)`);
   const flat = M.ventedFlat(d12, 1);
   check(flat.fb > 20 && flat.fb < 30 && flat.V / FT3 > 2 && flat.V / FT3 < 4, `ported, textbook flat (QB3): ${(flat.V / FT3).toFixed(2)} ft³ at ${flat.fb.toFixed(1)} Hz`);
 }

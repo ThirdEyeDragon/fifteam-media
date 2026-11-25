@@ -190,22 +190,23 @@ const idealPort = (V, fb) => { let S = 0.01; while (S < 3 && lenFor(V, S, S, fb)
 export function ventedFlat(drv, count) {
   return { V: 15 * Math.pow(drv.qts, 2.87) * drv.vas * count, fb: 0.42 * drv.fs * Math.pow(drv.qts, -0.9) };
 }
-/** Ported, for a chosen tuning: the box size that goes lowest without a big hump. At a fixed tuning a bigger box
- * goes a little lower but humps more over the tuning (a smaller one rolls off early): each dB of hump over 1 dB is
- * weighed as 3 Hz of extension. */
+/** Ported, for a chosen tuning: the box size with the flattest response above the tuning (the least difference
+ * between its highest and lowest point from the tuning up to 3.5 times it, or 100 Hz), lower bass breaking ties. A
+ * bigger box at the same tuning humps over it; a smaller one sags into it. */
 export function ventedVolumeFor(drv, count, fb) {
-  const fr = freqs(Math.max(8, fb * 0.4), 250, 140);
+  const fr = freqs(Math.max(8, fb * 0.4), Math.max(110, fb * 3.6), 160), top = Math.max(100, fb * 3.5);
   const cost = (V) => {
     const port = idealPort(V, fb);
     if (port.len < 0.02) return Infinity;                       // (no port could tune a box that big that high)
     const r = simulate({ drv, count, power: 1, type: "ported", V: [V], ports: [port], le: false }, fr);
-    let m = -1e9; for (let i = 0; i < r.f.length; i++) if (r.f[i] > fb * 0.8) m = Math.max(m, r.spl[i] - r.ref);
-    return (cutoff(r, r.ref) || fb * 2) + 3 * Math.max(0, m - 1);
+    let hi = -1e9, lo = 1e9;
+    for (let i = 0; i < r.f.length; i++) if (r.f[i] >= fb && r.f[i] <= top) { const v = r.spl[i] - r.ref; hi = Math.max(hi, v); lo = Math.min(lo, v); }
+    return hi - lo + 0.04 * (cutoff(r, r.ref) || fb * 2);
   };
   const v0 = 0.1 * count * drv.vas, v1 = 5 * count * drv.vas;
   let best = v0, bc = Infinity;
-  for (let i = 0; i <= 40; i++) { const V = v0 * Math.pow(v1 / v0, i / 40), c = cost(V); if (c < bc) { bc = c; best = V; } }
-  let lo = best / 1.11, hi = best * 1.11;                       // refine (golden section)
+  for (let i = 0; i <= 48; i++) { const V = v0 * Math.pow(v1 / v0, i / 48), c = cost(V); if (c < bc) { bc = c; best = V; } }
+  let lo = best / 1.1, hi = best * 1.1;                         // refine (golden section)
   for (let i = 0; i < 24; i++) { const a = lo * Math.pow(hi / lo, 0.382), b = lo * Math.pow(hi / lo, 0.618); if (cost(a) < cost(b)) hi = b; else lo = a; }
   return Math.sqrt(lo * hi);
 }

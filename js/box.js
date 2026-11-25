@@ -29,6 +29,7 @@ function defaults() {
     cab: false, cabF: 50, ql: 10,
     finish: "mdf", view: "solid", chart: "spl", pin: true,
     wire: { dual: true, ohms: 4, amp: 1 },
+    fu: { "drv.vas": "cm", "drv.sd": "cm" },          // fields with their own units (as spec sheets give them: litres, cm²)
     designed: { ported: true },
   };
 }
@@ -37,7 +38,7 @@ function load() {
   const d = defaults();
   try {
     const s = JSON.parse(localStorage.getItem(KEY) || "null");
-    if (s && s.v === 1) return { ...d, ...s, drv: { ...d.drv, ...s.drv }, port: { ...d.port, ...s.port }, port2: { ...d.port2, ...s.port2 }, wire: { ...d.wire, ...s.wire }, designed: { ...s.designed } };
+    if (s && s.v === 1) return { ...d, ...s, drv: { ...d.drv, ...s.drv }, port: { ...d.port, ...s.port }, port2: { ...d.port2, ...s.port2 }, wire: { ...d.wire, ...s.wire }, designed: { ...s.designed }, fu: { ...d.fu, ...s.fu } };
   } catch {}
   return d;
 }
@@ -54,8 +55,8 @@ const UNITS = {
   area: { in: [IN * IN, "in²", 1], cm: [CM * CM, "cm²", 0] },
   mm: [1e-3, "mm", 1], hz: [1, "Hz", 1], ohm: [1, "Ω", 2], w: [1, "W", 0], mh: [1e-3, "mH", 2], q: [1, "", 3], n: [1, "", 0], db: [1, "dB", 1],
 };
-const unit = (kind) => { const u = UNITS[kind]; return Array.isArray(u) ? u : u[st.units]; };
-const num = (kind, si, dec) => { const [k, , d] = unit(kind); const v = si / k; return +v.toFixed(dec ?? d); };
+const unit = (kind, path) => { const u = UNITS[kind]; return Array.isArray(u) ? u : u[(path && st.fu && st.fu[path]) || st.units]; };
+const num = (kind, si, dec, path) => { const [k, , d] = unit(kind, path); const v = si / k; return +v.toFixed(dec ?? d); };
 const fmt = (kind, si, dec) => { const [, name] = unit(kind); return `${num(kind, si, dec).toLocaleString()}${name ? (kind === "hz" || kind === "w" || kind === "db" ? " " : " ") + name : ""}`; };
 /** A length for building: inches to the nearest 1/16 (as a fraction), or centimetres to a millimetre. */
 function cutLen(m) {
@@ -84,7 +85,13 @@ function seg(id, items, on) {
 const FIELDS = [];
 /** A number box bound to a path in the design, in the right units. */
 function field(path, label, kind, o = {}) {
-  const l = h("label", "bx-f"); const top = h("span", "bx-fl"); const name = h("span", "", label), un = h("small", "");
+  const l = h("label", "bx-f"); const top = h("span", "bx-fl"); const name = h("span", "", label);
+  // (a field with its own units: tap them to switch, ft³/litres or in²/cm²)
+  const un = h(o.swap ? "button" : "small", o.swap ? "bx-unit" : "");
+  if (o.swap) {
+    un.type = "button"; un.setAttribute("aria-label", "Change the unit");
+    un.onclick = (e) => { e.preventDefault(); const cur = (st.fu && st.fu[path]) || st.units; st.fu = { ...st.fu, [path]: cur === "cm" ? "in" : "cm" }; paintField(f); persist(); };
+  }
   top.append(name, un);
   const inp = h("input", "input"); inp.inputMode = "decimal"; inp.autocomplete = "off"; inp.dataset.path = path;
   l.append(top, inp);
@@ -94,7 +101,7 @@ function field(path, label, kind, o = {}) {
     const ok = isFinite(v) && v >= (o.min ?? 0) && (o.max == null || v <= o.max) && (o.zero || v > 0);
     inp.classList.toggle("bad", !ok);
     if (!ok) return;
-    set(path, kind === "n" ? Math.round(v) : v * unit(kind)[0]);
+    set(path, kind === "n" ? Math.round(v) : v * unit(kind, path)[0]);
     if (o.on) o.on();
     if (path.startsWith("drv.")) { st.preset = "custom"; paintPresets(); }
     schedule();
@@ -104,13 +111,13 @@ function field(path, label, kind, o = {}) {
   return l;
 }
 function paintField(f) {
-  f.un.textContent = unit(f.kind)[1];
+  f.un.textContent = unit(f.kind, f.path)[1] + (f.o.swap ? " ⇄" : "");
   const ro = f.o.ro ? f.o.ro() : false;
   f.inp.readOnly = ro; f.l.classList.toggle("ro", ro);
   if (f.o.hide) f.l.hidden = f.o.hide();
   if (document.activeElement === f.inp) return;
   const v = get(f.path);
-  f.inp.value = v == null || !isFinite(v) ? "" : String(num(f.kind, v, f.o.dec));
+  f.inp.value = v == null || !isFinite(v) ? "" : String(num(f.kind, v, f.o.dec, f.path));
 }
 const paintFields = () => FIELDS.forEach(paintField);
 const grid = (cols, ...kids) => { const g = h("div", "bx-grid" + (cols === 2 ? " two" : "")); g.append(...kids); return g; };
@@ -124,6 +131,53 @@ const chips = (id, items, onPick) => {
   for (const [k, label] of items) { const b = h("button", "chip", label); b.type = "button"; b.dataset.k = k; b.onclick = () => onPick(k, b); c.append(b); }
   return c;
 };
+
+// ---------------------------------------------------------------------------------------------------- the sub's numbers, checked
+/** Numbers that can't be right for a real sub, usually a spec typed in the wrong unit (litres into ft³, cm² into
+ * in²): each with what it means and a fix. A cone's moving mass per area comes out at 0.08 to 1.6 g/cm² on real subs,
+ * and its cone area is close to what its frame size allows. */
+function sanity() {
+  const d = st.drv, out = [], sizeArea = Math.PI * (0.42 * (d.size || 0.3)) ** 2;
+  const mmsPerArea = (vas, sd) => { const ws = 2 * Math.PI * d.fs, cms = vas / (M.RHO * M.C * M.C * sd * sd); return (1000 / (ws * ws * cms)) / (sd / (CM * CM)); };
+  const okMass = (vas, sd) => { const g = mmsPerArea(vas, sd); return g > 0.08 && g < 1.6; };
+  const say = (path, kind, si) => `${num(kind, si, undefined, path)} ${unit(kind, path)[1]}`;
+  // the same number read in the other unit (either way: ft³ <-> litres, in² <-> cm²), if that makes it right
+  const NAME = { vol: { in: "ft³", cm: "litres" }, area: { in: "in²", cm: "cm²" } };
+  const swapFix = (path, kind, si, ok) => {
+    const k = UNITS[kind].in[0] / UNITS[kind].cm[0];
+    for (const [cand, sys] of [[si / k, "cm"], [si * k, "in"]]) if (ok(cand)) {
+      const shown = +(cand / UNITS[kind][sys][0]).toFixed(2);
+      return { label: `Use ${shown} ${UNITS[kind][sys][1]}`, name: NAME[kind][sys], fix: () => { set(path, cand); st.fu = { ...st.fu, [path]: sys }; st.preset = "custom"; paintPresets(); schedule(); } };
+    }
+    return null;
+  };
+  // the cone area against the frame
+  const fitsFrame = (sd) => sd / sizeArea > 0.35 && sd / sizeArea < 2.2;
+  if (!fitsFrame(d.sd)) {
+    const fix = swapFix("drv.sd", "area", d.sd, fitsFrame);
+    out.push({ msg: `Sd ${say("drv.sd", "area", d.sd)} doesn't fit a ${((d.size || 0.3) / IN).toFixed(1)}″ sub (it'd be about ${num("area", sizeArea, undefined, "drv.sd")} ${unit("area", "drv.sd")[1]}).${fix ? ` It looks like a number in ${fix.name}.` : " Check the size and Sd."}`, ...fix });
+    return out;
+  }
+  // Vas: the cone mass it implies
+  if (!okMass(d.vas, d.sd)) {
+    const g = mmsPerArea(d.vas, d.sd), fix = swapFix("drv.vas", "vol", d.vas, (v) => okMass(v, d.sd));
+    out.push({ msg: `Vas ${say("drv.vas", "vol", d.vas)} can't be right with these numbers: the cone would weigh ${Math.round(g * d.sd / (CM * CM))} g.${fix ? ` It looks like a number in ${fix.name}.` : " Check Vas, Fs and Sd."}`, ...fix });
+  }
+  if (d.xmax < 0.003) out.push({ msg: `Xmax ${(d.xmax * 1000).toFixed(1)} mm is very small for a sub. If the spec sheet gives it in inches, that's ${(d.xmax * 1000 * 25.4).toFixed(1)} mm.`, label: `Use ${(d.xmax * 1000 * 25.4).toFixed(1)} mm`, fix: () => { st.drv.xmax = d.xmax * 25.4; st.preset = "custom"; paintPresets(); schedule(); } });
+  if (d.fs < 12 || d.fs > 120) out.push({ msg: `Fs ${d.fs} Hz is outside what subs have (about 15 to 60 Hz).` });
+  if (d.qts < 0.15 || d.qts > 1.5) out.push({ msg: `Qts ${d.qts} is outside what subs have (about 0.2 to 1).` });
+  return out;
+}
+function paintCheck() {
+  const box = $("bx-drv-check"); if (!box) return;
+  box.replaceChildren();
+  for (const c of sanity()) {
+    const r = h("div", "bx-w bad"); r.append(icon("i-warn"));
+    const t = h("span", "", c.msg); r.append(t);
+    if (c.fix) { const b = h("button", "btn small bx-fix", c.label); b.type = "button"; b.onclick = () => { c.fix(); toast("Fixed: " + c.label.replace(/^Use /, "")); }; r.append(b); }
+    box.append(r);
+  }
+}
 
 // ---------------------------------------------------------------------------------------------------- designs for each type
 const vented = () => st.type !== "sealed";
@@ -141,7 +195,8 @@ function design(type = st.type, quiet = false) {
   // the ports: sized for the air flow at this power (after a first look)
   if (type !== "sealed") { st.port.auto = true; st.port2.auto = true; compute(); sizePorts(true); }
   const moved = reshape();
-  if (!quiet) toast(M.misfits(res.L) ? "Designed, but something doesn't fit: see the notes under How it plays" : moved ? "Designed for this sub, and re-sized so it all fits" : "Designed for this sub", 3500);
+  if (sanity().length) toast("Check your sub's numbers first: one looks like the wrong unit (see Your sub)", 4500);
+  else if (!quiet) toast(M.misfits(res.L) ? "Designed, but something doesn't fit: see the notes under How it plays" : moved ? "Designed for this sub, and re-sized so it all fits" : "Designed for this sub", 3500);
 }
 /** A good shape for the design (unless the measurements are your own): the most compact box where the sub and the
  * ports fit. If a port still can't fit, it's made a little smaller (down to 10 in² per ft³) and the box shaped again.
@@ -216,7 +271,7 @@ const schedule = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; 
 function run() {
   const R = compute();
   persist();
-  paintFields(); paintDesign(); paint3D(); paintResults(); paintCut(); paintWiring(); paintPorts();
+  paintFields(); paintDesign(); paintCheck(); paint3D(); paintResults(); paintCut(); paintWiring(); paintPorts();
   return R;
 }
 
@@ -297,6 +352,7 @@ function paintResults() {
     if (q > 1.1) W.push(`Qtc ${q.toFixed(2)}: boomy, one-note bass. A bigger box is tighter.`);
     if (drv.ebp > 100) ok.push(`This sub's EBP is ${drv.ebp.toFixed(0)}: it's built more for a ported box.`);
   } else if (st.type === "ported" && drv.ebp < 50) ok.push(`This sub's EBP is ${drv.ebp.toFixed(0)}: it's built more for a sealed box.`);
+  for (const c of sanity()) W.unshift(c.msg);
   if (drv.guessedQms) W.push("Qes has to be bigger than Qts: Qms was taken as 8 until the sub's real Qes is entered.");
   if (st.power / st.count > drv.pe * 1.25) W.push(`${Math.round(st.power / st.count)} W per sub is well over its ${drv.pe} W rating.`);
   if (st.preset !== "custom") ok.push(`These are typical ${st.preset}-inch numbers. Enter your sub's own (on its spec sheet) for real results.`);
@@ -438,7 +494,7 @@ function paintDesign() {
   document.querySelectorAll("#bx-s4 .chip").forEach((c) => c.classList.toggle("on", Math.abs(+c.dataset.k - st.s4) < 0.005));
   document.querySelectorAll("#bx-g4 .chip").forEach((c) => c.classList.toggle("on", Math.abs(+c.dataset.k - st.g4) < 0.05));
   const drv = res && res.drv;
-  if (drv) $("bx-drv-note").textContent = `Qms ${drv.qms.toFixed(2)} · BL ${drv.bl.toFixed(1)} T·m · Mms ${(drv.mms * 1000).toFixed(0)} g · ${drv.sens.toFixed(1)} dB at 2.83 V · EBP ${drv.ebp.toFixed(0)} (${drv.ebp < 50 ? "sealed" : drv.ebp > 100 ? "ported" : "either box"})`;
+  if (drv) $("bx-drv-note").textContent = `Vas ${(drv.vas / FT3).toFixed(2)} ft³ = ${(drv.vas / LTR).toFixed(1)} L · Sd ${(drv.sd / IN / IN).toFixed(1)} in² = ${(drv.sd / CM / CM).toFixed(0)} cm² · Qms ${drv.qms.toFixed(2)} · BL ${drv.bl.toFixed(1)} T·m · Mms ${(drv.mms * 1000).toFixed(0)} g · ${drv.sens.toFixed(1)} dB at 2.83 V · EBP ${drv.ebp.toFixed(0)} (${drv.ebp < 50 ? "sealed" : drv.ebp > 100 ? "ported" : "either box"})`;
   $("bx-solve-row").hidden = st.fixed;
   $("bx-split-row").hidden = !st.fixed || (st.type !== "bp4" && st.type !== "bp6");
   $("bx-split").value = Math.round(st.split * 100); $("bx-split-v").textContent = `${Math.round(st.split * 100)}% / ${100 - Math.round(st.split * 100)}%`;
@@ -537,9 +593,10 @@ function buildScreen(root) {
   cnt.append(h("span", "label", "How many subs"), cl);
   sD.append(pre, cnt,
     grid(3, field("drv.fs", "Fs", "hz"), field("drv.qts", "Qts", "q"), field("drv.qes", "Qes", "q"),
-      field("drv.vas", "Vas", "vol"), field("drv.re", "Re", "ohm"), field("drv.le", "Le", "mh", { zero: true }),
-      field("drv.sd", "Sd (cone area)", "area"), field("drv.xmax", "Xmax (one way)", "mm"), field("drv.pe", "Power rating", "w")),
+      field("drv.vas", "Vas", "vol", { swap: true, dec: 2 }), field("drv.re", "Re", "ohm"), field("drv.le", "Le", "mh", { zero: true }),
+      field("drv.sd", "Sd (cone area)", "area", { swap: true }), field("drv.xmax", "Xmax (one way)", "mm"), field("drv.pe", "Power rating", "w")),
     h("small", "status bx-drvnote", ""),
+    (() => { const c = h("div", "stack-sm bx-check"); c.id = "bx-drv-check"; return c; })(),
     h("span", "label", "For fitting it in"),
     grid(3, field("drv.cutout", "Cutout", "len"), field("drv.depth", "Mounting depth", "len"), field("drv.disp", "Displacement", "vol", { zero: true })),
     grid(2, field("power", "Amp power (total RMS)", "w", { on: () => {} }), field("drv.size", "Size (frame)", "len")));
