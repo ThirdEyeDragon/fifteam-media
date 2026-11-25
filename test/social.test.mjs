@@ -828,7 +828,12 @@ try {
   await until(`![...document.querySelectorAll('#so-body .so-post')].some(p => p.textContent.includes('Fresh one'))`, 10000, "the post deleted");
   for (let i = 0; i < 30 && feedNow().some((x) => x.id === p0.id); i++) await sleep(200);
   check(!msgs.has(p0.id) && !feedNow().some((x) => x.id === p0.id), "deleted from Discord and from the feed list");
-  check(!(await ev(`!!document.querySelector('#so-body .so-post .so-more')`)), "the Delete menu only on your own posts");
+  // (someone else's post: its ⋯ menu reports it, and has no Edit or Delete)
+  await ev(`document.querySelector('#so-body .so-post .so-more').click(), 1`); await sleep(400);
+  const others = await ev(`[...document.querySelectorAll('#sheet-panel .menu-item')].map(b => b.textContent).join(' | ')`);
+  console.log("someone else's post, its menu:", others);
+  check(!/Delete|Edit/.test(others) && /Report post/.test(others), "Edit and Delete only on your own posts (others' have Report)");
+  await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
 
   // a post deleted in Discord by the owner: gone from the feed
   msgs.delete(bob);
@@ -1119,7 +1124,7 @@ try {
   await ev(`[...document.querySelectorAll('#sheet-panel .menu-item')].find(x => x.textContent.includes('Share to Social')).click(), 1`); await sleep(300);
   const nPl = posted.length;
   await ev(`[...document.querySelectorAll('#sheet-panel .btn')].find(x => x.textContent === 'Share playlist').click(), 1`);
-  await until(`location.hash === '#social' && [...document.querySelectorAll('#so-body .so-pl')].length > 0`, 60000, "the playlist on Social");
+  if (!(await until(`location.hash === '#social' && [...document.querySelectorAll('#so-body .so-pl')].length > 0`, 60000, "the playlist on Social"))) console.log("sharing showed:", await ev(`(document.getElementById('sheet-panel') || {}).textContent + ' | hash ' + location.hash + ' | errors ' + JSON.stringify((window.__errs || []).slice(-3))`));
   const plPost = posted.slice(nPl).find((x) => x.payload.content && x.payload.content.includes("shared a playlist"));
   const plSongs = posted.slice(nPl).filter((x) => x.files.some(([nm]) => nm === "song.mp4"));
   const plEntry = feedNow().find((x) => x.playlist) || {};

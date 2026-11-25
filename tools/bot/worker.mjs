@@ -6,7 +6,8 @@
 //   /v1/files        the current links to posts' files, for many posts at once
 //   /v1/live         a live connection: the app hears at once when something changes
 //   /v1/push         a phone signing up for notifications (with proof of its account), /v1/push/off to stop
-//   /v1/premium      "Unlock unlimited rebassing" tapped: the owner is told
+//   /v1/premium      "Unlock unlimited rebassing" tapped: the owner is told (in #payments)
+//   /v1/report       a report about a user (or a post or comment of theirs): to #reports
 // And on a timer (the crons in wrangler.toml): every minute, anything older apps wrote merged in; every half hour, the
 // file links refreshed.
 //   Secrets (wrangler secret put, never in the project): BOT_TOKEN, BOT_KEY (the bot's private key, for the sealed
@@ -105,6 +106,12 @@ async function app(req, env, url) {
     const b = await req.json().catch(() => ({}));
     if (typeof b.endpoint === "string") await hub.unsubscribe(b.endpoint);
     return json({ ok: true }, 200, true);
+  }
+  if (path === "/v1/report" && req.method === "POST") {
+    const b = await req.json().catch(() => ({}));
+    let phone; try { phone = await phoneOf(env, b.tk); } catch (e) { return json({ error: "account: " + e.message }, 401, true); }
+    const r = await hub.report(phone, b);
+    return json(r.status === 200 ? { ok: true } : { error: r.status }, r.status, true);
   }
   if (path === "/v1/premium" && req.method === "POST") {
     const b = await req.json().catch(() => ({}));

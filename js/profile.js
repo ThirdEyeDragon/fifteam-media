@@ -5,6 +5,7 @@ import { toast, openSheet } from "./ui.js";
 import { api } from "./social.js";
 import { openChat, talkedWith } from "./dms.js";
 import { offensive, OFFENSIVE } from "./filter.js";
+import { openReport } from "./report.js";
 import { loadMeta, followersOf, followingOf, aboutOf, setFollow, setAbout, votesOf, followState, setFollowRequest, canSee, prefsOf, dmState, requestDm, blocksOf, blocked, setBlock } from "./meta.js";
 
 const PHONE = /^[a-z0-9]{6,16}$/;
@@ -110,8 +111,11 @@ function paint() {
       else toast(iBlocked ? `Unblocked ${name}` : `Blocked ${name}`);
       paint(); api.render();
     };
-    if (iBlocked) { btns.append(bl); head.append(h("p", "pf-about dim", `You've blocked ${name}. They can't see your posts or message you.`)); }
-    else btns.append(fo, msg, bl);
+    // reporting them (to the FifTeam team, with what for)
+    const rp = h("button", "btn small pf-report", "Report");
+    rp.onclick = () => openReport({ who: P.phone, name });
+    if (iBlocked) { btns.append(bl, rp); head.append(h("p", "pf-about dim", `You've blocked ${name}. They can't see your posts or message you.`)); }
+    else btns.append(fo, msg, bl, rp);
   }
   if (btns.childElementCount) head.append(btns);
   box.append(head);

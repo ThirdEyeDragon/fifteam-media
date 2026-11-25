@@ -19,6 +19,7 @@ import { hookFetch, holdFor } from "./limiter.js";
 import { offensive, OFFENSIVE } from "./filter.js";
 import { showMarket, marketOpen, loadMarket, renderMarket } from "./market.js";
 import { hubOn, hubRead, hubWrite, hubFiles, startLive, live } from "./hub.js";
+import { openReport } from "./report.js";
 
 const NAME_KEY = "fifteam-social-name", MINE_KEY = "fifteam-social-mine", ME_KEY = "fifteam-social-me", AV_KEY = "fifteam-social-avatar";
 const MAX_MSG = 9.5 * 1024 * 1024;   // what one post may carry (10 MB), with room to spare
@@ -261,6 +262,7 @@ const hidden = (x) => !!(x.by && (bannedPhones().has(x.by) || blocked(S.me, x.by
 const TAGS = { founder: "FifTeam Founder", dev: "FifTeam Media Developer", member: "FifTeam Member" };
 function nameLine(name, phone) {
   const w = h("span", "nline"); w.append(h("b", "", name));
+  if (!phone && name) phone = findPhone(name);      // (older posts and comments don't say which phone: by username)
   for (const t of badgesOf(phone)) w.append(h("span", "tag tag-" + t, TAGS[t]));
   return w;
 }
@@ -431,7 +433,7 @@ function postCard(p) {
   const nm = h("span", "so-name tap"); nm.append(nameLine(name, p.by), h("small", "", ago(p.at) + (p.edited ? " · edited" : "")));
   av.onclick = nm.onclick = () => openProfile({ by: p.by, user: p.user });
   who.append(av, nm); head.append(who);
-  if (S.mine.has(p.id)) { const d = h("button", "so-more"); d.setAttribute("aria-label", "More"); d.append(icon("i-more")); d.onclick = () => postMenu(p); head.append(d); }
+  { const d = h("button", "so-more"); d.setAttribute("aria-label", "More"); d.append(icon("i-more")); d.onclick = () => (S.mine.has(p.id) || mineAs(p) ? postMenu(p) : otherMenu(p)); head.append(d); }
   card.append(head);
   if (p.music) { card.append(musicRow(p)); clipWatch(card, p); }
   if (p.text) card.append(h("p", "so-text", p.text));
@@ -715,6 +717,20 @@ function editPost(p) {
     };
     panel.append(t, err, go);
     setTimeout(() => { t.focus(); t.setSelectionRange(t.value.length, t.value.length); }, 80);
+  });
+}
+/** Someone else's post: report it (or them), or see their page. */
+function otherMenu(p) {
+  const who = p.by || findPhone(p.user), name = nameOf(p);
+  openSheet((panel) => {
+    panel.append(h("h3", "", `${name}'s post`));
+    const pg = h("button", "menu-item"); pg.append(icon("i-social"), h("span", "", `See ${name}'s page`));
+    pg.onclick = () => openProfile({ by: p.by, user: p.user });
+    const rp = h("button", "menu-item danger so-report"); rp.append(icon("i-warn"), h("span", "", "Report post"));
+    rp.onclick = () => openReport({ who, name, post: p.id });
+    const ru = h("button", "menu-item danger"); ru.append(icon("i-warn"), h("span", "", `Report ${name}`));
+    ru.onclick = () => openReport({ who, name });
+    panel.append(pg, rp, ru);
   });
 }
 /** Your post's menu. */
@@ -1616,5 +1632,5 @@ function showPost(id) {
   }, 350);
 }
 function editName() { closeSheet(); S.editingName = true; if (location.hash !== "#social") location.hash = "#social"; render(); setTimeout(() => { const i = document.querySelector("#so-body .so-nameform input"); if (i) { i.focus(); i.select(); } }, 120); }
-export const api = { openViewer, nameLine, visible, state: S, config, dc, avatarEl, showPicture, ago, icon, findPhone, ensureProfiles, openComments, nameOf, hidden, songBlock, showPost, pickAvatar, editName, fileOf, message, viewImage, render, trackSong };
+export const api = { mineAs, openViewer, nameLine, visible, state: S, config, dc, avatarEl, showPicture, ago, icon, findPhone, ensureProfiles, openComments, nameOf, hidden, songBlock, showPost, pickAvatar, editName, fileOf, message, viewImage, render, trackSong };
 export const social = { state: S, prepareVideo };

@@ -140,5 +140,11 @@ export async function hubPush(sub, prefs) {
   if (!r.ok) throw new Error("push " + r.status);
 }
 export async function hubPushOff(endpoint) { await call("/v1/push/off", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ endpoint }) }).catch(() => {}); }
+/** A report about a user (who), and maybe one of their posts or comments: { who, reason, text, post, comment }. */
+export async function hubReport(r) {
+  const res = await call("/v1/report", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tk: await idToken(), ...r }) });
+  if (res.status === 429) throw new Error("You've sent a lot of reports this hour. Try again later.");
+  if (!res.ok) throw new Error("Couldn't send the report. Try again.");
+}
 /** "Unlock unlimited rebassing" tapped: the owner hears about it. */
 export async function hubPremiumAsk() { const r = await call("/v1/premium", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tk: await idToken() }) }); return r.ok; }

@@ -21,7 +21,7 @@ const b64u = (b) => Buffer.from(b).toString("base64url");
 
 // ---------------------------------------------------------------------------------------------------- the stand-ins
 const HOOK = "111", TOKEN = "hooktoken", PROJECT = "test-proj";
-const msgs = new Map(), files = new Map(), pushes = [], replies = [], posted = [], payments = [];
+const msgs = new Map(), files = new Map(), pushes = [], replies = [], posted = [], payments = [], reports = [];
 let nextId = 900000000000001000;
 const attach = (id, name, text) => { const url = `https://cdn.discordapp.com/attachments/1/${id}/${name}?ex=${Math.floor(Date.now() / 1000 + 86400).toString(16)}&is=0&hm=${Math.random().toString(16).slice(2)}`; files.set(`/attachments/1/${id}/${name}`, Buffer.from(text)); return { id: String(Math.random()).slice(2), filename: name, url }; };
 const store = (id, name, data) => msgs.set(id, { id, attachments: [attach(id, name, JSON.stringify(data))] });
@@ -94,7 +94,8 @@ const srv = createServer((req, res) => {
     if (u.pathname.startsWith("/push/")) { pushes.push({ to: u.pathname.slice(6), headers: req.headers, body }); return send(u.pathname.endsWith("gone") ? 410 : 201, ""); }
     if (u.pathname === "/api/v10/attachments/refresh-urls") { const { attachment_urls } = JSON.parse(body.toString()); return send(200, { refreshed_urls: attachment_urls.map((x) => ({ original: x, refreshed: x.replace(/ex=[0-9a-f]+/, "ex=" + Math.floor(Date.now() / 1000 + 86400).toString(16)) })) }); }
     if (u.pathname.startsWith("/api/v10/webhooks/app1/")) { replies.push({ method: req.method, body: body.toString() }); return send(200, {}); }
-    if (u.pathname === "/api/v10/guilds/1/channels") return send(200, [{ id: "50", type: 0, name: "general" }, { id: "51", type: 0, name: "payments" }]);
+    if (u.pathname === "/api/v10/guilds/1/channels") return send(200, [{ id: "50", type: 0, name: "general" }, { id: "51", type: 0, name: "payments" }, { id: "52", type: 0, name: "reports" }]);
+    if (u.pathname === "/api/v10/channels/52/messages" && req.method === "POST") { reports.push(JSON.parse(body.toString())); return send(200, { id: "2" }); }
     if (u.pathname === "/api/v10/channels/51/messages" && req.method === "POST") { payments.push({ auth: req.headers.authorization, ...JSON.parse(body.toString()) }); return send(200, { id: "1" }); }
     const base = `/api/v10/webhooks/${HOOK}/${TOKEN}`;
     if (!u.pathname.startsWith(base)) return send(404, { message: "Unknown Webhook" });
@@ -236,6 +237,17 @@ try {
   check(await until(() => (read(IDS.mod).premium || {})[ben], 6000), "and it's copied back to the feed service");
   console.log("#payments after /premium:", payments.map((p) => p.content).join(" | "));
   check(payments.some((p) => /Unlocked unlimited rebassing for \*\*Ben\*\* \(by <@1>\)/.test(p.content)), "the unlock is recorded in #payments, with who did it");
+  // reports: to #reports, with the reason, the post and their own words; not about yourself; at most 8 an hour
+  const rep = (tk, body) => api("/v1/report", { method: "POST", body: JSON.stringify({ tk, ...body }) });
+  const r1s = (await rep(idToken(ben), { who: alice, reason: "harass", text: "she keeps posting <@everyone> spam about me", post: post1 })).status;
+  await until(() => reports.length, 4000);
+  console.log("report:", r1s, "| in #reports:", (reports[0] || {}).content);
+  const rc = (reports[0] || {}).content || "";
+  check(r1s === 200 && /Report: Harassment or bullying/.test(rc) && /\*\*Reported:\*\* Alice \(`alicephone1`\)/.test(rc) && /\*\*By:\*\* Ben/.test(rc) && /"my rebass"/.test(rc) && /keeps posting \\<\\@everyone\\> spam/.test(rc) && JSON.stringify(reports[0].allowed_mentions) === '{"parse":[]}', "a report reaches #reports: reason, who, the post, their message (no pings)");
+  const self = (await rep(idToken(ben), { who: ben, reason: "spam" })).status, noReason = (await rep(idToken(ben), { who: alice, reason: "nope" })).status, forged = (await rep("x.y.z", { who: alice, reason: "spam" })).status;
+  const many = []; for (let i = 0; i < 8; i++) many.push((await rep(idToken(ben), { who: alice, reason: "spam" })).status);
+  console.log("yourself:", self, "| no reason:", noReason, "| no account:", forged, "| 8 more:", many.join(","));
+  check(self === 400 && noReason === 400 && forged === 401 && many.slice(0, 7).every((x) => x === 200) && many[7] === 429, "not about yourself, needs a reason and an account, at most 8 an hour");
   ws.close();
 } catch (e) { console.log("STOPPED:", e.stack); fails++; }
 finally {

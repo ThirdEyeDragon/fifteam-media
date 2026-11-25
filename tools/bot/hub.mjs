@@ -25,6 +25,7 @@ const label = (k) => `${LABELS[k]} (${k === "mod" || k === "links" ? "kept by th
 /** What phones may write (bans, tags, premium and file links only come from the bot). */
 export const PHONE_WRITES = new Set(["index", "dm", "meta", "presence", "market", "accounts"]);
 const MAX_BYTES = 1900 * 1024;
+export const REASONS = { spam: "Spam", harass: "Harassment or bullying", hate: "Hate speech or slurs", sexual: "Nudity or sexual content", violence: "Violence or threats", scam: "Scam or fraud", fake: "Pretending to be someone else", underage: "May be under 13", other: "Something else" };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const obj = (x) => (x && typeof x === "object" && !Array.isArray(x) ? x : {});
 const arr = (x) => (Array.isArray(x) ? x : []);
@@ -405,31 +406,63 @@ export class Hub extends DurableObject {
     }
     return first;
   }
-  /** The server's #payments channel (found by its name; looked for again every few minutes until it's made). */
-  async paymentsChannel() {
-    if (this.payCh && Date.now() - this.payCh.at < (this.payCh.id ? 3600e3 : 300e3)) return this.payCh.id;
+  /** A channel in the server, by its name (looked for again every few minutes until it's made). */
+  async channelNamed(name) {
+    this.chans = this.chans || {};
+    const c = this.chans[name];
+    if (c && Date.now() - c.at < (c.id ? 3600e3 : 300e3)) return c.id;
     let id = "";
     const tok = this.env.BOT_TOKEN;
     if (tok) {
       const w = await this.hook("");
       const r = await fetch(`${this.apiBase()}/guilds/${w.guild_id}/channels`, { headers: { Authorization: `Bot ${tok}` } });
-      const ch = r.ok ? (await r.json()).find((x) => x.type === 0 && /^payments?$/i.test(x.name)) : null;
+      const ch = r.ok ? (await r.json()).find((x) => x.type === 0 && (x.name === name || x.name === name.replace(/s$/, ""))) : null;
       id = ch ? ch.id : "";
     }
-    this.payCh = { at: Date.now(), id };
+    this.chans[name] = { at: Date.now(), id };
     return id;
   }
-  /** Payment news for the owner: in #payments (or, until there is one, the app's own channel). */
-  async tellPayments(content) {
-    const id = await this.paymentsChannel().catch(() => "");
+  /** A note for the owner, in that channel (or, until there is one, the app's own channel). */
+  async tellChannel(name, content) {
+    const id = await this.channelNamed(name).catch(() => "");
     if (id) {
-      const r = await fetch(`${this.apiBase()}/channels/${id}/messages`, { method: "POST", headers: { Authorization: `Bot ${this.env.BOT_TOKEN}`, "Content-Type": "application/json" }, body: JSON.stringify({ content, allowed_mentions: { parse: [] } }) });
+      const r = await fetch(`${this.apiBase()}/channels/${id}/messages`, { method: "POST", headers: { Authorization: `Bot ${this.env.BOT_TOKEN}`, "Content-Type": "application/json" }, body: JSON.stringify({ content: content.slice(0, 2000), allowed_mentions: { parse: [] } }) });
       if (r.ok) return true;
-      console.log("#payments:", r.status);
-      this.payCh = null;
+      console.log(`#${name}:`, r.status);
+      if (this.chans) delete this.chans[name];
     }
-    await this.hook("", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "FifTeam", allowed_mentions: { parse: [] }, content }) });
+    await this.hook("", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "FifTeam", allowed_mentions: { parse: [] }, content: content.slice(0, 2000) }) });
     return false;
+  }
+  /** Payment news: #payments. */
+  tellPayments(content) { return this.tellChannel("payments", content); }
+
+  // ---------------------------------------------------------------- reports
+  /** Someone reported a user (or one of their posts or comments): to #reports, with the reason and their own words.
+   * At most 8 reports an hour from one account. */
+  async report(from, r) {
+    r = obj(r);
+    const who = String(r.who || ""), reason = REASONS[r.reason] ? r.reason : "", text = String(r.text || "").trim().slice(0, 600);
+    if (!PHONE.test(who) || who === from || !reason) return { status: 400 };
+    const key = "reports:" + from, recent = arr(await this.ctx.storage.get(key)).filter((t) => Date.now() - t < 3600e3);
+    if (recent.length >= 8) return { status: 429 };
+    recent.push(Date.now());
+    await this.ctx.storage.put(key, recent);
+    const feed = this.data(await this.load("index")) || {}, profiles = obj(feed.profiles);
+    const esc = (s) => String(s || "").replace(/[\\*_~`|>#@<:\[\]()]/g, (c) => "\\" + c);
+    const nm = (ph) => esc((profiles[ph] && profiles[ph].name) || "someone");
+    const lines = [`🚩 **Report: ${REASONS[reason]}**`, `**Reported:** ${nm(who)} (\`${who}\`)`, `**By:** ${nm(from)} (\`${from}\`)`];
+    const post = POST.test(r.post || "") ? arr(feed.posts).find((p) => p.id === r.post) : null;
+    if (post) {
+      const c = r.comment ? arr(post.comments).find((x) => x.id === r.comment) : null;
+      const what = (x) => (x.text ? `"${esc(String(x.text).slice(0, 200))}"` : x.song ? `a song: ${esc(x.song.title)}` : x.video || (x.media && x.media.length) ? "pictures or a video" : x.image ? "a picture" : "a post");
+      if (c) lines.push(`**Comment:** "${esc(String(c.text || "").slice(0, 200))}" on ${nm(post.by)}'s post (\`${post.id}:${c.id}\`)`);
+      else lines.push(`**Post:** ${what(post)} (\`${post.id}\`)`);
+    }
+    lines.push(`**Their message:** ${text ? esc(text) : "(none)"}`);
+    lines.push(`-# /posts ${nm(who)} · /delete-post · /delete-comment · /ban ${nm(who)} · /purge ${nm(who)}`);
+    await this.tellChannel("reports", lines.join("\n"));
+    return { status: 200 };
   }
   async premiumAsks() { return obj(await this.ctx.storage.get("premium-asks")); }
   async premiumDone(phones) { const asks = obj(await this.ctx.storage.get("premium-asks")); for (const p of phones) delete asks[p]; await this.ctx.storage.put("premium-asks", asks); }

@@ -24,7 +24,7 @@ const NL = "\n", CRLF2 = "\r\n\r\n";
 
 // ---------------------------------------------------------------------------------------------------- the stand-ins
 const HOOK = "111", TOKEN = "hooktoken", PROJECT = "test-proj";
-const msgs = new Map(), files = new Map(), pushes = [], replies = [], posted = [], direct = [];
+const msgs = new Map(), files = new Map(), pushes = [], replies = [], posted = [], direct = [], reports = [];
 let nextId = 900000000000001000;
 const attach = (id, name, bytes) => { const url = `https://cdn.discordapp.com/attachments/1/${id}/${name}?ex=${Math.floor(Date.now() / 1000 + 86400).toString(16)}&is=0&hm=${Math.random().toString(16).slice(2)}`; files.set(`/attachments/1/${id}/${name}`, Buffer.from(bytes)); return { id: String(Math.random()).slice(2), filename: name, url }; };
 const store = (id, name, data) => msgs.set(id, { id, attachments: [attach(id, name, JSON.stringify(data))] });
@@ -32,7 +32,7 @@ const IDS = { index: "900000000000000001", dm: "900000000000000002", meta: "9000
 // (phone ids are 10 letters and numbers, as the app makes them)
 const alice = "alicephone", ben = "benphone01", post1 = "900000000000000100";
 const jpeg = Buffer.from("/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=", "base64");
-store(IDS.index, "feed.json", { v: 1, posts: [{ id: post1, at: Date.now() - 60e3, user: "Alice", by: alice, text: "my first rebass picture", likes: [], comments: [], image: true }], profiles: { [alice]: { name: "Alice", at: Date.now() }, [ben]: { name: "Ben", at: Date.now() } } });
+store(IDS.index, "feed.json", { v: 1, posts: [{ id: post1, at: Date.now() - 60e3, user: "Alice", by: alice, text: "my first rebass picture", likes: [], comments: [], image: true }, { id: "900000000000000090", at: Date.now() - 86400e3, user: "Alice", text: "an old post from before", likes: [], comments: [] }], profiles: { [alice]: { name: "Alice", at: Date.now() }, [ben]: { name: "Ben", at: Date.now() } } });
 store(IDS.dm, "dm.json", { v: 1, msgs: [] });
 store(IDS.meta, "meta.json", { v: 1, votes: {}, follows: {}, about: {} });
 store(IDS.presence, "presence.json", { v: 1, on: {} });
@@ -93,6 +93,8 @@ function serve(method, url, headers, body, fromPhone) {
   if (u.pathname.startsWith("/push/")) { pushes.push({ to: u.pathname.slice(6), headers, body }); return res(201, ""); }
   if (u.pathname.startsWith("/api/v10/webhooks/app1/")) { replies.push(body.toString()); return res(200, {}); }
   if (u.pathname === "/api/v10/attachments/refresh-urls") return res(200, { refreshed_urls: [] });
+  if (u.pathname === "/api/v10/guilds/1/channels") return res(200, [{ id: "52", type: 0, name: "reports" }]);
+  if (u.pathname === "/api/v10/channels/52/messages") { reports.push(JSON.parse(body.toString())); return res(200, { id: "1" }); }
   const base = `/api/v10/webhooks/${HOOK}/${TOKEN}`;
   if (!u.pathname.startsWith(base)) return res(404, { message: "Unknown Webhook" });
   const rest = u.pathname.slice(base.length), m = /^\/messages\/(\d+)$/.exec(rest);
@@ -249,6 +251,27 @@ try {
   log(`/premium Alice: unlocked on her phone after ${unlocked < 0 ? "never" : Date.now() - t0 + " ms"} | toast: ${toastNow}`);
   check(unlocked >= 0 && /unlocked/i.test(toastNow), "/premium unlocks her phone at once, with a thank-you");
   if (unlocked < 0) { log("bot replied:", replies.map((r) => { try { return JSON.parse(r).content; } catch { return r.slice(0, 200); } }).join(" | ")); log("mod on the server:", JSON.stringify((await hubStore("mod")).d)); log("her phone's premium list:", await A.ev(`localStorage.getItem('fifteam-bans-premium')`), "| live:", await A.ev(`import('./js/hub.js').then(m => m.live.on)`)); }
+  // tags: /tag-founder Alice; everyone's feed shows it at once, on her new post and her old one (no phone id on it)
+  await signed(JSON.stringify({ type: 2, id: "3", token: "t3", application_id: "app1", data: { name: "tag-founder", options: [{ name: "user", value: alice }] }, member: { user: { id: "1", username: "owner" } } }));
+  const tagged = await B.until(`(() => { const t = (id) => { const c = document.querySelector('#so-body .so-post[data-id="' + id + '"]'); return c && c.querySelector('.so-head .tag-founder'); }; return !!(t(${JSON.stringify(post1)}) && t('900000000000000090')); })()`, 10000);
+  log(`Ben's feed: Alice's founder tag after ${tagged} ms, on`, await B.ev(`[...document.querySelectorAll('#so-body .so-post')].filter(c => c.querySelector('.tag-founder')).map(c => c.querySelector('.so-text') ? c.querySelector('.so-text').textContent : c.dataset.id).join(' | ')`));
+  check(tagged >= 0, "a tag shows for everyone at once, on new and old posts");
+  await B.ev(`import('./js/profile.js').then(m => { m.openProfile({ by: ${JSON.stringify(alice)}, user: 'Alice' }); return 1; })`); await sleep(800);
+  const pfTag = await B.ev(`(document.querySelector('#sheet-panel .pf-name .tag-founder') || {}).textContent || ''`);
+  log("on her page:", pfTag);
+  check(pfTag === "FifTeam Founder", "and on her page");
+  // Ben reports Alice's post (the post's ⋯ menu), with a reason and his own words: it reaches #reports
+  await B.ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
+  await B.ev(`[...document.querySelectorAll('#so-body .so-post')].find(p => p.dataset.id === ${JSON.stringify(post1)}).querySelector('.so-more').click(), 1`); await sleep(400);
+  const menu = await B.ev(`[...document.querySelectorAll('#sheet-panel .menu-item')].map(b => b.textContent).join(' | ')`);
+  log("Ben's ⋯ on Alice's post:", menu);
+  await B.ev(`document.querySelector('#sheet-panel .so-report').click(), 1`); await sleep(400);
+  await B.ev(`(() => { [...document.querySelectorAll('#sheet-panel .rp-reason')].find(b => b.dataset.k === 'spam').click(); document.querySelector('#sheet-panel .rp-text').value = 'posting the same thing over and over'; document.querySelector('#sheet-panel .rp-send').click(); return 1; })()`);
+  for (let i = 0; i < 60 && !reports.length; i++) await sleep(100);
+  const toastR = await B.ev(`document.getElementById('toast').textContent`);
+  log("in #reports:", (reports[0] || {}).content, "| Ben sees:", toastR);
+  const rc = (reports[0] || {}).content || "";
+  check(/Report: Spam/.test(rc) && rc.includes("Alice (`alicephone`)") && rc.includes("By:** Ben") && rc.includes("my first rebass picture") && rc.includes("posting the same thing over and over") && /Thanks/.test(toastR), "Ben's report reaches #reports with the reason, the post and his message");
   log("errors:", [...A.errors, ...B.errors].filter((e) => !/favicon|ERR_|Failed to load resource/i.test(e)).join(" | ").slice(0, 600) || "none");
 } catch (e) { log("STOPPED:", e.stack); fails++; }
 finally {

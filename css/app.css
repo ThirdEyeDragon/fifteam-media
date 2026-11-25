@@ -938,3 +938,10 @@ h2 { background: linear-gradient(90deg, #ffffff 0%, #e6dcff 55%, #cdb6ff 100%); 
 .pm-copy { height: 28px; padding: 0 10px; vertical-align: 1px; }
 .pm-pay { text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
 .pm-done { color: var(--ink); }
+
+/* ---------------------------------------------------------------------------- reporting */
+.rp-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.rp-reason { padding: 9px 14px; border-radius: 999px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--line); color: var(--muted); font-weight: 600; font-size: 14px; }
+.rp-reason.on { color: #fff; border-color: transparent; background: linear-gradient(90deg, #ff5f7a, #ff8a3d); }
+.rp-text { resize: vertical; min-height: 84px; }
+.pf-report { color: var(--dim); }
