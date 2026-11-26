@@ -316,5 +316,21 @@ check(w20.length >= 6 && w20.every((o, i) => !i || o.ohms > w20[i - 1].ohms) && 
   const round = SUBS.filter((s) => !s.sq).every((s) => subFrom(s.row).drv.shape === "round");
   check(drv.shape === "sq" && L.subs[0].sq && round && SUBS.filter((s) => s.sq).length >= 10, `square subs: ${SUBS.filter((s) => s.sq).length} (Kicker L7s), the L7S 12's cutout an ${(drv.cutout / IN).toFixed(2)}″ square; the rest round`);
 }
+// ---------------------------------------------------------------------------------------------------- the quick builds
+{
+  const { SUBS, subFrom } = await import("../js/subs.js");
+  const rows = [];
+  let worst = 0, least = 9;
+  for (const name of ["VXF-15", "NS v.6 18", "Punch P2D2-10", "Strato 12", "9921c", "Z v.6 15", "CompR 12 (48CWR124)"]) {
+    const s = SUBS.find((x) => x.model === name), d = M.driver(subFrom(s.row).drv);
+    for (const goal of ["daily", "deep", "loud", "windy", "spl"]) { const r = M.presetPorted(d, 1, d.pe, goal); worst = Math.max(worst, r.xr); least = Math.min(least, r.xr); rows.push(`${name} ${goal} ${(r.V / FT3).toFixed(1)} ft³ @ ${r.fb} Hz ${(r.xr * 100).toFixed(0)}%`); }
+    for (const [q, mx] of [[0.85, 1.1], [0.707, 0.9]]) worst = Math.max(worst, M.presetSealed(d, 1, d.pe, q, mx).xr);
+  }
+  console.log("quick builds:", rows.slice(0, 5).join(" | "));
+  check(worst <= 1.02 && least > 0.2, `quick builds for 7 well-known subs at their rated power: the cone never past Xmax (2% for rounding) (the most ${(worst * 100).toFixed(0)}%), and using it (the least ${(least * 100).toFixed(0)}%)`);
+  const d = M.driver(subFrom(SUBS.find((x) => x.model === "VXF-15").row).drv);
+  const spl = M.presetPorted(d, 1, d.pe, "spl"), deep = M.presetPorted(d, 1, d.pe, "deep"), windy = M.presetPorted(d, 1, d.pe, "windy");
+  check(spl.fb > deep.fb + 10 && windy.rule.lo >= 20 && windy.V > M.presetPorted(d, 1, d.pe, "loud").V, `each its own kind: SPL tuned high (${spl.fb} Hz), Deep low (${deep.fb} Hz), Windy a big box with a huge port (${windy.rule.lo.toFixed(0)}+ in² per ft³)`);
+}
 console.log(failed ? "FAIL" : "box: all ok");
 process.exit(failed ? 1 : 0);

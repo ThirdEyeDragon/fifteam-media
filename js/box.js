@@ -287,29 +287,35 @@ function sizePorts(quiet, rule = portRule, capOnly = false) {
 // ---------------------------------------------------------------------------------------------------- quick builds
 /** Whole designs in one tap, each for a kind of bass, worked out for the sub picked (its Fs moves the tunings). */
 const QUICK = [
-  ["daily", "Daily", "Ported, flat and deep: about 32 Hz, the flattest box there, quiet port", { type: "ported", fb: (fs) => clamp(fs, 30, 34), vol: 1, rule: { v: 24, lo: 12, hi: 18 } }],
-  ["deep", "Deep", "Ported low: about 28 Hz in a bigger box, for the lowest notes", { type: "ported", fb: (fs) => clamp(fs * 0.85, 25, 29), vol: 1, rule: { v: 24, lo: 12, hi: 18 } }],
-  ["loud", "Loud", "Ported higher: about 38 Hz, louder where most music hits, a big port", { type: "ported", fb: (fs) => clamp(fs * 1.2, 36, 42), vol: 1.1, rule: { v: 22, lo: 14, hi: 20 } }],
-  ["windy", "Windy", "The most air out of the port: a big box at about 33 Hz with a huge port (18 to 30 in² per ft³), so you feel it move", { type: "ported", fb: (fs) => clamp(fs, 31, 35), vol: 1.25, rule: { v: 15, lo: 18, hi: 30 } }],
-  ["spl", "SPL", "Built for numbers: tuned high (about 46 Hz) in a tight box, a big port", { type: "ported", fb: (fs) => clamp(fs * 1.45, 44, 52), vol: 0.9, rule: { v: 20, lo: 16, hi: 26 } }],
-  ["compact", "Compact", "Sealed and small: tight, punchy (Qtc 0.85), fits anywhere", { type: "sealed", qtc: 0.85 }],
-  ["sq", "SQ", "Sealed and accurate: flat (Qtc 0.71), for sound quality", { type: "sealed", qtc: 0.707 }],
-  ["band", "Bandpass", "4th order around 50 Hz: loud in its band, the subs protected inside", { type: "bp4", style: "std", s4: 0.6, c4: 50, rule: { v: 24, lo: 12, hi: 22 } }],
-  ["hall", "Hallway", "6th order hallway: subs facing each other into a ported middle chamber, both rear chambers ported, 30–75 Hz", { type: "bp6", style: "hall", lo: 30, hi: 75, rule: { v: 24, lo: 12, hi: 22 } }],
+  ["daily", "Daily", "Ported, flat and deep: worked out for this sub at your power, using all its excursion and no more", { type: "ported" }],
+  ["deep", "Deep", "Ported low: the lowest notes this sub can play cleanly at your power", { type: "ported" }],
+  ["loud", "Loud", "Ported for the most output from 35 to 70 Hz, inside the sub's Xmax", { type: "ported" }],
+  ["windy", "Windy", "The most air out of the port: a big box and a huge port (20 to 30 in² per ft³), so you feel it move", { type: "ported" }],
+  ["spl", "SPL", "Built for numbers: the highest peak this sub can make at your power, a big port", { type: "ported" }],
+  ["compact", "Compact", "Sealed and small: tight, punchy, fits anywhere, the cone kept inside its Xmax", { type: "sealed", qtc: 0.85, qmax: 1.1 }],
+  ["sq", "SQ", "Sealed and accurate: as flat as the sub allows at your power (Qtc from 0.71)", { type: "sealed", qtc: 0.707, qmax: 0.9 }],
+  ["band", "Bandpass", "4th order: the shape and centre that play loudest inside the sub's Xmax, the subs protected inside", { type: "bp4", style: "std", rule: { v: 24, lo: 12, hi: 22 } }],
+  ["hall", "Hallway", "6th order hallway: subs facing each other into a ported middle chamber, both rear chambers ported, the band that plays loudest and flattest", { type: "bp6", style: "hall", rule: { v: 24, lo: 12, hi: 22 } }],
 ];
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 function quickBuild(key) {
   const q = QUICK.find((x) => x[0] === key); if (!q) return;
-  const o = q[3], d = drvNow();
+  const o = q[3], d = drvNow(), N = st.count, W = st.power;
   st.quick = key; st.type = o.type; st.fixed = false;
-  if (o.type === "sealed") st.qtc = Math.max(o.qtc, +(d.qts * 1.15).toFixed(2));
-  if (o.type === "bp4") { st.style4 = o.style; st.s4 = o.s4; st.c4 = Math.round(clamp(o.c4, d.fs * 1.15, 65)); }
-  if (o.type === "bp6") { st.style6 = o.style; st.lo6 = o.lo; st.hi6 = o.hi; }
-  if (o.type === "ported") st.fbP = Math.round(o.fb(d.fs));
-  portRule = o.rule || { v: 26, lo: 10, hi: 24 };
+  // (each worked out for this sub at this power: searched, scored on what it can really play inside its Xmax)
+  let pp = null;
+  if (o.type === "sealed") st.qtc = M.presetSealed(d, N, W, o.qtc, o.qmax).qtc;
+  if (o.type === "bp4") { st.style4 = o.style; const b = M.presetBp4(d, N, W); st.s4 = b.s4; st.c4 = b.c4; }
+  if (o.type === "bp6") { st.style6 = o.style; const b = M.presetBp6(d, N, W); st.lo6 = b.lo; st.hi6 = b.hi; }
+  if (o.type === "ported") { pp = M.presetPorted(d, N, W, key); st.fbP = +pp.fb.toFixed(1); }
+  portRule = pp ? pp.rule : o.rule || { v: 26, lo: 10, hi: 24 };
   st.port.kind = st.port2.kind = "slot";
   design(o.type, true);
-  if (o.type === "ported" && o.vol !== 1) { st.vbP = M.ventedVolumeFor(d, st.count, st.fbP) * o.vol; finishPorts(); }
+  if (pp) {
+    st.vbP = pp.V; finishPorts();
+    // (too tight to build, the sub beside its port: a little more box, shaped again)
+    for (let k = 0; k < 3 && res && M.misfits(res.L); k++) { st.vbP *= 1.2; finishPorts(); }
+  }
   portRule = { v: 26, lo: 10, hi: 24 };
   paintAll();
   toast(`${q[1]}: ${res.L.net.map((v) => fmt("vol", v)).join(" + ")}${res.L.ports.length ? " at " + res.L.ports.map((p) => p.fb.toFixed(0)).join("/") + " Hz" : ""}`, 3500);

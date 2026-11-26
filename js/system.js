@@ -2,20 +2,22 @@
 // out and drawn as a wiring diagram of the car from above: every wire from the terminal it starts at to the one it
 // ends at (which post on which bus bar), its gauge and fuse, and how to wire each part. Tap a part: its wires light up
 // and the rest fade; tap a wire: both its ends light up, and what it is.
-//   The numbers: an amp's draw at full power is its output over the voltage (14.4 V running) and its efficiency (class D:
-// about 80% for a mono amp, 75% for a 4-channel); power wire by its current (copper, OFC) and voltage drop over the run
-// (0.5 V at most); a fuse protects the wire (never bigger than the wire takes); subs wired for the lowest load the amp
-// is stable at.
+//   The numbers: an amp's draw is worked out from its RATED power (what it can pull, however its speakers are wired
+// today), over the voltage under load (13.8 V) and its efficiency (class D: about 80% for a mono amp, 75% for a
+// 4-channel). Every fuse is at least that draw (the next standard size up, so it doesn't blow at full power) and never
+// more than its wire takes (so it protects the wire): the wire is the thinnest gauge, in the fewest runs, that takes
+// its fuse with at most 0.5 V lost over its length (copper, OFC). Subs wired for the lowest load the amp is stable at.
 import { $, toast } from "./ui.js";
 import { wiring } from "./boxmath.js";
 
 const KEY = "fifteam-system";
 const NS = "http://www.w3.org/2000/svg";
-const V = 14.4, CAR_LOAD = 60;
+const V = 13.8, CAR_LOAD = 60;
 // copper (OFC) power wire: what it takes (A, in a car, bundled), and its resistance (ohm per foot)
 const GAUGES = [["8", 60, 0.000628], ["4", 135, 0.000249], ["2", 181, 0.000156], ["1/0", 245, 0.0000983], ["2/0", 283, 0.0000779], ["3/0", 328, 0.0000618], ["4/0", 380, 0.000049]];
 const SPK_GAUGES = [["16", 22], ["14", 32], ["12", 41], ["10", 55], ["8", 73], ["4", 135], ["1/0", 245]];
-const FUSES = [2, 5, 10, 15, 20, 25, 30, 40, 50, 60, 80, 100, 125, 150, 200, 250, 300, 350, 400, 500];
+// (standard fuse sizes: blade, MIDI and ANL)
+const FUSES = [2, 5, 10, 15, 20, 25, 30, 35, 40, 50, 60, 70, 80, 100, 125, 150, 175, 200, 225, 250, 300, 325, 350, 400, 450, 500];
 const COLORS = { power: "#ff4d5e", ground: "#15151c", remote: "#3aa0ff", rca: "#e9e9f2", knob: "#f15bb5", sense: "#ffd84d", sub: "#b388ff", fl: "#ffd166", fr: "#f78c6b", rl: "#06d6a0", rr: "#4cc9f0", link: "#9aa0b8" };
 const DOOR_NAMES = { fl: "Front left door", fr: "Front right door", rl: "Rear left door", rr: "Rear right door" };
 
@@ -45,15 +47,17 @@ const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch
 // ---------------------------------------------------------------------------------------------------- the numbers
 const ceilFuse = (a) => FUSES.find((f) => f >= a) || FUSES[FUSES.length - 1];
 const floorFuse = (a) => [...FUSES].reverse().find((f) => f <= a) || FUSES[0];
-/** Power (or ground) wire for a current over a length (ft): the fewest runs, the thinnest gauge that takes it. */
+/** Power (or ground) wire for a current over a length (ft): the fewest runs, then the thinnest gauge, where each run's
+ * fuse (the next standard size at or above its share of the current) is no more than the wire takes, and the voltage
+ * lost over the length is 0.5 V at most. */
+function fit(I, ft, gi, runs) {
+  const [g, amp, r] = GAUGES[gi], each = I / runs, fuse = ceilFuse(each);
+  return fuse <= amp && fuse >= each && each * r * ft <= 0.5 ? { g, runs, each, amp, fuse } : null;
+}
 function powerWire(I, ft, minGauge = 0) {
-  for (let runs = 1; runs <= 6; runs++) {
-    for (let gi = minGauge; gi < GAUGES.length; gi++) {
-      const [g, amp, r] = GAUGES[gi], each = I / runs;
-      if (each <= amp && each * r * ft <= 0.5) return withAlt({ g, runs, each, amp, fuse: Math.min(floorFuse(amp), Math.max(ceilFuse(each * 1.1), 0)) }, I, ft);
-    }
-  }
-  const [g, amp] = GAUGES[GAUGES.length - 1], runs = Math.ceil(I / amp);
+  I = Math.max(1, I);
+  for (let runs = 1; runs <= 12; runs++) for (let gi = minGauge; gi < GAUGES.length; gi++) { const w = fit(I, ft, gi, runs); if (w) return withAlt(w, I, ft); }
+  const [g, amp] = GAUGES[GAUGES.length - 1], runs = Math.ceil(I / floorFuse(amp));
   return withAlt({ g, runs, each: I / runs, amp, fuse: floorFuse(amp), big: true }, I, ft);
 }
 /** The same current on thinner wire in more runs: 2/0 and up as runs of 1/0, 1/0 as runs of 4 AWG; each run fused for
@@ -61,11 +65,7 @@ function powerWire(I, ft, minGauge = 0) {
 function withAlt(w, I, ft) {
   const gi = GAUGES.findIndex((x) => x[0] === w.g), ai = gi >= 4 ? 3 : gi === 3 ? 1 : -1;
   if (ai < 0) return w;
-  const [g, amp, r] = GAUGES[ai];
-  for (let n = 2; n <= 10; n++) {
-    const each = I / n;
-    if (each <= amp && each * r * ft <= 0.5) { if (n > w.runs) w.alt = { g, runs: n, fuse: Math.min(floorFuse(amp), ceilFuse(each * 1.1)) }; break; }
-  }
+  for (let n = w.runs + 1; n <= 12; n++) { const x = fit(I, ft, ai, n); if (x) { w.alt = { g: x.g, runs: n, fuse: x.fuse }; break; } }
   return w;
 }
 const wireText = (w) => `${w.runs > 1 ? w.runs + " × " : ""}${w.g} AWG`;
@@ -134,22 +134,34 @@ function speakerPlan(c) {
 /** Everything worked out: the draw, the wire and fuses, the subs and speakers, and what to watch out for. */
 export function compute(c) {
   const subs = subPlan(c), spk = speakerPlan(c), warn = [], tips = [];
+  // (each amp: what it gives the speakers as they're wired (P), and what it can draw at its rating (I), which sizes its
+  // wire and fuse: an amp is fused for what it can pull, not for today's load)
   const ampI = [];
-  subs.forEach((s) => ampI.push({ kind: "mono", i: s.amp, P: s.P, I: s.P / (V * 0.8) }));
-  for (let i = 0; i < c.four.n; i++) {
-    const ch = spk.chans.filter((x) => x.amp === i), P = ch.reduce((a, x) => a + c.four.watts * Math.min(2, 4 / Math.max(x.load, 1)), 0) || c.four.watts * 4;
-    ampI.push({ kind: "four", i, P, I: P / (V * 0.75) });
+  for (let i = 0; i < Math.max(0, c.mono.n | 0); i++) {
+    const s = subs.find((x) => x.amp === i);
+    ampI.push({ kind: "mono", i, P: s ? s.P : 0, rated: c.mono.watts, I: c.mono.watts / (V * 0.8) });
   }
-  const I = ampI.reduce((a, x) => a + x.I, 0), P = ampI.reduce((a, x) => a + x.P, 0);
+  // (a 4-channel's rating is per channel at 4 ohms; stable at 2 ohms, it makes about 1.6 times that there)
+  const fourRated = 4 * c.four.watts * (c.four.ohm <= 2 ? 1.6 : 1);
+  const chP = (load) => c.four.watts * (load >= 4 ? 4 / load : load >= 2 ? 1 + 0.6 * (4 - load) / 2 : 1.6);
+  for (let i = 0; i < c.four.n; i++) {
+    const ch = spk.chans.filter((x) => x.amp === i), P = ch.reduce((a, x) => a + chP(x.load), 0);
+    ampI.push({ kind: "four", i, P, rated: fourRated, I: fourRated / (V * 0.75) });
+  }
+  const I = ampI.reduce((a, x) => a + x.I, 0), P = ampI.reduce((a, x) => a + x.P, 0), rated = ampI.reduce((a, x) => a + x.rated, 0);
   const altFree = Math.max(0, c.alt - CAR_LOAD), bankAh = c.bank.n * c.bank.ah;
-  // the run from the front: with a bank at the back, it only has to carry the alternator's charge
-  const runI = c.bank.n ? Math.min(I, Math.max(altFree, 60)) : I;
+  // the run from the front: everything the amps draw; with a bank at the back, the bank covers the peaks and the run
+  // carries the alternator's full output (charging the bank, feeding the amps): never fused below either
+  const runI = c.bank.n ? Math.min(I, Math.max(c.alt, 100)) : I;
   const run = powerWire(runI, c.run, 3);
+  // (the Big 3: the alternator's whole output)
+  const big3 = powerWire(Math.max(c.alt, 100), 4, 3);
   const deficit = Math.max(0, I - altFree);
   const usable = c.bank.type === "agm" ? 0.5 : 0.9, bankName = c.bank.type === "agm" ? "AGM" : "Lithium";
   const minutes = deficit > 0 && bankAh ? (bankAh * usable) / deficit * 60 : Infinity;
   const ampWire = ampI.map((a) => ({ ...a, w: powerWire(a.I, 4) }));
-  const bankWire = c.bank.n ? powerWire(Math.max(I - altFree, I * 0.6) / c.bank.n, 2, 3) : null;
+  // (each battery in the bank: its share of everything the amps can draw)
+  const bankWire = c.bank.n ? powerWire(I / c.bank.n, 2, 3) : null;
   // warnings
   for (const s of subs) {
     if (s.under) warn.push(`Mono amp ${s.amp + 1}: its ${s.k} sub${s.k > 1 ? "s" : ""} can't be wired at or above ${c.mono.ohm} Ω with ${c.subs.coil} coils (the closest is ${s.load} Ω). Use another coil option or more amps.`);
@@ -166,7 +178,7 @@ export function compute(c) {
   if (run.big) warn.push(`That's more current than ${run.runs} runs of 4/0 take: split the load over more runs, or move power to the back (a bank) so the run only charges it.`);
   if (c.mono.n + c.four.n > 3) tips.push(`With ${c.mono.n + c.four.n} amps, the head unit's remote wire switches a relay, and the relay turns them all on (a remote output can't drive that many).`);
   if (c.bank.n && !c.big3) tips.push("With this much power, do the Big 3 too (alternator to battery, battery to chassis, engine to chassis, all at least as thick as the run).");
-  return { subs, spk, ampI: ampWire, I, P, altFree, bankAh, bankName, runI, run, deficit, minutes, bankWire, warn, tips };
+  return { subs, spk, ampI: ampWire, I, P, rated, altFree, bankAh, bankName, runI, run, big3, deficit, minutes, bankWire, warn, tips };
 }
 
 // ---------------------------------------------------------------------------------------------------- the drawing
@@ -191,10 +203,13 @@ function layout(c, R) {
   const gF = comp({ id: "gndf", kind: "ground", label: "Chassis ground", sub: "Front, bare metal", x: 140, y: 104, w: 24, h: 16 });
   term(gF, "g", 152, 104, "up", "Front chassis ground");
   wire({ kind: "power", from: ["batt", "pos"], to: ["mainfuse", "in"], ...R.run, label: `${wireText(R.run)} power`, note: "As short as it can be: the fuse goes within 18″ of the battery." });
-  wire({ kind: "ground", from: ["batt", "neg"], to: ["gndf", "g"], g: c.big3 ? R.run.g : "4", runs: 1, label: `${c.big3 ? R.run.g : "4"} AWG ground${c.big3 ? " (Big 3)" : ""}`, note: "Battery − to bare chassis metal: sand off the paint, ring lug, star washer." });
+  // (the battery's ground carries everything the run does back: at least as thick; with the Big 3, the alternator's
+  // output too)
+  const fg = c.big3 && R.big3.runs * R.big3.amp > R.run.runs * R.run.amp ? R.big3 : R.run;
+  wire({ kind: "ground", from: ["batt", "neg"], to: ["gndf", "g"], g: fg.g, runs: fg.runs, alt: fg.alt, label: `${wireText(fg)} ground${c.big3 ? " (Big 3)" : ""}`, note: "Battery − to bare chassis metal: sand off the paint, ring lug, star washer. At least as thick as the power run." });
   if (c.big3) {
-    wire({ kind: "power", from: ["alt", "out"], to: ["batt", "pos2"], g: R.run.g, runs: 1, label: `${R.run.g} AWG Big 3 (alternator)`, note: "Big 3: alternator B+ to battery +, with a fuse near the battery (the same size as the main fuse).", fuse: R.run.fuse });
-    wire({ kind: "ground", from: ["alt", "case"], to: ["gndf", "g"], g: R.run.g, runs: 1, label: `${R.run.g} AWG Big 3 (engine block)`, note: "Big 3: the engine block to the chassis." });
+    wire({ kind: "power", from: ["alt", "out"], to: ["batt", "pos2"], ...R.big3, label: `${wireText(R.big3)} Big 3 (alternator)`, note: `Big 3: alternator B+ to battery +, sized for its whole ${c.alt} A, fused ${fuseText(R.big3)} near the battery.` });
+    wire({ kind: "ground", from: ["alt", "case"], to: ["gndf", "g"], g: R.big3.g, runs: R.big3.runs, alt: R.big3.alt, label: `${wireText(R.big3)} Big 3 (engine block)`, note: "Big 3: the engine block to the chassis, as thick as the alternator wire." });
   }
 
   // ---- the dash: the head unit (or a factory radio and a line output converter), bass knob, voltmeters
@@ -484,7 +499,7 @@ function paint() {
   const sum = h("div", "card sec sy-card sy-sum");
   const tiles = h("div", "sy-tiles");
   const tl = (k, v, n, cls = "") => { const t = h("div", "bx-tile " + cls); t.append(h("small", "", k), h("b", "", v)); if (n) t.append(h("span", "", n)); tiles.append(t); };
-  tl("Total power", `${Math.round(R.P).toLocaleString()} W`, `${S.mono.n} mono, ${S.four.n} 4-channel`);
+  tl("Total power", `${Math.round(R.P).toLocaleString()} W`, `into the speakers as wired · amps rated ${Math.round(R.rated).toLocaleString()} W`);
   tl("Draw at full power", `${Math.round(R.I).toLocaleString()} A`, `alternator spares about ${R.altFree} A`, R.deficit > 0 && !R.bankAh ? "bad" : "");
   tl("Power run", wireText(R.run), `${S.run} ft, fused ${R.run.runs > 1 ? R.run.runs + " × " : ""}${R.run.fuse} A at both ends${R.run.alt ? ` · or ${R.run.alt.runs} runs of ${R.run.alt.g} AWG with ${R.run.alt.runs} × ${R.run.alt.fuse} A fuses` : ""}`);
   if (R.bankAh) tl(`${R.bankName} bank`, `${R.bankAh} Ah`, R.deficit > 0 ? `full power for about ${R.minutes < 1 ? "<1" : Math.round(R.minutes)} min (music: much longer)` : "the alternator keeps up");
@@ -659,7 +674,7 @@ function paintInfo() {
   if (cp.kind === "box") for (const s of R.subs) box.append(subWiringDiagram(s));
 }
 function describe(cp) {
-  if (cp.kind === "amp") { const d = cp.draw; return `${cp.sub} · about ${Math.round(d.P).toLocaleString()} W here · draws about ${Math.round(d.I).toLocaleString()} A at full power · power and ground: ${wireText(d.w)}${d.w.alt ? ` (${altText(d.w, false)})` : ""}, fused ${fuseText(d.w)}`; }
+  if (cp.kind === "amp") { const d = cp.draw; return `${cp.sub} · about ${Math.round(d.P).toLocaleString()} W into its speakers as wired · draws about ${Math.round(d.I).toLocaleString()} A at full power · power and ground: ${wireText(d.w)}${d.w.alt ? ` (${altText(d.w, false)})` : ""}, fused ${fuseText(d.w)}`; }
   if (cp.kind === "fuse") { const w = cp.fuseOf || R.run; return `${cp.sub} · ${fuseText(w)}`; }
   if (cp.kind === "bus") return `${cp.sub} · ${cp.posts.length} posts used`;
   if (cp.kind === "lithium") return `${cp.sub} · the bank: ${R.bankAh} Ah ${R.bankName === "AGM" ? "AGM" : "lithium"} in all, in parallel`;

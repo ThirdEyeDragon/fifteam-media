@@ -211,6 +211,106 @@ export function ventedVolumeFor(drv, count, fb) {
   return Math.sqrt(lo * hi);
 }
 
+// ---------------------------------------------------------------------------------------------------- the quick builds
+// Each quick build searched for this sub, at this power: the box sizes and tunings around its kind of bass, each scored
+// on what it can really play: its output at the amp's power, capped wherever the cone would go past its Xmax (the most
+// it can do there without bottoming), and kept inside Xmax above the subsonic filter it's meant to run with (80% of the
+// tuning; 25 Hz sealed). So a build uses all of the sub's excursion, and no more.
+//   Ported goals: Windy, the most air out of the port around the tuning (a big port, a bigger box); SPL, the highest
+// peak; Loud, the most output from 35 to 70 Hz; Daily, the most output down low while staying flat; Deep, the lowest
+// extension that's still flat. Sealed: the Qtc (from Compact's or SQ's own) that keeps the cone inside Xmax. Bandpass:
+// the shape and centre (4th order) or the band (6th order hallway) that plays loudest inside Xmax.
+const QFR = freqs(10, 300, 110);
+const dbMean = (a) => 10 * Math.log10(a.reduce((s, v) => s + Math.pow(10, v / 10), 0) / Math.max(1, a.length));
+function playable(drv, N, power, sys, fmin) {
+  const sim = simulate({ drv, count: N, power, ...sys }, QFR);
+  const m = sim.spl.map((v, i) => v + Math.min(0, 20 * Math.log10(drv.xmax / Math.max(1e-9, sim.x[i]))));
+  let xr = 0, vel = 0;
+  for (let i = 0; i < QFR.length; i++) if (QFR[i] >= fmin && QFR[i] <= 150) { xr = Math.max(xr, sim.x[i] / drv.xmax); for (const v of sim.vel) vel = Math.max(vel, v[i]); }
+  const pick = (a, b) => m.filter((_, i) => QFR[i] >= a && QFR[i] <= b);
+  return { sim, m, xr, vel, mean: (a, b) => dbMean(pick(a, b)), max: (a, b) => Math.max(...pick(a, b)), ripple: (a, b) => { const p = pick(a, b); return Math.max(...p) - Math.min(...p); },
+    // (the lowest frequency within 3 dB of its output from 40 to 80 Hz)
+    f3: () => { const ref = dbMean(pick(40, 80)); let f = 300; for (let i = QFR.length - 1; i >= 0; i--) { if (m[i] >= ref - 3) f = QFR[i]; else if (QFR[i] < 40) break; } return f; } };
+}
+// (past Xmax at full power: out, unless nothing stays inside (then the least past it); a port past its air speed costs
+// a little for every m/s over)
+const overX = (r) => (r.xr > 1 ? 100 + 50 * (r.xr - 1) : 0);
+const overV = (r, v) => Math.max(0, r.vel - v) * 0.4;
+const PORTED = {
+  daily: { fb: [29, 36], per: [12, 18], v: 24, size: 2, score: (r) => r.mean(30, 60) + 0.3 * r.mean(25, 30) - 2 * Math.max(0, r.ripple(30, 90) - 3) },
+  deep: { fb: [21, 30], per: [12, 18], v: 24, size: 1.2, score: (r) => r.mean(22, 40) - 1.5 * Math.max(0, r.ripple(25, 80) - 4) },
+  loud: { fb: [33, 42], per: [14, 22], v: 26, size: 2, score: (r) => r.mean(35, 70) },
+  windy: { fb: [29, 37], per: [20, 30], v: 30, size: 0.7, score: (r) => r.mean(r.fb * 0.9, r.fb * 1.25) + 0.3 * r.mean(30, 60) },
+  spl: { fb: [40, 55], per: [16, 26], v: 30, size: 2, score: (r) => r.max(40, 65) + 0.2 * r.mean(40, 65) },
+};
+/** A ported quick build: { V, fb, rule: { v, lo, hi } } (the box's net volume, its tuning, and its port's sizing). */
+export function presetPorted(drv, N, power, goal) {
+  const g = PORTED[goal] || PORTED.daily;
+  const ref = ventedVolumeFor(drv, N, (g.fb[0] + g.fb[1]) / 2);
+  let best = search(g, ref, g.fb[0], g.fb[1]);
+  // (nothing in its range keeps this sub inside Xmax at this power: a little higher, where a ported box holds it better)
+  if (best && best.r.xr > 1) { const up = search(g, ventedVolumeFor(drv, N, g.fb[1] + 3.75), g.fb[1] + 1.5, g.fb[1] + 6); if (up && up.score > best.score) best = up; }
+  if (!best) return { V: ref, fb: (g.fb[0] + g.fb[1]) / 2, rule: { v: g.v, lo: g.per[0], hi: g.per[1] } };
+  return { V: best.V, fb: best.fb, rule: { v: g.v, lo: Math.max(g.per[0], best.per * 0.9), hi: g.per[1] }, xr: best.r.xr };
+  function search(g, ref, f0, f1) {
+  let best = null;
+  for (let fb = f0; fb <= f1 + 1e-9; fb += 1.5) for (let i = 0; i <= 11; i++) {
+    const V = ref * Math.pow(2.2, (i - 5) / 6);                         // (under half of it to 2.2 times it)
+    // the port: the goal's area per ft³, bigger (to its most) if its air would be too fast
+    let per = g.per[0], r = null, S = 0;
+    for (let k = 0; k < 3; k++) {
+      S = per * (V / FT3) * IN * IN;
+      const len = lenFor(V, S, S, fb);
+      if (len < 0.03) { r = null; break; }
+      r = playable(drv, N, power, { type: "ported", V: [V], ports: [{ S, S1: S, len }] }, 0.8 * fb);
+      if (r.vel <= g.v || per >= g.per[1]) break;
+      per = Math.min(g.per[1], per * Math.pow(r.vel / g.v, 1.1));
+    }
+    if (!r) continue;
+    r.fb = fb;
+    const score = g.score(r) - overX(r) - overV(r, g.v) - g.size * Math.max(0, Math.log2(V / ref));
+    if (!best || score > best.score) best = { score, V, fb, per, r };
+  }
+  return best;
+  }
+}
+/** A sealed quick build: the Qtc (from its own, up to qmax) where the cone stays inside Xmax at this power above 25 Hz. */
+export function presetSealed(drv, N, power, qtc, qmax = 1.05) {
+  let pick = null;
+  for (let q = Math.max(qtc, drv.qts * 1.15); q <= qmax + 1e-9; q += 0.025) {
+    const V = sealedVolume(drv, N, q); if (!V) continue;
+    const r = playable(drv, N, power, { type: "sealed", V: [V], ports: [] }, 25);
+    if (!pick || r.xr < pick.xr) pick = { q, xr: r.xr };
+    if (r.xr <= 1) return { qtc: +q.toFixed(3), xr: r.xr };
+  }
+  return pick ? { qtc: +pick.q.toFixed(3), xr: pick.xr } : { qtc };
+}
+/** A 4th-order quick build: the shape (S) and the centre where it plays loudest inside Xmax. */
+export function presetBp4(drv, N, power) {
+  let best = null;
+  for (const s4 of [0.5, 0.6, 0.7, 0.8]) for (let c4 = 40; c4 <= 60; c4 += 4) {
+    const b = bp4At(drv, N, s4, c4); if (!(b.vr > 0 && b.vf > 0)) continue;
+    const S = 16 * (b.vf / FT3) * IN * IN, len = lenFor(b.vf, S, S, b.fb); if (len < 0.03) continue;
+    const r = playable(drv, N, power, { type: "bp4", V: [b.vr, b.vf], ports: [{ S, S1: S, len }] }, 20);
+    const score = r.mean(38, 75) + 0.2 * r.max(38, 75) - 0.12 * Math.abs(c4 - 50) - overX(r) - overV(r, 26) - 1.2 * Math.max(0, Math.log2((b.vr + b.vf) / (N * drv.vas)));
+    if (!best || score > best.score) best = { score, s4, c4 };
+  }
+  return best ? { s4: best.s4, c4: best.c4 } : { s4: 0.6, c4: 50 };
+}
+/** A 6th-order (parallel, or hallway) quick build: the band it plays loudest and flattest inside Xmax. */
+export function presetBp6(drv, N, power) {
+  let best = null;
+  for (const lo of [28, 33]) for (const hi of [70, 85]) {
+    const b = bp6Design(drv, N, false, lo, hi);
+    const Sf = 16 * (b.vf / FT3) * IN * IN, Sr = 14 * (b.vr / FT3) * IN * IN;
+    const lf = lenFor(b.vf, Sf, Sf, b.ff), lr = lenFor(b.vr, Sr, Sr, b.fr); if (lf < 0.03 || lr < 0.03) continue;
+    const r = playable(drv, N, power, { type: "bp6", series: false, V: [b.vr, b.vf], ports: [{ S: Sf, S1: Sf, len: lf }, { S: Sr, S1: Sr, len: lr }] }, 0.8 * b.fr);
+    const score = r.mean(lo, hi) - 1.2 * Math.max(0, r.ripple(lo, hi) - 4) - overX(r) - overV(r, 26) - 0.6 * Math.max(0, Math.log2((b.vr + b.vf) / (N * drv.vas)));
+    if (!best || score > best.score) best = { score, lo, hi };
+  }
+  return best ? { lo: best.lo, hi: best.hi } : { lo: 30, hi: 75 };
+}
+
 /** 4th-order bandpass, closed form: S sets the passband's shape (0.7: flat; lower: more ripple, more output), gain
  * (dB over the sub alone) its width. The sealed chamber and the sub resonate at fb, where the ported chamber is
  * tuned, which keeps the passband symmetrical. */

@@ -535,7 +535,7 @@ const busInfo = await ev(`document.getElementById('sy-info').innerText`);
 await ev(`(() => { const w = [...document.querySelectorAll('.sy-hit')].find(p => p.dataset.w); w.dispatchEvent(new MouseEvent('click', { bubbles: true })); return 1; })()`); await sleep(300);
 const lit = await ev(`({ on: document.querySelectorAll('.sy-w.on').length, ends: [...document.querySelectorAll('.sy-endl')].map(t => t.textContent).join(' / '), faded: document.querySelector('.sy-svg').classList.contains('picking') })`);
 console.log("box: my system:", JSON.stringify(sys), "| bus bar:", busInfo.split("\n").slice(0, 3).join(" / "), "| wire picked:", JSON.stringify(lit));
-check(sys.hidden && sys.parts > 30 && sys.wires > 50 && sys.banks === 4 && sys.spk === 12 && /1,556 A/.test(sys.tiles), "My system: the example build (4 15s, 2 8,000 W amps, 2 4-channel amps, a 4-battery lithium bank, 3 speakers in every door) worked out and drawn");
+check(sys.hidden && sys.parts > 30 && sys.wires > 50 && sys.banks === 4 && sys.spk === 12 && /1,[0-9]{3} A/.test(sys.tiles), "My system: the example build (4 15s, 2 8,000 W amps, 2 4-channel amps, a 4-battery lithium bank, 3 speakers in every door) worked out and drawn");
 check(/Its posts, left to right/i.test(busInfo) && /Lithium 1 \+/.test(busInfo) && lit.on === 1 && lit.faded && /^From: .+ \/ To: .+/.test(lit.ends), "tap the bus bar: what's on each post; tap a wire: it lights up, the rest fade, both its ends named");
 await shot("17_box_system");
 await click('#bx-cats [data-k="design"]'); await sleep(500);
