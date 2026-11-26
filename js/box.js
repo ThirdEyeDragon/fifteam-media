@@ -17,13 +17,13 @@ function defaults() {
   const p = M.PRESETS[12];
   return {
     v: 1, units: "in", type: "ported", series: false, preset: "12",
-    drv: { fs: p.fs, qts: p.qts, qes: p.qes, vas: p.vas, re: p.re, le: p.le, sd: p.sd, xmax: p.xmax, pe: p.pe, size: p.size, cutout: p.cutout, depth: p.depth, disp: p.disp },
+    drv: { fs: p.fs, qts: p.qts, qes: p.qes, vas: p.vas, re: p.re, le: p.le, sd: p.sd, xmax: p.xmax, pe: p.pe, size: p.size, cutout: p.cutout, depth: p.depth, disp: p.disp, shape: "round" },
     count: 1, power: 600,
     qtc: 0.707, vbS: 1.3 * FT3,                     // sealed
     vbP: 1.75 * FT3, fbP: 32,                       // ported
     s4: 0.7, g4: 0, c4: 50, vr4: 1.3 * FT3, vf4: 0.7 * FT3, fb4: 45,
     vr6: 2.1 * FT3, fr6: 27, vf6: 0.6 * FT3, ff6: 59, lo6: 30, hi6: 80,
-    shape: "rect", w: 24 * IN, h: 15 * IN, d: 16 * IN, dt: 11 * IN, t: 0.75 * IN, dbl: false, brace: 0,
+    shape: "rect", w: 24 * IN, h: 15 * IN, d: 16 * IN, dt: 11 * IN, t: 0.75 * IN, layers: 1, brace: 0,           // layers: the baffle (where the subs mount)
     fixed: false, solve: "w", split: 0.55,
     port: { kind: "slot", w: 1.6 * IN, dia: 4 * IN, n: 1, auto: true, len: 0 },
     port2: { kind: "slot", w: 1.5 * IN, dia: 3 * IN, n: 1, auto: true, len: 0 },
@@ -43,6 +43,9 @@ let st = null;
 function merge(d, s) {
   const o = { ...d, ...s, drv: { ...d.drv, ...s.drv }, port: { ...d.port, ...s.port }, port2: { ...d.port2, ...s.port2 }, wire: { ...d.wire, ...s.wire }, designed: { ...s.designed }, fu: { ...d.fu, ...s.fu }, lim: { ...d.lim, ...s.lim } };
   if (s.series && !s.style6) o.style6 = "series";
+  if (s.layers == null && s.dbl) o.layers = 2;
+  o.layers = Math.max(1, Math.min(12, Math.round(+o.layers || 1)));
+  delete o.dbl;
   o.count = Math.max(1, Math.min(20, o.count | 0 || 1));
   return o;
 }
@@ -323,8 +326,8 @@ function spec() {
   const P1 = { ...st.port, fb: st.type === "ported" ? st.fbP : st.type === "bp4" ? st.fb4 : st.ff6 };
   const P2 = { ...st.port2, fb: st.fr6 };
   return {
-    type: st.type, series: isSeries(), style: styleOf(), shape: st.shape, gap: st.gap, braceMode: st.braceMode, round: st.round, power: st.power, w: st.w, h: st.h, d: st.d, dt: Math.min(st.dt, st.d), t: st.t, dbl: st.dbl, brace: st.brace, count: st.count,
-    sub: { size: st.drv.size, cutout: st.drv.cutout, depth: st.drv.depth, disp: st.drv.disp, pe: st.drv.pe, xmax: st.drv.xmax }, port: P1, port2: P2, split: st.split,
+    type: st.type, series: isSeries(), style: styleOf(), shape: st.shape, gap: st.gap, braceMode: st.braceMode, round: st.round, power: st.power, w: st.w, h: st.h, d: st.d, dt: Math.min(st.dt, st.d), t: st.t, layers: st.layers, brace: st.brace, count: st.count,
+    sub: { size: st.drv.size, cutout: st.drv.cutout, depth: st.drv.depth, disp: st.drv.disp, pe: st.drv.pe, xmax: st.drv.xmax, shape: st.drv.shape }, port: P1, port2: P2, split: st.split,
   };
 }
 
@@ -545,7 +548,7 @@ function paintCut() {
   box.append(tb);
   const sheets = Math.ceil((L.area * 1.2) / (2.4384 * 1.2192));
   const t = st.units === "in" ? `${cutLen(st.t)} wood` : `${(st.t / CM * 10).toFixed(0)} mm wood`;
-  box.append(h("p", "status", `${t} · about ${(L.area / (0.3048 * 0.3048)).toFixed(1)} sq ft of it: ${sheets} sheet${sheets > 1 ? "s" : ""} of 4×8 with room for the saw. Sub cutout: ${cutLen(st.drv.cutout)}${L.ports.some((p) => p.kind === "round") ? ` · port holes: ${L.ports.filter((p) => p.kind === "round").map((p) => cutLen(p.dia + 0.006)).join(", ")}` : ""}.`));
+  box.append(h("p", "status", `${t} · about ${(L.area / (0.3048 * 0.3048)).toFixed(1)} sq ft of it: ${sheets} sheet${sheets > 1 ? "s" : ""} of 4×8 with room for the saw. Sub cutout: ${cutLen(st.drv.cutout)}${st.drv.shape === "sq" ? " square" : " round"}${L.ports.some((p) => p.kind === "round") ? ` · port holes: ${L.ports.filter((p) => p.kind === "round").map((p) => cutLen(p.dia + 0.006)).join(", ")}` : ""}.`));
 }
 function paintWiring() {
   const box = $("bx-wire-list"); if (!box) return;
@@ -585,12 +588,12 @@ function typeName() {
 /** The whole build as text: to copy, or to send. */
 function sheet() {
   const { L, sim } = res, lines = [`FifTeam Media sub box: ${describe()}`, ""];
-  lines.push(`Outside: ${cutLen(L.W)} wide × ${cutLen(L.H)} tall × ${cutLen(L.D)} deep${L.Dt < L.D ? ` (${cutLen(L.Dt)} at the top)` : ""}, ${cutLen(st.t)} wood${st.dbl ? ", double front" : ""}`);
+  lines.push(`Outside: ${cutLen(L.W)} wide × ${cutLen(L.H)} tall × ${cutLen(L.D)} deep${L.Dt < L.D ? ` (${cutLen(L.Dt)} at the top)` : ""}, ${cutLen(st.t)} wood${st.layers > 1 ? `, the baffle ${st.layers} layers (${cutLen(st.layers * st.t)})${st.type.startsWith("bp") ? ": the divider the subs mount on" : ""}` : ""}`);
   L.net.forEach((v, k) => lines.push(`${L.net.length > 1 ? (k ? (L.hall ? "Middle chamber" : "Front chamber") : (L.hall ? "Rear chambers (both)" : "Rear chamber")) : "Box"}: ${fmt("vol", v)} net (${fmt("vol", L.gross[k])} inside)`));
   for (const p of L.ports) lines.push(`${cap(M.portName(spec(), p))}: ${p.copies > 1 ? p.copies + "× " : ""}${p.kind === "slot" ? `slot ${cutLen(p.sw)} × ${cutLen(p.span)}` : `${p.n}× ${cutLen(p.dia)} round`}, ${cutLen(p.len)} long${p.bend ? " (bent)" : ""}, tuned to ${p.fb.toFixed(1)} Hz`);
   lines.push("", "Cut list:");
   for (const c of L.cut) lines.push(`  ${c.n}× ${c.name}: ${cutLen(c.a)} × ${cutLen(c.b)}${c.b2 ? ` / ${cutLen(c.b2)}` : ""}${c.note ? ` (${c.note})` : ""}`);
-  lines.push("", `Sub cutout ${cutLen(st.drv.cutout)}. Power ${st.power} W. Peak cone travel ${(Math.max(...sim.x.filter((x, i) => sim.f[i] >= res.fmin && sim.f[i] <= 200)) * 1000).toFixed(1)} mm (Xmax ${(st.drv.xmax * 1000).toFixed(1)} mm).`);
+  lines.push("", `Sub cutout ${cutLen(st.drv.cutout)}${st.drv.shape === "sq" ? " square" : " round"}. Power ${st.power} W. Peak cone travel ${(Math.max(...sim.x.filter((x, i) => sim.f[i] >= res.fmin && sim.f[i] <= 200)) * 1000).toFixed(1)} mm (Xmax ${(st.drv.xmax * 1000).toFixed(1)} mm).`);
   return lines.join("\n");
 }
 
@@ -643,6 +646,14 @@ function paintPorts() {
     el.querySelector(".bx-pinfo").textContent = `${fmt("area", p.S)}${p.copies > 1 ? ` (${p.copies} ports)` : ""} · ${cutLen(p.len)} long (${cutLen(p.lin)} inside${p.bend ? ", bent" : ""}) · tuned to ${p.fb.toFixed(1)} Hz${P.kind === "slot" ? ` · ${cutLen(p.sw)} × ${cutLen(p.span)} slot${p.top ? " along the top" : ""}` : ""}`;
   }
 }
+/** The baffle's layers: the chip (or the number typed), and which panel that is and how thick. */
+function paintLayers() {
+  document.querySelectorAll("#bx-layers .chip").forEach((c) => c.classList.toggle("on", +c.dataset.k === st.layers));
+  const i = $("bx-layers-n"); if (i && document.activeElement !== i) i.value = st.layers;
+  const el = $("bx-layers-info"); if (!el) return;
+  const bp = st.type.startsWith("bp"), n = st.count, thick = cutLen(st.layers * st.t);
+  el.textContent = `${bp ? `The divider${styleOf() === "hall" ? "s" : ""} the subs mount on` : `The front the sub${n > 1 ? "s" : ""} mount${n > 1 ? "" : "s"} on`}: ${st.layers > 1 ? `${st.layers} layers glued together, ${thick}` : `one layer, ${thick}`}. More layers: stiffer, less flex at high power (and a little less air inside).`;
+}
 function paintAll() {
   document.querySelectorAll("#bx-type button").forEach((b) => b.classList.toggle("on", b.dataset.k === st.type));
   document.querySelectorAll("#bx-units button").forEach((b) => b.classList.toggle("on", b.dataset.k === st.units));
@@ -656,7 +667,7 @@ function paintAll() {
   document.querySelectorAll("#bx-ohms .chip").forEach((c) => c.classList.toggle("on", +c.dataset.k === st.wire.ohms));
   document.querySelectorAll("#bx-amp .chip").forEach((c) => c.classList.toggle("on", +c.dataset.k === st.wire.amp));
   document.querySelectorAll("#bx-cabf .chip").forEach((c) => c.classList.toggle("on", +c.dataset.k === st.cabF));
-  $("bx-cabf").hidden = !st.cab; $("bx-cab").checked = st.cab; $("bx-fixed").checked = st.fixed; $("bx-dbl").checked = st.dbl;
+  $("bx-cabf").hidden = !st.cab; $("bx-cab").checked = st.cab; $("bx-fixed").checked = st.fixed; paintLayers(); if ($("bx-square")) $("bx-square").checked = st.drv.shape === "sq";
   $("bx-type-info").textContent = TYPE_INFO[st.type + ":" + styleOf()] || TYPE_INFO[st.type];
   if (document.activeElement !== $("bx-count")) $("bx-count").value = st.count;
   $("bx-3dcard").classList.toggle("pinned", st.pin); $("bx-pin").classList.toggle("on", st.pin);
@@ -721,7 +732,7 @@ function buildScreen(root) {
   const nameLine = h("div", "bx-subname"); nameLine.id = "bx-subname";
   const pre = chips("bx-presets", [["8", "Typical 8″"], ["10", "10″"], ["12", "12″"], ["15", "15″"], ["18", "18″"], ["custom", "My own"]], (k) => {
     if (k === "custom") { st.preset = "custom"; st.sub = null; st.est = []; paintPresets(); paintSubName(); toast("Type in your sub's numbers below"); return; }
-    st.preset = k; st.sub = null; st.est = []; const p = M.PRESETS[k]; Object.assign(st.drv, p); st.power = Math.round(p.pe * st.count);
+    st.preset = k; st.sub = null; st.est = []; const p = M.PRESETS[k]; Object.assign(st.drv, p, { shape: "round" }); st.power = Math.round(p.pe * st.count);
     design(st.type, true); paintAll(); toast(`Typical ${k}-inch sub, box re-designed for it`);
   });
   const cnt = h("div", "row between bx-count");
@@ -740,7 +751,8 @@ function buildScreen(root) {
     (() => { const c = h("div", "stack-sm bx-check"); c.id = "bx-drv-check"; return c; })(),
     h("span", "label", "For fitting it in"),
     grid(3, field("drv.cutout", "Cutout", "len"), field("drv.depth", "Mounting depth", "len"), field("drv.disp", "Displacement", "vol", { zero: true })),
-    grid(2, field("power", "Amp power (total RMS)", "w", { on: () => {} }), field("drv.size", "Size (frame)", "len")));
+    grid(2, field("power", "Amp power (total RMS)", "w", { on: () => {} }), field("drv.size", "Size (frame)", "len")),
+    (() => { const q = sw("Square sub", "A square frame and cone (like Kicker's L7s): the cutout is a square, its side the cutout above", st.drv.shape === "sq", (on) => { st.drv.shape = on ? "sq" : "round"; paintAll(); }); q.querySelector("input").id = "bx-square"; return q; })());
   sD.querySelector(".bx-drvnote").id = "bx-drv-note";
   root.append(sD);
 
@@ -796,8 +808,15 @@ function buildScreen(root) {
   const dims = grid(3, field("w", "Width", "len", { ro: ro("w") }), field("h", "Height", "len", { ro: ro("h") }), field("d", "Depth", "len", { ro: ro("d") }),
     field("dt", "Depth at top", "len", { hide: () => st.shape !== "wedge" }));
   const thick = chips("bx-thick", [["0.5", "½″"], ["0.625", "⅝″"], ["0.75", "¾″ (18 mm)"], ["1", "1″"]], (k) => { st.t = +k * IN; paintAll(); });
-  const dbl = sw("Double front (baffle)", "Two layers of wood where the sub mounts: stiffer", st.dbl, (on) => { st.dbl = on; paintAll(); });
-  dbl.querySelector("input").id = "bx-dbl";
+  // the baffle: the panel the subs sit on (the front; a bandpass box's divider), in layers of wood, 1 to 12
+  const setLayers = (n) => { n = Math.max(1, Math.min(12, Math.round(n))); if (n === st.layers) return; st.layers = n; if (!st.fixed) reshape(); paintAll(); };
+  const layersRow = h("div", "stack-sm bx-layers");
+  const lChips = chips("bx-layers", [["1", "Single"], ["2", "Double"], ["3", "Triple"], ["4", "4 layers"]], (k) => setLayers(+k));
+  const lIn = h("input", "input bx-countv"); lIn.id = "bx-layers-n"; lIn.inputMode = "numeric"; lIn.setAttribute("aria-label", "Layers in the baffle (1 to 12)");
+  lIn.onchange = () => { const n = parseInt(lIn.value, 10); if (n >= 1 && n <= 12) setLayers(n); else lIn.value = st.layers; };
+  const lRow = h("div", "row bx-layers-row"); lRow.append(lChips, h("span", "", "or"), lIn);
+  const lInfo = h("small", "status"); lInfo.id = "bx-layers-info";
+  layersRow.append(h("span", "label", "Baffle (where the subs sit)"), lRow, lInfo);
   const splitRow = h("div", "stack-sm"); splitRow.id = "bx-split-row";
   const split = h("input"); split.type = "range"; split.min = 10; split.max = 90; split.step = 1; split.id = "bx-split";
   split.oninput = () => { st.split = +split.value / 100; schedule(); };
@@ -825,7 +844,7 @@ function buildScreen(root) {
   const braceInfo = h("small", "status bx-braceinfo"); braceInfo.id = "bx-brace-info";
   const roundSw = sw("Round the port's bends", "A 45° strip in each bend, so the air never turns a square 90°: smoother, quieter", st.round, (on) => { st.round = on; paintAll(); });
   roundSw.querySelector("input").id = "bx-round";
-  sM.append(un, shp, fixedSw, solveRow, dims, h("span", "label", "The space you have (optional: 0 is no limit)"), space, gapF, h("span", "label", "Wood thickness"), thick, grid(2, field("t", "Wood", "len"), field("brace", "Other bracing (volume)", "vol", { zero: true })), dbl,
+  sM.append(un, shp, fixedSw, solveRow, dims, h("span", "label", "The space you have (optional: 0 is no limit)"), space, gapF, h("span", "label", "Wood thickness"), thick, grid(2, field("t", "Wood", "len"), field("brace", "Other bracing (volume)", "vol", { zero: true })), layersRow,
     h("span", "label", "Bracing"), brace, braceInfo, roundSw, splitRow, h("span", "label", "Finish (for the 3D view)"), fin, paintRow);
   root.append(sM);
 
@@ -928,17 +947,17 @@ function openSubList() {
   openSheet((p) => {
     p.classList.add("bx-subsheet");
     p.append(h("h3", "", "Choose your sub"));
-    const search = h("input", "input"); search.type = "search"; search.placeholder = "Search: brand, model or size"; search.setAttribute("aria-label", "Search subs");
+    const search = h("input", "input"); search.type = "search"; search.placeholder = `Search ${SUBS.length} subs: brand, model or size`; search.setAttribute("aria-label", "Search subs");
     const brands = chips("bx-brands", [["", "All"], ...[...new Set(SUBS.map((s) => s.brand))].map((b) => [b, b])], (k) => { brand = k; paint(); });
     const list = h("div", "bx-sublist");
     const paint = () => {
       brands.querySelectorAll(".chip").forEach((c) => c.classList.toggle("on", c.dataset.k === brand));
       list.replaceChildren();
       const words = q.toLowerCase().split(/\s+/).filter(Boolean);
-      const found = SUBS.filter((s) => (!brand || s.brand === brand) && words.every((w) => `${s.brand} ${s.model} ${s.coils} ${s.size}in ${s.size}″`.toLowerCase().includes(w)));
+      const found = SUBS.filter((s) => (!brand || s.brand === brand) && words.every((w) => `${s.brand} ${s.model} ${s.coils} ${s.size}in ${s.size}″${s.sq ? " square" : ""}`.toLowerCase().includes(w)));
       for (const s of found) {
         const r = h("button", "bx-subrow" + (st.sub === subKey(s) ? " on" : "")); r.type = "button";
-        const left = h("div", "bx-subl"); left.append(h("b", "", `${s.brand} ${s.model}`), h("small", "", `${s.size}″ ${s.coils || ""}${s.rms ? ` · ${s.rms} W RMS` : ""} · Fs ${s.fs} · Qts ${s.qts} · Vas ${s.vas} L${s.full ? "" : " · partial specs"}`));
+        const left = h("div", "bx-subl"); left.append(h("b", "", `${s.brand} ${s.model}`), h("small", "", `${s.size}″ ${s.coils || ""}${s.rms ? ` · ${s.rms} W RMS` : ""} · Fs ${s.fs} · Qts ${s.qts} · Vas ${s.vas} L${s.sq ? " · square" : ""}${s.full ? "" : " · partial specs"}`));
         r.append(left, h("span", "bx-subsize", `${s.size}″`));
         r.onclick = () => { closeSheet(); applySub(s); };
         list.append(r);
@@ -952,7 +971,7 @@ function openSubList() {
 }
 
 // ---------------------------------------------------------------------------------------------------- sharing
-const SHARE_KEYS = ["gap", "braceMode", "round", "units", "type", "style4", "style6", "count", "power", "qtc", "vbS", "vbP", "fbP", "s4", "g4", "c4", "vr4", "vf4", "fb4", "vr6", "fr6", "vf6", "ff6", "lo6", "hi6", "shape", "w", "h", "d", "dt", "t", "dbl", "brace", "split", "solve", "finish", "paint", "preset", "sub", "est", "drv", "port", "port2", "wire", "fu"];
+const SHARE_KEYS = ["gap", "braceMode", "round", "units", "type", "style4", "style6", "count", "power", "qtc", "vbS", "vbP", "fbP", "s4", "g4", "c4", "vr4", "vf4", "fb4", "vr6", "fr6", "vf6", "ff6", "lo6", "hi6", "shape", "w", "h", "d", "dt", "t", "layers", "brace", "split", "solve", "finish", "paint", "preset", "sub", "est", "drv", "port", "port2", "wire", "fu"];
 /** The design as a short code (base64url JSON), for a post. */
 function encodeBox() {
   const o = { v: 1, fixed: true }; for (const k of SHARE_KEYS) o[k] = st[k];
@@ -965,6 +984,7 @@ function decodeBox(code) {
   const o = JSON.parse(new TextDecoder().decode(bytes));
   if (!o || o.v !== 1 || typeof o.drv !== "object") throw new Error("bad");
   const out = {}; for (const k of SHARE_KEYS) if (k in o) out[k] = o[k];
+  if (o.layers == null && o.dbl) out.layers = 2;                             // (shared before the baffle had layers)
   out.fixed = true; out.v = 1; out.designed = { [o.type + (o.type === "bp6" ? ":" + o.style6 : o.type === "bp4" ? ":" + o.style4 : "")]: true };
   return out;
 }

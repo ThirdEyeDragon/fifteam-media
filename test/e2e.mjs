@@ -454,7 +454,7 @@ const found = await ev(`[...document.querySelectorAll('.bx-subrow b')].map(b => 
 await click(".bx-subrow"); await sleep(800);
 const picked = await ev(`document.getElementById('bx-subname').textContent`);
 console.log(`box: list ${listRows} subs | search: ${found} | picked: ${picked}`);
-check(listRows >= 80 && /Z v\.6 12/.test(found) && /Sundown Audio Z v\.6 12/.test(picked), "a real sub from the list, found by searching, and the box designed for it");
+check(listRows >= 280 && /Z v\.6 12/.test(found) && /Sundown Audio Z v\.6 12/.test(picked), "a real sub from the list, found by searching, and the box designed for it");
 const quick = [];
 for (const k of ["daily", "windy", "spl", "sq", "band", "hall"]) {
   await click(`#bx-quick [data-k="${k}"]`); await sleep(400);
@@ -479,6 +479,27 @@ console.log("box: bracing & spacing:", JSON.stringify(br));
 check(br.gap >= 1.99 && !br.crash && br.info.length > 20 && br.strips === br.bends, "subs 2″ apart frame to frame, none in a port, bracing worked out, a rounded strip in every port bend");
 await ev(`document.getElementById('view-box').scrollTop = 0`); await sleep(300);
 await shot("15_box_painted");
+// the baffle in layers (custom number), on the front; then a bandpass box, where it's the divider; a square sub
+await ev(`(() => { const i = document.getElementById('bx-layers-n'); i.value = '5'; i.dispatchEvent(new Event('change')); return 1; })()`); await sleep(1500);
+const lay = await bx(`(b) => ({ n: b.state.layers, tf: +(b.result.L.tf / 0.0254).toFixed(3), panel: +(b.result.L.subs[0].panel / 0.0254).toFixed(3), cut: b.result.L.cut[0].name + ' x' + b.result.L.cut[0].n, info: document.getElementById('bx-layers-info').textContent, fit: b.result.L.warn.filter(w => /fit|too long|deeper|runs into/.test(w)).length })`);
+console.log("box: baffle layers:", JSON.stringify(lay));
+check(lay.n === 5 && lay.tf === 3.75 && lay.panel === 3.75 && lay.cut === "Front (baffle) x5" && /front/i.test(lay.info) && lay.fit === 0, "a 5-layer baffle typed in: the front the subs sit on is 3¾″, cut as 5 pieces");
+await click('#bx-layers [data-k="2"]'); await sleep(1000);
+await click('#bx-quick [data-k="band"]'); await sleep(1500);
+const lay4 = await bx(`(b) => ({ type: b.state.type, td: +(b.result.L.td / 0.0254).toFixed(3), tf: +(b.result.L.tf / 0.0254).toFixed(3), panel: +(b.result.L.subs[0].panel / 0.0254).toFixed(3), div: (b.result.L.cut.find(c => /Divider/.test(c.name)) || {}).n, info: document.getElementById('bx-layers-info').textContent })`);
+console.log("box: bandpass baffle:", JSON.stringify(lay4));
+check(lay4.type === "bp4" && lay4.td === 1.5 && lay4.tf === 0.75 && lay4.panel === 1.5 && lay4.div === 2 && /divider/i.test(lay4.info), "in a bandpass box the layers go on the divider the subs mount on, not the front");
+await click('#bx-layers [data-k="1"]'); await sleep(800);
+await click(".bx-pick"); await sleep(500);
+await ev(`(() => { const i = document.querySelector('.bx-subsheet input[type=search]'); i.value = 'square l7s 12'; i.dispatchEvent(new Event('input')); return 1; })()`); await sleep(200);
+const sqFound = await ev(`[...document.querySelectorAll('.bx-subrow b')].map(b => b.textContent).join(' | ')`);
+await click(".bx-subrow"); await sleep(1200);
+await click('#bx-quick [data-k="daily"]'); await sleep(1200);
+const sq = await bx(`(b) => ({ shape: b.state.drv.shape, sq: b.result.L.subs.every(s => s.sq), sw: document.getElementById('bx-square').checked })`);
+console.log("box: square sub:", sqFound, JSON.stringify(sq));
+check(/L7S 12/.test(sqFound) && sq.shape === "sq" && sq.sq && sq.sw, "a square Kicker L7S: found by searching 'square', drawn square in the 3D view");
+await ev(`document.getElementById('view-box').scrollTop = 0`); await sleep(400);
+await shot("16_box_square");
 const boxCode = await bx(`(b) => b.encode()`);
 // (posting needs a username on Social: this test phone gets one)
 await ev(`import('./js/social.js').then(m => { if (!m.social.state.name) m.social.state.name = 'Tester'; return 1; })`);

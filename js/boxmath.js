@@ -307,17 +307,20 @@ function arrange(n, w, h, d, gap = 0.0254) {
 
 /**
  * The box from its measurements: B = { type, series, style ("std" | "hall": bandpass with the subs on two dividers
- * facing each other across a middle chamber), shape ("rect"|"wedge"), w, h, d, dt (top depth, wedge), t, dbl (double
- * front), brace (m³), count, sub: { size, cutout, depth, disp, pe, xmax }, port, port2: { kind ("slot"|"round"), w
+ * facing each other across a middle chamber), shape ("rect"|"wedge"), w, h, d, dt (top depth, wedge), t, layers (the
+ * baffle's layers of wood: the front, or a bandpass box's divider(s); older designs: dbl, a double front), brace (m³),
+ * count, sub: { size, cutout, depth, disp, pe, xmax, shape ("sq": a square frame and cone, its cutout a square) }, port, port2: { kind ("slot"|"round"), w
  * (slot width), dia, n, auto, len (manual), fb (tuning wanted) }, split (the rear chamber(s)' share of the room
  * across; or wr, a rear room's own width) }.
  * Gives the inside, each chamber's gross and net volume (and what it lost), each port's area, length and tuning, where
  * everything sits (for the 3D view), the cut list and what's wrong with it.
  */
 export function layout(B, quick = false, lite = false) {
-  const t = Math.max(0.003, B.t), tf = B.dbl ? 2 * t : t;
-  const bp = B.type === "bp4" || B.type === "bp6", hall = bp && B.style === "hall";
-  const W = Math.max((hall ? 6 : 4) * t + 0.03, B.w), H = Math.max(2 * t + 0.02, B.h), D = Math.max(tf + t + 0.02, B.d);
+  const t = Math.max(0.003, B.t), bp = B.type === "bp4" || B.type === "bp6", hall = bp && B.style === "hall";
+  // the baffle (the panel the subs mount on) in layers of wood: the front of a sealed or ported box, the divider(s)
+  // of a bandpass one (its front is then a single layer)
+  const layers = baffleLayers(B), tf = bp ? t : layers * t, td = bp ? layers * t : t;
+  const W = Math.max(3 * t + (hall ? 2 : 1) * td + (hall ? t : 0) + 0.03, B.w), H = Math.max(2 * t + 0.02, B.h), D = Math.max(tf + t + 0.02, B.d);
   const Dt = B.shape === "wedge" ? Math.min(D, Math.max(tf + t + 0.02, B.dt || D)) : D;
   const theta = Math.atan((D - Dt) / H), tb = t / Math.cos(theta);            // the back's slope and its depth-wise thickness
   const zo = (y) => D - ((D - Dt) * y) / H, zi = (y) => zo(y) - tb;           // outer and inner back, at height y
@@ -332,14 +335,14 @@ export function layout(B, quick = false, lite = false) {
   let rooms, dividers = [];
   if (!bp) rooms = [{ x: [t, W - t], k: 0 }];
   else if (!hall) {
-    const free = Math.max(0.02, Wi - t), xr = t + Math.min(free - 0.01, Math.max(0.01, B.wr != null ? B.wr : free * (B.split == null ? 0.55 : B.split)));
-    rooms = [{ x: [t, xr], k: 0, wall: "left" }, { x: [xr + t, W - t], k: 1, wall: "right" }];
+    const free = Math.max(0.02, Wi - td), xr = t + Math.min(free - 0.01, Math.max(0.01, B.wr != null ? B.wr : free * (B.split == null ? 0.55 : B.split)));
+    rooms = [{ x: [t, xr], k: 0, wall: "left" }, { x: [xr + td, W - t], k: 1, wall: "right" }];
     dividers = [{ x: xr, face: 1, n: N }];                                      // (subs on its +x face, firing +x)
   } else {
-    const free = Math.max(0.03, Wi - 2 * t), wr = Math.min(free / 2 - 0.01, Math.max(0.01, B.wr != null ? B.wr : (free * (B.split == null ? 0.6 : B.split)) / 2));
-    rooms = [{ x: [t, t + wr], k: 0, wall: "left" }, { x: [2 * t + wr, W - 2 * t - wr], k: 1, wall: "center" }, { x: [W - t - wr, W - t], k: 0, wall: "right" }];
+    const free = Math.max(0.03, Wi - 2 * td), wr = Math.min(free / 2 - 0.01, Math.max(0.01, B.wr != null ? B.wr : (free * (B.split == null ? 0.6 : B.split)) / 2));
+    rooms = [{ x: [t, t + wr], k: 0, wall: "left" }, { x: [t + td + wr, W - t - td - wr], k: 1, wall: "center" }, { x: [W - t - wr, W - t], k: 0, wall: "right" }];
     const nl = Math.ceil(N / 2);
-    dividers = [{ x: t + wr, face: 1, n: nl }, { x: W - 2 * t - wr, face: -1, n: N - nl }];
+    dividers = [{ x: t + wr, face: 1, n: nl }, { x: W - t - td - wr, face: -1, n: N - nl }];
   }
   const nch = topo.n, gross = new Array(nch).fill(0);
   for (const r of rooms) gross[r.k] += (r.x[1] - r.x[0]) * Hi * Davg;
@@ -378,7 +381,7 @@ export function layout(B, quick = false, lite = false) {
     if (kind === "slot") { sw = Math.max(0.005, P.w || 0.05); S1 = sw * span; }
     else { n = Math.max(1, Math.min(8, P.n | 0 || 1)); dia = Math.max(0.02, P.dia || 0.1); S1 = Math.PI * (dia / 2) ** 2; }
     const copies = inst.length, S = S1 * (kind === "round" ? n : 1) * copies;
-    const through = inner ? t : tf;                                            // the wood it starts in (front, or the divider)
+    const through = inner ? td : tf;                                           // the wood it starts in (front, or the divider)
     const [xa, xb] = inst[0].room.x;
     return { key: tp.key, k: tp.a, inst, copies, xa, xb, inner, top, center, kind, n, sw, dia, span, S, S1, through, jOk, auto: P.auto !== false, manual: Math.max(0, P.len || 0), fbWant: P.fb || 35 };
   });
@@ -458,7 +461,7 @@ export function layout(B, quick = false, lite = false) {
         for (let i = 0; i < p.n; i++) {
           const c = Math.floor(i / rows), rr = i % rows, inCol = Math.min(rows, p.n - c * rows);
           const y = y0 + Hi / 2 + (rr - (inCol - 1) / 2) * (p.dia + m);
-          if (p.inner) p.tubes.push({ at: [xb + t, y, zb - r - m - c * (p.dia + m)], dir: [-1, 0, 0], len: p.len, r, through: t });
+          if (p.inner) p.tubes.push({ at: [xb + td, y, zb - r - m - c * (p.dia + m)], dir: [-1, 0, 0], len: p.len, r, through: td });
           else {
             const x = wall === "right" ? xb - r - m - c * (p.dia + m) : wall === "top" ? (xa + xb) / 2 + (c - (cols - 1) / 2) * (p.dia + m) : xa + r + m + c * (p.dia + m);
             p.tubes.push({ at: [x, y, 0], dir: [0, 0, 1], len: p.len, r, through: tf });
@@ -476,14 +479,14 @@ export function layout(B, quick = false, lite = false) {
         p.bend = lin > (xs - xa) - w;
         if (!p.bend) {
           hex("inner", boxC(xs - lin, y0, zb - w - t, xs, y1, zb - w), { name: "port" });
-          hex("air", boxC(xs - lin, y0, zb - w, xs + t, y1, zb), { name: "air" });
+          hex("air", boxC(xs - lin, y0, zb - w, xs + td, y1, zb), { name: "air" });
           p.panels.push({ name: name(p), a: Hi, b: lin });
         } else {
           const ze = zb + (xs - xa) - w - lin, lim = tf + w, over = lim - ze, zE = Math.max(ze, lim);
           if (over > 0) warn.push(`The ${portName(B, p)} is ${fmtLenSI(over)} too long for the rear chamber, even bent along its side: make that chamber deeper or wider, or the slot narrower.`);
           hex("inner", boxC(xa + w, y0, zb - w - t, xs, y1, zb - w), { name: "port" });
           hex("inner", boxC(xa + w, y0, zE, xa + w + t, y1, zb - w - t), { name: "port" });
-          hex("air", boxC(xa, y0, zb - w, xs + t, y1, zb), { name: "air" });
+          hex("air", boxC(xa, y0, zb - w, xs + td, y1, zb), { name: "air" });
           hex("air", boxC(xa, y0, zE, xa + w, y1, zb - w), { name: "air" });
           fillet([xa, y0, zb - w], [xa, y0, zb], [xa + w, y0, zb], [0, Hi, 0], p);
           p.panels.push({ name: name(p, " (back)"), a: Hi, b: xs - xa - w }, { name: name(p, " (side)"), a: Hi, b: Math.max(0, zb - w - t - zE) });
@@ -579,7 +582,7 @@ export function layout(B, quick = false, lite = false) {
   // the subs: on the front (sealed, ported) beside the ports, or on the divider(s) (bandpass), firing into chamber 1
   const subs = [];
   const sz = Math.max(0.05, sub.size || sub.cutout * 1.08), gap = Math.max(0, B.gap == null ? IN : B.gap);
-  const S = (at, dir, panel) => ({ at, dir, size: sz, cutout: sub.cutout, depth: sub.depth, pe: sub.pe, xmax: sub.xmax, panel });
+  const S = (at, dir, panel) => ({ at, dir, size: sz, cutout: sub.cutout, depth: sub.depth, pe: sub.pe, xmax: sub.xmax, panel, sq: sub.shape === "sq" });
   if (!bp) {
     // (on the front a frame may reach over the box's own walls, as long as its cutout stays inside: its lip)
     const lip = Math.max(0, Math.min(t, (sz - sub.cutout) / 2 - 0.002));
@@ -599,7 +602,7 @@ export function layout(B, quick = false, lite = false) {
       // (the divider's room for subs: short of any port running along the back of a room on either side of it)
       let zUse = zb;
       for (const p of ports) for (const { room } of p.inst) {
-        const touches = Math.abs(room.x[1] - dv.x) < 1e-6 || Math.abs(room.x[0] - (dv.x + t)) < 1e-6;
+        const touches = Math.abs(room.x[1] - dv.x) < 1e-6 || Math.abs(room.x[0] - (dv.x + td)) < 1e-6;
         if (!touches) continue;
         if (p.kind === "slot" && !p.top && (p.inner || p.bend)) zUse = Math.min(zUse, zb - p.sw - t - gap / 2);
         if (p.kind === "round" && p.inner) zUse = Math.min(zUse, ...p.tubes.map((tb) => tb.at[2] - tb.r - TUBE_WALL - gap / 2));
@@ -608,8 +611,8 @@ export function layout(B, quick = false, lite = false) {
       topRoom = Math.min(topRoom, Hi - t - Math.ceil(dv.n / cols) * (sz + gap));
       const g = arrange(dv.n, zUse - tf, Hi - hTop, sz, gap);
       if (!g.fit) warn.push(`${N > 1 ? "The subs don't" : "The sub doesn't"} fit on the divider${dividers.length > 1 ? "s" : ""}${zUse < zb - 1e-6 ? " clear of the port" : ""}: make the box deeper or taller.`);
-      const xFace = dv.face > 0 ? dv.x + t : dv.x;
-      for (const [uu, v] of g.at) subs.push(S([xFace, y0 + v, tf + uu], [dv.face, 0, 0], t));
+      const xFace = dv.face > 0 ? dv.x + td : dv.x;
+      for (const [uu, v] of g.at) subs.push(S([xFace, y0 + v, tf + uu], [dv.face, 0, 0], td));
     }
     // room behind each divider for the subs' magnets (less any port along that room's wall)
     for (const r of rooms.filter((q) => q.k === 0)) {
@@ -631,7 +634,7 @@ export function layout(B, quick = false, lite = false) {
     const a = s.dir[0] ? 0 : s.dir[2] ? 2 : 1, sg = s.dir[a], f = s.at[a], sIn = s.size / IN;
     const dm = Math.max(0.36 * s.size, Math.min((0.9 + 0.22 * sIn + 0.115 * Math.sqrt(Math.max(50, sub.pe || 500))) * IN, s.cutout * 0.92));
     const mid = f - sg * (s.panel + 0.45 * Math.max(0, s.depth - s.panel));
-    return [cyl(s.at, a, f + sg * 0.03, f - sg * 0.004, s.size / 2), cyl(s.at, a, f, mid, s.cutout * 0.485), cyl(s.at, a, mid, f - sg * s.depth, dm / 2)];
+    return [cyl(s.at, a, f + sg * 0.03, f - sg * 0.004, s.size / 2), cyl(s.at, a, f, mid, s.cutout * (s.sq ? 0.5 : 0.485)), cyl(s.at, a, mid, f - sg * s.depth, dm / 2)];
   };
   const portBoxes = parts.filter((q) => q.group === "air" || q.name === "port" || q.name === "fillet").map((q) => aabb(q.c || q.p.flatMap((v) => [v, v.map((x, k) => x + q.ext[k])])));
   for (const p of ports) for (const tb of p.tubes || []) {
@@ -676,7 +679,7 @@ export function layout(B, quick = false, lite = false) {
       }
     }
   };
-  front(0, t); if (B.dbl) front(t, 2 * t);
+  for (let i = 0; i < tf / t - 0.5; i++) front(i * t, (i + 1) * t);         // (the baffle's layers)
   hex("wall", [[0, 0, zi(0)], [W, 0, zi(0)], [W, H, zi(H)], [0, H, zi(H)], [0, 0, zo(0)], [W, 0, zo(0)], [W, H, zo(H)], [0, H, zo(H)]], { name: "back" });
   hex("wall", toBack(0, 0, W, y0, tf), { name: "bottom" });
   hex("wall", toBack(0, y1, W, H, tf), { name: "top" });
@@ -684,11 +687,15 @@ export function layout(B, quick = false, lite = false) {
   hex("wall", toBack(W - t, y0, W, y1, tf), { name: "right" });
   for (const dv of dividers) {
     const xd = dv.x;
-    if (!dividerGaps.length || hall) hex("inner", toBack(xd, y0, xd + t, y1, tf), { name: "divider" });
-    else {
-      const [g0, g1] = dividerGaps[0];
-      hex("inner", boxC(xd, y0, tf, xd + t, y1, g0), { name: "divider" });
-      if (Dt < D) hex("inner", [[xd, y0, g1], [xd + t, y0, g1], [xd + t, y1, g1], [xd, y1, g1], [xd, y0, zi(y0)], [xd + t, y0, zi(y0)], [xd + t, y1, zi(y1)], [xd, y1, zi(y1)]], { name: "divider" });
+    // (in layers: each its own piece, so the 3D view shows them)
+    for (let i = 0; i < layers; i++) {
+      const xa = xd + i * t, xe = xd + (i + 1) * t;
+      if (!dividerGaps.length || hall) hex("inner", toBack(xa, y0, xe, y1, tf), { name: "divider" });
+      else {
+        const [g0, g1] = dividerGaps[0];
+        hex("inner", boxC(xa, y0, tf, xe, y1, g0), { name: "divider" });
+        if (Dt < D) hex("inner", [[xa, y0, g1], [xe, y0, g1], [xe, y1, g1], [xa, y1, g1], [xa, y0, zi(y0)], [xe, y0, zi(y0)], [xe, y1, zi(y1)], [xa, y1, zi(y1)]], { name: "divider" });
+      }
     }
   }
   // the chambers' air (shown faintly in the see-through view)
@@ -698,14 +705,17 @@ export function layout(B, quick = false, lite = false) {
   // them; the sides fit inside all four.
   const bev = (theta * 180) / Math.PI;
   const cut = [
-    { name: "Front (baffle)", n: B.dbl ? 2 : 1, a: W, b: H, note: B.dbl ? "glued together: a double baffle" : "" },
+    bp ? { name: "Front", n: 1, a: W, b: H } : { name: "Front (baffle)", n: layers, a: W, b: H, note: layers > 1 ? `${layers} layers glued together: the baffle the sub${N > 1 ? "s" : ""} mount${N > 1 ? "" : "s"} on, ${fmtLenSI(tf)} thick` : "" },
     { name: "Back", n: 1, a: W, b: Dt < D ? H / Math.cos(theta) : H, note: Dt < D ? `long side; bevel top and bottom edges ${bev.toFixed(1)}°` : "" },
     { name: "Top", n: 1, a: W, b: zi(y1) - tf, note: Dt < D ? `long side; bevel the back edge ${bev.toFixed(1)}°` : "" },
     { name: "Bottom", n: 1, a: W, b: zi(0) - tf, note: Dt < D ? `long side; bevel the back edge ${bev.toFixed(1)}°` : "" },
     Dt < D ? { name: "Sides", n: 2, a: Hi, b: zi(y0) - tf, b2: zi(y1) - tf, note: `a wedge: ${fmtLenSI(zi(y0) - tf)} at the bottom, ${fmtLenSI(zi(y1) - tf)} at the top` }
       : { name: "Sides", n: 2, a: Hi, b: Dmin },
   ];
-  if (dividers.length) cut.push(Dt < D ? { name: "Divider", n: dividers.length, a: Hi, b: zi(y0) - tf, b2: Dmin, note: "a wedge, like the sides" } : { name: "Divider", n: dividers.length, a: Hi, b: Dmin });
+  if (dividers.length) {
+    const bn = layers > 1 ? `${layers} layers glued together for each, ${fmtLenSI(td)} thick: the baffle the subs mount on` : "the baffle the subs mount on";
+    cut.push(Dt < D ? { name: "Divider (baffle)", n: dividers.length * layers, a: Hi, b: zi(y0) - tf, b2: Dmin, note: `a wedge, like the sides; ${bn}` } : { name: "Divider (baffle)", n: dividers.length * layers, a: Hi, b: Dmin, note: bn });
+  }
   for (const p of ports) {
     // (a hallway's two rear ports: the same walls twice)
     const groups = new Map();
@@ -720,12 +730,14 @@ export function layout(B, quick = false, lite = false) {
   for (const [k, n] of [...dl].sort((a, b) => b[0] - a[0])) cut.push({ name: "Dowel brace (round)", n, a: 2 * brR, b: +k, note: "glued into shallow holes in both panels" });
 
   return {
-    W, H, D, Dt, t, tf, Wi, Hi, Davg, Dmin, theta, zb, zo, zi, rooms, chambers: rooms.map((r) => r.x), gross, lost, net: Vnet, ports, subs, parts, cut, area, warn,
+    W, H, D, Dt, t, tf, td, layers, Wi, Hi, Davg, Dmin, theta, zb, zo, zi, rooms, chambers: rooms.map((r) => r.x), gross, lost, net: Vnet, ports, subs, parts, cut, area, warn,
     outside: W * H * (D + Dt) / 2, hall, topRoom: typeof topRoom === "number" ? topRoom : Infinity,
     bracing: { mode: brMode, Lmax, span, count: lite ? braces.length : dowels.length, dropped, r: brR },
   };
 }
 const cap = (s) => s[0].toUpperCase() + s.slice(1);
+/** How many layers of wood the baffle (the panel the subs mount on) is: 1 to 12 (older designs: a double front, 2). */
+export const baffleLayers = (B) => Math.max(1, Math.min(12, Math.round(B.layers != null ? +B.layers || 1 : B.dbl ? 2 : 1)));
 /** "port", "front port", "rear port(s)", "inner port", "middle port". */
 export function portName(B, p) {
   const hall = (B.type === "bp4" || B.type === "bp6") && B.style === "hall";
@@ -739,7 +751,9 @@ function fmtLenSI(m) { return `${(m / IN).toFixed(1)}″`; }
 /** Solves one measurement (w, h or d) so the box's net volume is `target` (bandpass: the divider(s) move too, so each
  * chamber gets its own target). Returns the new B, or null if it can't. */
 export function fitBox(B, solveFor, target, target2) {
-  const bp = B.type === "bp4" || B.type === "bp6", hall = bp && B.style === "hall", walls = hall ? 4 : 3;
+  const bp = B.type === "bp4" || B.type === "bp6", hall = bp && B.style === "hall";
+  // (the wood across the width: both sides and the divider(s), each divider as thick as the baffle's layers)
+  const wallsW = 2 * B.t + (hall ? 2 : 1) * (bp ? baffleLayers(B) : 1) * B.t;
   const bisect = (lo, hi, f) => { if (f(hi) < 0 || f(lo) > 0) return f(lo) > 0 ? lo : null; for (let i = 0; i < 34; i++) { const m = (lo + hi) / 2; if (f(m) < 0) lo = m; else hi = m; } return hi; };
   if (bp && solveFor === "w") {
     // the width: the chambers sit side by side, so the rear room(s)' width on its own, then the rest (twice, for the
@@ -759,17 +773,17 @@ export function fitBox(B, solveFor, target, target2) {
     let W = Math.max(B.w, 0.4), wr = 0.2, grew = false;
     const rearRooms = hall ? 2 : 1;
     for (let pass = 0; pass < 2; pass++) {
-      let r = bisect(0.01, 3, (x) => layout({ ...B, w: Math.max(W, walls * t + rearRooms * x + 0.08), wr: x }, true).net[0] - target);
+      let r = bisect(0.01, 3, (x) => layout({ ...B, w: Math.max(W, wallsW + rearRooms * x + 0.08), wr: x }, true).net[0] - target);
       if (r == null) return null;
       if (r < wrMin) { r = wrMin; grew = true; }
       wr = r;
-      const wmin = walls * t + rearRooms * wr + wfMin;
-      let w2 = bisect(walls * t + rearRooms * wr + 0.03, 10, (x) => layout({ ...B, w: x, wr }, true).net[1] - target2);
+      const wmin = wallsW + rearRooms * wr + wfMin;
+      let w2 = bisect(wallsW + rearRooms * wr + 0.03, 10, (x) => layout({ ...B, w: x, wr }, true).net[1] - target2);
       if (w2 == null) return null;
       if (w2 < wmin) { w2 = wmin; grew = true; }
       W = w2;
     }
-    const out = { ...B, w: W, split: (rearRooms * wr) / Math.max(0.02, W - walls * t), wr: undefined };
+    const out = { ...B, w: W, split: (rearRooms * wr) / Math.max(0.02, W - wallsW), wr: undefined };
     if (grew) out.grow = layout(out, true).net;
     return out;
   }
@@ -808,12 +822,13 @@ export const misfits = (L) => L.warn.filter((w) => /fit|too long|deeper|too narr
  * for their magnets) and the sizes that fit one, two, three… rows of subs exactly. Whole inches. Returns the new B
  * (or null). */
 export function shapeBox(B, solveFor, t1, t2, lim = {}) {
-  const t = B.t, tf = B.dbl ? 2 * t : t, s = B.sub, bp = B.type === "bp4" || B.type === "bp6", hall = bp && B.style === "hall";
+  const t = B.t, s = B.sub, bp = B.type === "bp4" || B.type === "bp6", hall = bp && B.style === "hall";
+  const tf = bp ? t : baffleLayers(B) * t, td = bp ? baffleLayers(B) * t : t;
   const N = Math.max(1, B.count | 0), per = hall ? Math.ceil(N / 2) : N, cell = Math.max(0.05, s.size || s.cutout * 1.08) + Math.max(0.003, B.gap == null ? IN : B.gap);
   const up = (x) => Math.ceil(x / IN - 1e-6) * IN;
   const topSlot = 0;
   const lipF = bp ? 0 : Math.max(0, Math.min(t, (Math.max(0.05, s.size || s.cutout * 1.08) - s.cutout) / 2 - 0.002));   // (a front frame's lip over the walls)
-  const min = bp ? { w: up((hall ? 2 : 1) * (s.depth + 1.5 * IN) + (hall ? 4 * t + 3 * IN : 3 * t + 4 * IN)), h: up(cell + 2 * t + topSlot), d: up(cell + tf + t) }
+  const min = bp ? { w: up((hall ? 2 : 1) * (s.depth + 1.5 * IN) + (hall ? 2 * t + 2 * td + 3 * IN : 2 * t + td + 4 * IN)), h: up(cell + 2 * t + topSlot), d: up(cell + tf + t) }
     : { w: up(cell + 2 * t - 2 * lipF + (B.type === "ported" ? ((B.port || {}).kind === "round" ? ((B.port || {}).dia || 0.1) + 1.2 * IN : ((B.port || {}).w || 0.04) + t) : 0)), h: up(cell + 2 * t - 2 * lipF), d: up(s.depth + tf + t + IN) };
   const [fa, fb] = ["w", "h", "d"].filter((k) => k !== solveFor);
   const ratio = B.shape === "wedge" ? Math.min(1, B.dt / B.d) : 1;

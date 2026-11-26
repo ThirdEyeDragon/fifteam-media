@@ -512,7 +512,7 @@ function postCard(p) {
   if (p.song) { song = songBlock(p); card.append(song); }
   if (p.playlist) card.append(playlistBlock(p));
   if (p.box) {
-    const ob = h("button", "btn small so-boxopen"); ob.type = "button"; ob.append(icon("i-box"), "Open this box in Box");
+    const ob = h("button", "btn small so-boxopen"); ob.type = "button"; ob.append(icon("i-box"), "Open this build in the box creator");
     ob.onclick = () => import("./box.js").then((m) => m.box.openShared(p.box));
     card.append(ob);
   }
@@ -1299,7 +1299,7 @@ function composer(preset) {
         }
       }
       if (preset.box) {
-        const bc = h("div", "so-mchip so-boxchip"); bc.append(icon("i-box"), h("span", "", "Your box design comes with it: anyone can open it in Box"));
+        const bc = h("div", "so-mchip so-boxchip"); bc.append(icon("i-box"), h("span", "", "Your box design comes with it: anyone can open it in the box creator"));
         const rm = h("button", "cs-x", "×"); rm.setAttribute("aria-label", "Don't attach the design"); rm.onclick = () => { preset.box = ""; paint(); };
         bc.append(rm); prev.append(bc);
       }

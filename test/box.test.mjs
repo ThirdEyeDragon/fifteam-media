@@ -204,7 +204,7 @@ for (const [type, series, a, b, f1, f2, w1] of [["sealed", 0, 1.3], ["ported", 0
   const wr = L.rooms[0].x[1] - L.rooms[0].x[0], gr = 2 * wr * L.Hi * L.Davg;
   const p1 = L.ports[0], p2 = L.ports[1];
   check(L.rooms.length === 3 && near(L.gross[0], gr, 1e-9) && near(L.rooms[2].x[1] - L.rooms[2].x[0], wr, 1e-9) && p2.copies === 2 && near(p2.S, 2 * p2.S1, 1e-12) && p1.center
-    && L.subs.length === 4 && L.subs.filter((s) => s.dir[0] > 0).length === 2 && L.cut.some((c) => c.name === "Divider" && c.n === 2) && near(p1.fb, 55, 0.01) && near(p2.fb, 30, 0.01),
+    && L.subs.length === 4 && L.subs.filter((s) => s.dir[0] > 0).length === 2 && L.cut.some((c) => c.name === "Divider (baffle)" && c.n === 2) && near(p1.fb, 55, 0.01) && near(p2.fb, 30, 0.01),
     `hallway: two rear rooms (${(wr / IN).toFixed(1)}″ each, ${(L.net[0] / FT3).toFixed(2)} ft³ together), two subs facing two, a port up the middle ${(p1.len / IN).toFixed(1)}″ at 55 Hz, two rear ports ${(p2.len / IN).toFixed(1)}″ at 30 Hz`);
   const f = M.fitBox({ ...B }, "w", 3 * FT3, 1.2 * FT3), Lf = f && M.layout(f);
   check(!!Lf && near(Lf.net[0], 3 * FT3, 0.01 * FT3) && near(Lf.net[1], 1.2 * FT3, 0.01 * FT3), `hallway sized to 3 + 1.2 ft³: ${Lf && (Lf.W / IN).toFixed(1)}″ wide`);
@@ -259,7 +259,7 @@ for (const [type, series, a, b, f1, f2, w1] of [["sealed", 0, 1.3], ["ported", 0
     if (!(g > 0.08 && g < 2.5) || d.guessedQms || !(v > 0.15 && v < 15)) odd.push(subName(s));
   }
   const brands = new Set(SUBS.map((s) => s.brand));
-  check(SUBS.length >= 80 && SUBS.filter((s) => s.full).length >= 60 && brands.size >= 8 && SUBS.filter((s) => s.brand === "Skar Audio").length >= 15 && !odd.length,
+  check(SUBS.length >= 280 && SUBS.filter((s) => s.full).length >= 160 && brands.size >= 15 && SUBS.filter((s) => s.brand === "Skar Audio").length >= 15 && !odd.length,
     `${SUBS.length} real subs (${SUBS.filter((s) => s.full).length} with full specs), ${brands.size} brands, each a believable sub with a sensible box${odd.length ? ": odd: " + odd.join(", ") : ""}`);
 }
 
@@ -270,5 +270,51 @@ const w20 = M.wiring(20, true, 4), w6 = M.wiring(6, false, 4).map((o) => o.ohms)
 check(w20.length >= 6 && w20.every((o, i) => !i || o.ohms > w20[i - 1].ohms) && w6.join() === "0.667,2.667,6,24".split(",").map(Number).map((v, i) => [4 / 6, 4 * 4 / 6 / 1, 6, 24][i] && v).join() || (w6.includes(4 / 6) && w6.includes(6) && w6.includes(24)),
   `wiring 20 DVC 4 Ω subs: ${w20.map((o) => +o.ohms.toFixed(2)).join(", ")} Ω; 6 SVC 4 Ω: ${w6.map((v) => +v.toFixed(2)).join(", ")} Ω`);
 
+
+// ---------------------------------------------------------------------------------------------------- the baffle, in layers
+{
+  // sealed/ported: the layers are the front, where the sub mounts
+  const L3 = M.layout({ ...base, type: "sealed", layers: 3 });
+  const fronts = L3.parts.filter((q) => q.name === "front").length, cf = L3.cut.find((c) => c.name === "Front (baffle)");
+  check(near(L3.gross[0], (24 - 1.5) * (15 - 1.5) * (16 - 3 * 0.75 - 0.75) * IN ** 3, 1e-9) && near(L3.subs[0].panel, 2.25 * IN, 1e-9) && fronts === 3 && cf.n === 3 && M.baffleLayers({ dbl: true }) === 2,
+    `a 3-layer baffle on a sealed box: the front 2.25″ thick (3 pieces cut, 3 drawn), the sub in it, ${(L3.gross[0] / FT3).toFixed(3)} ft³ inside; an old double front is 2 layers`);
+  // bandpass: the layers are the divider(s) the subs sit on; the front is one layer
+  const B4 = { ...base, type: "bp4", layers: 2, w: 30 * IN, split: 0.5, port: { kind: "slot", w: 2 * IN, auto: true, fb: 45 } };
+  const L4 = M.layout(B4), L41 = M.layout({ ...B4, layers: 1 });
+  const ok4 = near(L4.tf, 0.75 * IN, 1e-9) && near(L4.td, 1.5 * IN, 1e-9) && near(L4.rooms[1].x[0] - L4.rooms[0].x[1], 1.5 * IN, 1e-9) && L4.subs.every((s) => near(s.panel, 1.5 * IN, 1e-9))
+    && near(L4.subs[0].at[0], L4.rooms[1].x[0], 1e-9) && L4.cut.find((c) => c.name === "Divider (baffle)").n === 2 && L4.cut.find((c) => c.name === "Front").n === 1
+    && near(L41.gross[0] + L41.gross[1] - L4.gross[0] - L4.gross[1], 0.75 * IN * L4.Hi * L4.Davg, 1e-9);
+  check(ok4, `4th order, a 2-layer baffle: the divider 1.5″ (the subs on its face), the front ¾″, ${((L41.gross[0] + L41.gross[1] - L4.gross[0] - L4.gross[1]) / IN ** 3).toFixed(0)} in³ less air`);
+  // a hallway: both dividers; the width solved for the volumes with them thicker
+  const BH = { ...base, type: "bp6", style: "hall", count: 4, layers: 3, h: 16 * IN, d: 24 * IN, port: { kind: "slot", w: 2 * IN, auto: true, fb: 55 }, port2: { kind: "slot", w: 1 * IN, auto: true, fb: 30 } };
+  const fH = M.fitBox(BH, "w", 3 * FT3, 1.2 * FT3), LH = M.layout(fH);
+  const gaps = [LH.rooms[1].x[0] - LH.rooms[0].x[1], LH.rooms[2].x[0] - LH.rooms[1].x[1]];
+  check(gaps.every((g) => near(g, 2.25 * IN, 1e-9)) && near(LH.net[0], 3 * FT3, 3 * FT3 * 0.003) && near(LH.net[1], 1.2 * FT3, 1.2 * FT3 * 0.003) && LH.parts.filter((q) => q.name === "divider").length === 6 && !LH.warn.some((w) => /runs into/.test(w)),
+    `hallway, 3-layer dividers (2.25″ each, 6 pieces): sized to ${(LH.net[0] / FT3).toFixed(2)} + ${(LH.net[1] / FT3).toFixed(2)} ft³, ${(LH.W / IN).toFixed(1)}″ wide`);
+  // 6th order series: the inner port starts through the thicker divider
+  const BS = { ...base, type: "bp6", series: true, layers: 4, w: 40 * IN, h: 16 * IN, d: 20 * IN, port: { kind: "slot", w: 2 * IN, auto: true, fb: 50 }, port2: { kind: "slot", w: 1.2 * IN, auto: true, fb: 30 } };
+  const LS = M.layout(BS), inner = LS.ports.find((p) => p.inner);
+  check(near(inner.through, 3 * IN, 1e-9) && inner.len >= 3 * IN && near(inner.fb, 30, 0.05), `series 6th order, 4 layers: the inner port goes through the 3″ divider, ${(inner.len / IN).toFixed(1)}″ long at ${inner.fb.toFixed(1)} Hz`);
+  // shaped with thick baffles, nothing collides
+  let bad = 0, n = 0;
+  for (const [type, style] of [["ported"], ["bp4"], ["bp6"], ["bp6", "hall"]]) for (const layers of [2, 4, 6]) {
+    const d15 = M.driver(M.PRESETS[15]), b6 = M.bp6Design(d15, 4, false, 30, 80), b4 = M.bp4At(d15, 4, 0.7, 50);
+    const t1 = type === "ported" ? M.ventedVolumeFor(d15, 4, 32) : type === "bp4" ? b4.vr : b6.vr, t2 = type === "bp4" ? b4.vf : b6.vf;
+    const B = { ...base, type, style, count: 4, layers, sub: { size: 15 * IN, cutout: 13.9 * IN, depth: 7.6 * IN, disp: 0.17 * FT3, pe: 1500 },
+      port: { kind: "slot", w: 1.5 * IN, auto: true, fb: type === "ported" ? 32 : type === "bp4" ? b4.fb : b6.ff }, port2: { kind: "slot", w: 1.2 * IN, auto: true, fb: b6.fr } };
+    const f = M.shapeBox(B, "w", t1, t2), L = f && M.layout(f); n++;
+    if (!L || M.misfits(L)) bad++;
+  }
+  check(bad === 0, `${n} shaped boxes with 2, 4 and 6-layer baffles (ported, 4th, 6th, hallway; 4 15″ subs): everything fits, nothing collides`);
+}
+// ---------------------------------------------------------------------------------------------------- square subs
+{
+  const { SUBS, subFrom } = await import("../js/subs.js");
+  const l7 = SUBS.find((s) => /L7S 12/.test(s.model)), { drv } = subFrom(l7.row);
+  const sq = { size: drv.size, cutout: drv.cutout, depth: drv.depth, disp: drv.disp, pe: drv.pe, xmax: drv.xmax, shape: drv.shape };
+  const L = M.layout({ ...base, type: "sealed", sub: sq });
+  const round = SUBS.filter((s) => !s.sq).every((s) => subFrom(s.row).drv.shape === "round");
+  check(drv.shape === "sq" && L.subs[0].sq && round && SUBS.filter((s) => s.sq).length >= 10, `square subs: ${SUBS.filter((s) => s.sq).length} (Kicker L7s), the L7S 12's cutout an ${(drv.cutout / IN).toFixed(2)}″ square; the rest round`);
+}
 console.log(failed ? "FAIL" : "box: all ok");
 process.exit(failed ? 1 : 0);

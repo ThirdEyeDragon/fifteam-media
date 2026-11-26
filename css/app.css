@@ -1162,3 +1162,6 @@ input.bx-countv { width: 56px; height: 40px; padding: 0 6px; text-align: center;
 .so-boxopen svg, .so-boxchip svg { width: 18px; height: 18px; flex: none; }
 .so-boxchip { display: flex; align-items: center; gap: 8px; }
 .bx-braceinfo { font-size: 12.5px; line-height: 1.45; }
+.bx-layers-row { flex-wrap: wrap; gap: 8px; align-items: center; }
+.bx-layers-row > span { font-size: 13px; color: var(--muted, #9a94b8); }
+#bx-layers-info { font-size: 12.5px; line-height: 1.45; }

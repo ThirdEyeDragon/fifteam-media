@@ -68,7 +68,7 @@ function build(L, mode, finish, paint) {
   // the holes cut through the wood: each sub's cutout, each round port's tube (in layout coordinates: where it starts,
   // the way into the wood, how deep, how wide)
   const holes = [];
-  for (const s of L.subs) holes.push({ at: s.at, into: s.dir.map((v) => -v), deep: s.panel, r: s.cutout / 2 });
+  for (const s of L.subs) holes.push({ at: s.at, into: s.dir.map((v) => -v), deep: s.panel, r: s.cutout / 2, sq: !!s.sq });
   for (const p of L.ports) for (const tb of p.tubes || []) holes.push({ at: tb.at, into: tb.dir, deep: tb.through, r: tb.r + 0.003 });
   const axisOf = (d) => (Math.abs(d[0]) > 0.5 ? 0 : Math.abs(d[2]) > 0.5 ? 2 : 1);
   const holesIn = (c) => {
@@ -79,11 +79,12 @@ function build(L, mode, finish, paint) {
       return [0, 1, 2].every((k) => k === a || (h.at[k] + h.r > lo[k] && h.at[k] - h.r < hi[k]));
     });
   };
-  // a flat face with round holes: cut into thin strips, each strip the wood between the holes (as trapezoids)
+  // a flat face with holes (round, or square for a square sub): cut into thin strips, each strip the wood between the
+  // holes (as trapezoids)
   const holedFace = (pts, hs, a, col) => {
     const ui = a === 0 ? 2 : 0, P2 = pts.map((q) => [q[ui], q[1]]), fixed = pts[0][a];
     const to3 = (u, v) => { const o = [0, 0, 0]; o[a] = fixed; o[ui] = u; o[1] = v; return o; };
-    const hs2 = hs.map((h) => { const w = W(h.at); return { u: w[ui], v: w[1], r: h.r }; });
+    const hs2 = hs.map((h) => { const w = W(h.at); return { u: w[ui], v: w[1], r: h.r, sq: h.sq }; });
     const vmin = Math.min(...P2.map((q) => q[1])), vmax = Math.max(...P2.map((q) => q[1]));
     const cuts = new Set([vmin, vmax]);
     for (const h of hs2) for (let i = 0; i <= 18; i++) { const v = h.v - h.r + (2 * h.r * i) / 18; if (v > vmin && v < vmax) cuts.add(v); }
@@ -101,7 +102,7 @@ function build(L, mode, finish, paint) {
     for (let i = 0; i < ys.length - 1; i++) {
       const ya = ys[i], yb = ys[i + 1], ym = (ya + yb) / 2, [a0, a1] = span(ya), [b0, b1] = span(yb);
       const act = hs2.filter((h) => Math.abs(ym - h.v) < h.r).sort((p, q) => p.u - q.u);
-      const hw = (h, y) => Math.sqrt(Math.max(0, h.r * h.r - (y - h.v) ** 2));
+      const hw = (h, y) => (h.sq ? h.r : Math.sqrt(Math.max(0, h.r * h.r - (y - h.v) ** 2)));
       let ca = a0, cb = b0;
       const piece = (ea, eb) => { if (ea - ca > 1e-7 || eb - cb > 1e-7) { tri(to3(ca, ya), to3(ea, ya), to3(eb, yb), n, col); tri(to3(ca, ya), to3(eb, yb), to3(cb, yb), n, col); } };
       for (const h of act) { piece(Math.max(ca, h.u - hw(h, ya)), Math.max(cb, h.u - hw(h, yb))); ca = Math.max(ca, h.u + hw(h, ya)); cb = Math.max(cb, h.u + hw(h, yb)); }
@@ -137,16 +138,21 @@ function build(L, mode, finish, paint) {
     });
     if (edge) for (const [a, b] of EDGES) lines.push(c[a], c[b], edge);
   }
-  // surfaces of revolution: a profile [[r, h]] round an axis (h along it) at a centre
-  const lathe = (prof, at, dir, col, seg = 40) => {
+  // surfaces of revolution: a profile [[r, h]] round an axis (h along it) at a centre. Square (sq): the same profile
+  // swept round a square instead (r its half side, the sides along the box's edges; seg a multiple of 8, so the
+  // corners are on it)
+  const lathe = (prof, at, dir, col, seg = 40, sq = false) => {
     const a = norm(dir), u = norm(Math.abs(a[1]) < 0.9 ? cross(a, [0, 1, 0]) : cross(a, [1, 0, 0])), v = cross(a, u);
-    const P = (r, h, ph) => { const cs = Math.cos(ph), sn = Math.sin(ph); return [at[0] + a[0] * h + (u[0] * cs + v[0] * sn) * r, at[1] + a[1] * h + (u[1] * cs + v[1] * sn) * r, at[2] + a[2] * h + (u[2] * cs + v[2] * sn) * r]; };
+    const k2 = (ph) => (sq ? 1 / Math.max(Math.abs(Math.cos(ph)), Math.abs(Math.sin(ph))) : 1);
+    const P = (r, h, ph) => { const cs = Math.cos(ph) * k2(ph), sn = Math.sin(ph) * k2(ph); return [at[0] + a[0] * h + (u[0] * cs + v[0] * sn) * r, at[1] + a[1] * h + (u[1] * cs + v[1] * sn) * r, at[2] + a[2] * h + (u[2] * cs + v[2] * sn) * r]; };
+    // (the way a side faces: out from the axis; on a square, straight out of the side it's on)
+    const out = (pm) => { let c = Math.cos(pm), s = Math.sin(pm); if (sq) { if (Math.abs(c) > Math.abs(s)) { c = Math.sign(c); s = 0; } else { s = Math.sign(s); c = 0; } } return [c, s]; };
     for (let i = 0; i < prof.length - 1; i++) {
       const [r0, h0] = prof[i], [r1, h1] = prof[i + 1];
       const dr = r1 - r0, dh = h1 - h0, l = Math.hypot(dr, dh) || 1, nr = dh / l, nh = -dr / l;
       for (let k = 0; k < seg; k++) {
-        const p0 = (k / seg) * 2 * Math.PI, p1 = ((k + 1) / seg) * 2 * Math.PI, pm = (p0 + p1) / 2;
-        const n = [(u[0] * Math.cos(pm) + v[0] * Math.sin(pm)) * nr + a[0] * nh, (u[1] * Math.cos(pm) + v[1] * Math.sin(pm)) * nr + a[1] * nh, (u[2] * Math.cos(pm) + v[2] * Math.sin(pm)) * nr + a[2] * nh];
+        const p0 = (k / seg) * 2 * Math.PI, p1 = ((k + 1) / seg) * 2 * Math.PI, pm = (p0 + p1) / 2, [oc, os] = out(pm);
+        const n = [(u[0] * oc + v[0] * os) * nr + a[0] * nh, (u[1] * oc + v[1] * os) * nr + a[1] * nh, (u[2] * oc + v[2] * os) * nr + a[2] * nh];
         const A = P(r0, h0, p0), B = P(r0, h0, p1), Cc = P(r1, h1, p1), Dd = P(r1, h1, p0);
         tri(A, B, Cc, n, col); tri(A, Cc, Dd, n, col);
       }
@@ -156,17 +162,18 @@ function build(L, mode, finish, paint) {
   for (const s of L.subs) {
     const at = W(s.at), dir = toW(s.dir), S = subParts(s), z = S.z;
     const { rf, rc, rs1, rs0, rdc, cd } = S;
-    const ring = [];
-    lathe([[rf, 0], [rf, 0.007], [rs1 + 0.004, 0.009], [rs1, 0.006]], at, dir, [0.2, 0.2, 0.23, 1]);                  // the frame
+    const ring = [], sq = !!s.sq;                                                                                     // (square: frame, surround, cone, cutout)
+    lathe([[rf, 0], [rf, 0.007], [rs1 + 0.004, 0.009], [rs1, 0.006]], at, dir, [0.2, 0.2, 0.23, 1], 40, sq);         // the frame
     for (let i = 0; i <= 8; i++) { const ph = (i / 8) * Math.PI; ring.push([(rs0 + rs1) / 2 + ((rs1 - rs0) / 2) * Math.cos(ph), 0.006 + ((rs1 - rs0) / 2) * 0.9 * Math.sin(ph)]); }
-    lathe(ring, at, dir, [0.07, 0.07, 0.08, 1]);                                                                         // the surround
-    lathe([[rs0, 0.006], [rdc * 1.05, -cd]], at, dir, [0.1, 0.1, 0.12, 1]);                                              // the cone
+    lathe(ring, at, dir, [0.07, 0.07, 0.08, 1], 40, sq);                                                                 // the surround
+    if (sq) lathe([[rs0, 0.006], [rs0 * 0.94, -cd * 0.35], [rdc * 1.05, -cd]], at, dir, [0.1, 0.1, 0.12, 1], 40, true);  // the cone (square, rounding to its centre)
+    else lathe([[rs0, 0.006], [rdc * 1.05, -cd]], at, dir, [0.1, 0.1, 0.12, 1]);                                         // the cone
     const cap = []; for (let i = 0; i <= 6; i++) { const ph = (i / 6) * (Math.PI / 2); cap.push([rdc * Math.cos(ph), -cd + z * 0.035 * Math.sin(ph)]); }
     lathe([[rdc * 1.05, -cd], ...cap], at, dir, [0.16, 0.16, 0.19, 1]);                                                  // the dust cap
     // behind the wood: the basket down to the motor, then the motor (top plate, the magnet slugs, the back plate, the
     // vented pole), all the way back to the sub's mounting depth
     const back = -S.panel, md = S.depth, mr = S.dm / 2, front = -(md - S.motor);
-    lathe([[rc, 0], [rc, back]], at, dir, [...FINISH.mdf.inner.map((v) => v * 0.8), 1], 40);                          // the cutout's edge
+    lathe([[rc, 0], [rc, back]], at, dir, [...FINISH.mdf.inner.map((v) => v * 0.8), 1], 40, sq);                      // the cutout's edge
     lathe([[rc * 0.97, back], [rc * 0.9, back - 0.006], [mr * 0.78, front]], at, dir, [0.27, 0.27, 0.31, 1], 32);           // the basket
     let h = front;
     const plateC = [0.55, 0.56, 0.6, 1], slugC = [0.12, 0.12, 0.14, 1];
