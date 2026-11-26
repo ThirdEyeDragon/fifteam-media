@@ -223,9 +223,9 @@ try {
 
   // unlimited rebassing: Ben taps Pay; the owner is told; /premium unlocks him (through the server)
   const pr = await api("/v1/premium", { method: "POST", body: JSON.stringify({ tk: idToken(ben) }) });
-  await until(() => payments.some((p) => /unlimited rebassing/.test(p.content || "")));
+  await until(() => payments.some((p) => /wants Premium/.test(p.content || "")));
   console.log("unlock asked:", pr.status, "| in #payments:", (payments[0] || {}).content, "| as the bot:", (payments[0] || {}).auth === "Bot test");
-  check(pr.status === 200 && payments.some((p) => /\*\*Ben\*\* wants unlimited rebassing/.test(p.content || "")) && !posted.some((p) => /unlimited/.test(p.content || "")), "tapping Pay tells the owner in #payments who to look for");
+  check(pr.status === 200 && payments.some((p) => /\*\*Ben\*\* wants Premium/.test(p.content || "")) && !posted.some((p) => /unlimited/.test(p.content || "")), "tapping Pay tells the owner in #payments who to look for");
   const r1 = await signed(JSON.stringify({ type: 2, id: "1", token: "t1", application_id: "app1", data: { name: "premiums" }, member: { user: { id: "1", username: "owner" } } }));
   await until(() => replies.length >= 1, 8000);
   console.log("/premiums:", r1.status, (JSON.parse(replies[0].body).content || "").replace(/\n/g, " / "));
@@ -236,7 +236,7 @@ try {
   check(/asked: \*\*Ben\*\*/.test(JSON.parse(replies[0].body).content) && modNow.premium && modNow.premium[ben] && heard.some((x) => x.t === "v" && x.k === "mod"), "/premium unlocks him, and every open app hears it at once");
   check(await until(() => (read(IDS.mod).premium || {})[ben], 6000), "and it's copied back to the feed service");
   console.log("#payments after /premium:", payments.map((p) => p.content).join(" | "));
-  check(payments.some((p) => /Unlocked unlimited rebassing for \*\*Ben\*\* \(by <@1>\)/.test(p.content)), "the unlock is recorded in #payments, with who did it");
+  check(payments.some((p) => /Unlocked Premium for \*\*Ben\*\* \(by <@1>\)/.test(p.content)), "the unlock is recorded in #payments, with who did it");
   // an app from before 2.16 (which drops what it doesn't know) can't undo a private post, its shares, or the likes setting
   { const ix = (await stores("index")).index; ix.d.posts[0].priv = 1; ix.d.posts[0].shares = [ben]; ix.d.posts[0].box = "eyJ2IjoxLCJ0eXBlIjoicG9ydGVkIn0"; await put("index", ix.v, ix.d);
     const now = (await stores("index")).index, old = { ...now.d, posts: now.d.posts.map(({ priv, shares, box, ...rest }) => rest) };
@@ -270,6 +270,33 @@ try {
   const many = []; for (let i = 0; i < 8; i++) many.push((await rep(idToken(ben), { who: alice, reason: "spam" })).status);
   console.log("yourself:", self, "| no reason:", noReason, "| no account:", forged, "| 8 more:", many.join(","));
   check(self === 400 && noReason === 400 && forged === 401 && many.slice(0, 7).every((x) => x === 200) && many[7] === 429, "not about yourself, needs a reason and an account, at most 8 an hour");
+
+  // group chats: what each account may change, checked here (the app sends its account with a message write)
+  const putAs = (who, v, d) => api(`/v1/store/dm?v=${v}`, { method: "PUT", headers: { "Content-Type": "application/json", ...(who ? { "X-FT-Auth": idToken(who) } : {}) }, body: JSON.stringify(d) });
+  const kk = (b) => ({ b, iv: "aaaaaaaaaaaaaaaa", c: "c" + b });
+  const grp = { id: "ghubtest0001", name: "Bass heads", by: alice, at: Date.now(), members: [alice, ben], admins: [alice], kv: 1, keys: { 1: { [alice]: kk(alice), [ben]: kk(alice) } } };
+  cur = (await stores("dm")).dm;
+  const g1 = await (await putAs(alice, cur.v, { ...cur.d, groups: [grp] })).json();
+  cur = (await stores("dm")).dm;
+  check(!g1.fixed && cur.d.groups.length === 1 && cur.d.groups[0].name === "Bass heads", "a group made by its owner, with its account: kept");
+  const g2 = await (await putAs(ben, cur.v, { ...cur.d, groups: [{ ...grp, name: "Ben's now" }] })).json();
+  cur = (await stores("dm")).dm;
+  check(g2.fixed === true && cur.d.groups[0].name === "Bass heads", "a member (not an admin) renaming it: put back, and the phone told to read it again");
+  heard.length = 0; pushes.length = 0;
+  await api("/v1/push", { method: "POST", body: JSON.stringify({ tk: idToken(alice), sub: aliceB.sub, prefs: { msg: true, act: true } }) });
+  const gm = { id: "groupmsg0001", f: ben, g: grp.id, kv: 1, at: Date.now(), iv: "iv", c: "x" };
+  await putAs(ben, cur.v, { ...cur.d, msgs: [...cur.d.msgs, gm] });
+  cur = (await stores("dm")).dm;
+  const gotLive = await until(() => heard.some((x) => x.t === "v" && x.k === "dm" && x.to && x.to.includes(alice) && x.to.includes(ben)), 4000);
+  await until(() => pushes.filter((p) => p.to === "alice").length, 5000);
+  const gp = pushes.find((p) => p.to === "alice"), gnote = gp ? openPush(aliceB, gp.body) : null;
+  console.log("group push to Alice:", JSON.stringify(gnote));
+  check(cur.d.msgs.some((m) => m.id === gm.id) && gotLive && gnote && gnote.title === "Bass heads" && gnote.body === "Ben sent a message" && gnote.data.g === grp.id, "a member's message to the group: kept, both told live, and Alice (app closed) a push titled with the group's name");
+  await putAs("", cur.v, { ...cur.d, msgs: [...cur.d.msgs, { ...gm, id: "groupmsg0002" }] });
+  cur = (await stores("dm")).dm;
+  await putAs(alice, cur.v, { v: 1, msgs: cur.d.msgs.filter((m) => !m.g), del: cur.d.del });
+  cur = (await stores("dm")).dm;
+  check(!cur.d.msgs.some((m) => m.id === "groupmsg0002") && cur.d.groups.length === 1 && cur.d.msgs.some((m) => m.id === gm.id), "no account: its group message dropped; a write leaving the groups out (an older app): they're put back");
   ws.close();
 } catch (e) { console.log("STOPPED:", e.stack); fails++; }
 finally {

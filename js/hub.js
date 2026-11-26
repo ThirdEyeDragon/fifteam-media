@@ -58,13 +58,16 @@ async function readNow() {
 /** A change to a store, made on version v. Its new version; a "busy" error with .conflict if someone changed it first
  * (then read it again and make the change again). */
 export async function hubWrite(k, v, d) {
-  const body = JSON.stringify(d);
-  const r = await call(`/v1/store/${k}?v=${v}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body });
+  const body = JSON.stringify(d), headers = { "Content-Type": "application/json" };
+  // (messages: with this phone's account, so the server knows who's changing a group chat)
+  if (k === "dm") { try { const tk = await idToken(); if (tk) headers["X-FT-Auth"] = tk; } catch {} }
+  const r = await call(`/v1/store/${k}?v=${v}`, { method: "PUT", headers, body });
   if (r.status === 409) { const e = new Error("The feed was busy. Try again."); e.conflict = true; have.delete(k); throw e; }
   if (r.status === 413) throw new Error("That's too big to save.");
   if (!r.ok) throw new Error(`Couldn't save that (${r.status}). Try again.`);
-  const { v: nv } = await r.json();
-  have.set(k, { v: nv, d: JSON.parse(body) });
+  const { v: nv, fixed } = await r.json();
+  // (the server kept something as it was, or put something back: its copy is read next time, not this one)
+  if (fixed) have.delete(k); else have.set(k, { v: nv, d: JSON.parse(body) });
   return nv;
 }
 /** The version of a store this phone last saw. */

@@ -8,7 +8,7 @@ import { account, signOut } from "./account.js";
 import { loadMeta, prefsOf, setPrefs, blocksOf, setBlock } from "./meta.js";
 import { api } from "./social.js";
 import { actWanted, setActWanted, syncPush, canPush } from "./push.js";
-import { premiumNow, leftThisHour, openUnlock, LIMIT } from "./premium.js";
+import { premiumNow, leftThisHour, downloadsLeft, openPremium, LIMIT, DL_LIMIT, PRICE, FEATURES } from "./premium.js";
 import { openTerms } from "./legal.js";
 
 // (the app lock is gone: anything it left on a phone is cleared, so nobody stays locked out)
@@ -132,14 +132,17 @@ export function openSettings() {
       paintNt(); syncPush(true);
     };
 
-    // rebassing: 10 songs an hour, or unlimited with the unlock
+    // Premium: what it unlocks, and (free) what's left this hour
     const pmSec = el(`<div class="set-sec" id="set-premium">
-      <div class="set-head"><svg><use href="#i-bass"/></svg>Rebassing<span class="pill ${premiumNow() ? "on" : ""}">${premiumNow() ? "Unlimited" : `${LIMIT} an hour`}</span></div>
+      <div class="set-head"><svg><use href="#i-spark"/></svg>Premium<span class="pill ${premiumNow() ? "on" : ""}">${premiumNow() ? "Unlocked" : `$${PRICE} once`}</span></div>
+      <ul class="pm-feats pm-mini"></ul>
       <span class="status"></span>
     </div>`);
-    const left = leftThisHour();
-    pmSec.querySelector(".status").textContent = premiumNow() ? "Unlimited rebassing is unlocked on this account. Thank you!" : `${left} of ${LIMIT} songs left this hour. Unlimited rebassing is $10, once.`;
-    if (!premiumNow()) { const b = el('<button class="btn block" id="set-unlock">Unlock unlimited rebassing</button>'); b.onclick = () => openUnlock(false); pmSec.append(b); }
+    const fl = pmSec.querySelector(".pm-feats");
+    for (const [i, t] of FEATURES) { const li = el(`<li><span class="pm-fi"><svg><use href="#${i}"/></svg></span><span><b></b></span></li>`); li.querySelector("b").textContent = t; fl.append(li); }
+    pmSec.querySelector(".status").textContent = premiumNow() ? "Everything's unlocked on this account. Thank you!"
+      : `This hour: ${leftThisHour()} of ${LIMIT} rebasses and ${downloadsLeft()} of ${DL_LIMIT} downloads left. 4th and 6th-order boxes are Premium.`;
+    if (!premiumNow()) { const b = el(`<button class="btn primary block" id="set-unlock">Get Premium</button>`); b.onclick = () => openPremium(""); pmSec.append(b); }
     p.append(pmSec);
 
     // the rules and legal terms

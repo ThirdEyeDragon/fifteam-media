@@ -9,7 +9,7 @@ import { FORMATS, makeFile, saveFile, sizeText, isIOS, fitFormat } from "./expor
 import { openShareSheet, fingerprint } from "./share.js";
 import { noteName, linToDb } from "./dsp.js";
 import { pickImage } from "./image.js";
-import { rebassAllowed, noteRebass, openUnlock } from "./premium.js";
+import { rebassAllowed, noteRebass, openUnlock, downloadAllowed, noteDownload } from "./premium.js";
 import { noteEditor } from "./notes.js";
 
 const S = {
@@ -781,8 +781,11 @@ async function save() {
   try {
     const { file, fresh } = await buildFile();
     if (isIOS() && fresh) { toast("Ready. Tap Save again, then choose Save to Files."); return; }
+    const dk = "file:" + (S.fileKey || file.name);
+    if (!downloadAllowed(dk)) return;
     if (isIOS()) toast("Choose Save to Files to keep it on your iPhone", 5000);
     const r = await saveFile(file);
+    noteDownload(dk);
     if (r === "saved") toast("Saved");
     else if (r === "downloaded") toast(`Saved to your Downloads as ${file.name}`, 5000);
   } catch (e) { toast("Couldn't save the file. " + (e.message || "")); }

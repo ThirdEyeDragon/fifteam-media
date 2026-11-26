@@ -11,7 +11,7 @@
 //           comments, posts, bans).
 //   Push:   real notifications, with the app closed (Web Push): new messages; likes, comments, replies, follows and
 //           requests. A phone signs up for them with proof of its account (a Firebase ID token, checked here).
-//   Premium: "Unlock unlimited rebassing" requests, noted here and told to the owner.
+//   Premium: "Get Premium" requests, noted here and told to the owner.
 import { DurableObject } from "cloudflare:workers";
 
 const API = "https://discord.com/api/v10";
@@ -75,6 +75,101 @@ function keepNew(k, prev, d) {
       if (!d.prefs[ph]) { d.prefs[ph] = { ...q }; changed = true; } else if (!("lk" in d.prefs[ph])) { d.prefs[ph].lk = q.lk; changed = true; }
     }
   }
+  return changed;
+}
+
+// ---------------------------------------------------------------------------------------------------- group chats
+// A group chat (dm.json "groups"): { id, name, by (its owner), at, members, admins, kv (its key's version), keys: { kv:
+// { phone: { b (the phone that sealed it), iv, c } } } }: the group's key, sealed for each member with the key that
+// member shares with whoever sealed it, so only members can read the group's messages (a new version when someone is
+// removed). Its messages sit with everyone else's: { id, f, g, kv, at, iv, c }.
+//   What a phone may change, checked here against its account (signed in, a Firebase ID token):
+//   - a new group: its own, with itself an admin;
+//   - an admin: rename it, add people, remove members (the owner: admins too), make admins (the owner: unmake them);
+//   - a member: leave (the owner leaving hands it to an admin, or the next member);
+//   - the owner: delete it (and its messages);
+//   - a message: sent by a member as itself; deleted by whoever sent it, or an admin.
+// Anything else is put back as it was. (An app from before groups leaves them out when it writes: put back too.)
+export const GID = /^g[a-z0-9]{8,23}$/;
+const MID = /^[a-z0-9]{8,24}$/;
+const sameSet = (a, b) => a.length === b.length && a.every((x) => b.includes(x));
+/** A group as sent, made safe (null if it isn't one). */
+export function cleanGroup(g) {
+  g = obj(g);
+  if (!GID.test(g.id || "") || !PHONE.test(g.by || "")) return null;
+  const members = [...new Set(arr(g.members).filter((x) => PHONE.test(x)))].slice(0, 50);
+  const admins = [...new Set(arr(g.admins).filter((x) => members.includes(x)))];
+  const keys = {};
+  for (const [v, per] of Object.entries(obj(g.keys)).slice(-40)) {
+    if (!/^\d{1,4}$/.test(v)) continue;
+    const o = {};
+    for (const [ph, k] of Object.entries(obj(per))) if (PHONE.test(ph) && k && PHONE.test(k.b || "") && typeof k.iv === "string" && k.iv.length < 40 && typeof k.c === "string" && k.c.length < 200) o[ph] = { b: k.b, iv: k.iv, c: k.c };
+    keys[v] = o;
+  }
+  return { id: g.id, name: String(g.name || "Group").replace(/\s+/g, " ").trim().slice(0, 60) || "Group", by: g.by, at: +g.at || 0, members, admins, kv: Math.max(1, Math.min(9999, +g.kv | 0 || 1)), keys };
+}
+/** Whether `who` may change group p into g. */
+function groupChangeOk(p, g, who) {
+  if (!who || !p.members.includes(who)) return false;
+  const gone = p.members.filter((x) => !g.members.includes(x)), added = g.members.filter((x) => !p.members.includes(x));
+  // (keys already handed out stay as they were: a change only adds)
+  for (const [v, per] of Object.entries(p.keys)) for (const [ph, k] of Object.entries(per)) { const n = g.keys[v] && g.keys[v][ph]; if (n && (n.c !== k.c || n.iv !== k.iv || n.b !== k.b)) return false; }
+  if (g.kv < p.kv || g.kv > p.kv + 1) return false;
+  // leaving: only itself out (the owner hands the group on)
+  if (gone.length === 1 && gone[0] === who && !added.length && g.name === p.name) {
+    const okAdmins = sameSet(g.admins, p.admins.filter((x) => x !== who)) || (who === p.by && g.admins.includes(g.by) && g.admins.every((x) => p.admins.includes(x) || x === g.by));
+    const okBy = who === p.by ? g.members.includes(g.by) : g.by === p.by;
+    return okAdmins && okBy;
+  }
+  if (!p.admins.includes(who) || g.by !== p.by || !g.members.includes(p.by) || !g.admins.includes(p.by)) return false;
+  // (only the owner removes or unmakes admins)
+  if (who !== p.by && (gone.some((x) => p.admins.includes(x)) || p.admins.some((x) => g.members.includes(x) && !g.admins.includes(x)))) return false;
+  // (someone removed: the key is new, and only the members left have it)
+  if (gone.length && (g.kv !== p.kv + 1 || Object.keys(obj(g.keys[g.kv])).some((x) => !g.members.includes(x)))) return false;
+  return true;
+}
+/** The message store as a phone wants to write it, checked against what was there (`who`: the phone, by its account;
+ * "" if it didn't say). Changes it back where it isn't allowed; true if it changed anything. */
+export function guardGroups(prev, d, who) {
+  prev = obj(prev);
+  const before = new Map(arr(prev.groups).map(cleanGroup).filter(Boolean).map((g) => [g.id, g]));
+  const sent = "groups" in d ? arr(d.groups).map(cleanGroup).filter(Boolean) : null;
+  const out = new Map();
+  let changed = false;
+  if (!sent) { for (const [id, g] of before) out.set(id, g); if (before.size) changed = true; }
+  else {
+    for (const g of sent) {
+      const p = before.get(g.id);
+      if (!p) { if (who && g.by === who && g.members.includes(who) && g.admins.includes(who) && g.kv === 1) out.set(g.id, g); else changed = true; }
+      else if (JSON.stringify(p) === JSON.stringify(g)) out.set(g.id, p);
+      else if (groupChangeOk(p, g, who)) out.set(g.id, g);
+      else { out.set(g.id, p); changed = true; }
+    }
+    // (a group gone: only its owner deletes it)
+    for (const [id, p] of before) if (!out.has(id) && !sent.some((g) => g.id === id) && who !== p.by) { out.set(id, p); changed = true; }
+    if (JSON.stringify(sent) !== JSON.stringify(arr(d.groups))) changed = true;
+  }
+  // the messages
+  const del = new Set(arr(d.del)), had = new Map(arr(prev.msgs).filter((m) => m && m.g).map((m) => [m.id, m]));
+  const msgs = [];
+  for (const m of arr(d.msgs)) {
+    if (!m || !m.g) { msgs.push(m); continue; }
+    const g = out.get(m.g), p = had.get(m.id);
+    if (p) { msgs.push(p); if (JSON.stringify(p) !== JSON.stringify(m)) changed = true; continue; }
+    // (new: from a member, as itself)
+    const ok = g && who && m.f === who && g.members.includes(who) && MID.test(m.id || "") && +m.kv === g.kv && typeof m.iv === "string" && typeof m.c === "string" && m.c.length < 4000;
+    if (ok) msgs.push({ id: m.id, f: m.f, g: m.g, kv: g.kv, at: +m.at || Date.now(), iv: m.iv, c: m.c }); else changed = true;
+  }
+  const kept = new Set(msgs.map((m) => m && m.id));
+  for (const [id, p] of had) {
+    if (kept.has(id)) continue;
+    const g = out.get(p.g);
+    // (deleted: by whoever sent it, an admin, or with its group; left out by an older app: put back)
+    const allowed = !g || (del.has(id) && who && (who === p.f || g.admins.includes(who)));
+    if (!allowed) { msgs.push(p); del.delete(id); changed = true; }
+  }
+  if (changed) { msgs.sort((a, b) => (+(a && a.at) || 0) - (+(b && b.at) || 0)); d.msgs = msgs; d.del = [...del]; }
+  d.groups = [...out.values()];
   return changed;
 }
 
@@ -183,7 +278,7 @@ export class Hub extends DurableObject {
     return out;
   }
   /** A change: taken if the store is still at version v (the one the change was made on). */
-  async write(k, v, raw, from = "phone") {
+  async write(k, v, raw, from = "phone", who = "") {
     if (!STORES[k]) return { status: 404 };
     if (from === "phone" && !PHONE_WRITES.has(k)) return { status: 403 };
     if (from === "phone" && v == null) return { status: 428 };
@@ -195,13 +290,16 @@ export class Hub extends DurableObject {
     const prev = this.data(s);
     // what an older app leaves out because it doesn't know it (a post's privacy and shares; who sees someone's likes):
     // kept as it was, so a phone not yet updated can't undo it
-    if (from === "phone" && keepNew(k, prev, d)) raw = JSON.stringify(d);
+    let fixed = false;
+    if (from === "phone" && keepNew(k, prev, d)) { raw = JSON.stringify(d); fixed = true; }
+    // (group chats: only what that phone may change)
+    if (from === "phone" && k === "dm" && guardGroups(prev, d, who)) { raw = JSON.stringify(d); fixed = true; }
     s.v++; s.raw = raw; s.d = d; s.dirty = true;
     this.ctx.storage.put("s:" + k, { v: s.v, raw, att: s.att, dirty: true });
     this.soon();
     if (k !== "presence" && k !== "accounts" && k !== "links") this.tell(k, s.v, k === "dm" ? this.dmPeople(prev, d) : null);
     this.notify(k, prev, d).catch((e) => console.log("push:", e.message));
-    return { status: 200, v: s.v };
+    return { status: 200, v: s.v, ...(fixed ? { fixed: true } : {}) };
   }
   /** The bot's change: read, changed by fn, written (again if someone changed it meanwhile). */
   async change(k, fn) {
@@ -331,8 +429,15 @@ export class Hub extends DurableObject {
   onScreen(phone) { return this.ctx.getWebSockets().some((ws) => { const a = ws.deserializeAttachment(); return a && a.me === phone && a.vis; }); }
   dmPeople(prev, next) {
     const had = new Set(arr(prev && prev.msgs).map((m) => m.id)), now = new Set(arr(next && next.msgs).map((m) => m.id)), out = new Set();
-    for (const m of arr(next && next.msgs)) if (!had.has(m.id)) { out.add(m.f); out.add(m.t); }
-    for (const m of arr(prev && prev.msgs)) if (!now.has(m.id)) { out.add(m.f); out.add(m.t); }
+    // (a group's message, or a change to a group: everyone in it, before and after)
+    const all = [...arr(prev && prev.groups), ...arr(next && next.groups)].filter((g) => g && g.id);
+    const membersOf = (id) => all.filter((g) => g.id === id).flatMap((g) => arr(g.members));
+    const add = (m) => { out.add(m.f); if (m.g) membersOf(m.g).forEach((x) => out.add(x)); else out.add(m.t); };
+    for (const m of arr(next && next.msgs)) if (!had.has(m.id)) add(m);
+    for (const m of arr(prev && prev.msgs)) if (!now.has(m.id)) add(m);
+    const pg = new Map(arr(prev && prev.groups).map((g) => [g && g.id, JSON.stringify(g)]));
+    for (const g of arr(next && next.groups)) if (g && pg.get(g.id) !== JSON.stringify(g)) { membersOf(g.id).forEach((x) => out.add(x)); }
+    for (const g of arr(prev && prev.groups)) if (g && !arr(next && next.groups).some((x) => x && x.id === g.id)) arr(g.members).forEach((x) => out.add(x));
     return [...out].filter((x) => PHONE.test(x));
   }
 
@@ -368,7 +473,15 @@ export class Hub extends DurableObject {
     const ok = (from, to) => PHONE.test(from) && PHONE.test(to) && from !== to && !banned[from] && !blocked(from, to);
     if (k === "dm") {
       const had = new Set(arr(prev && prev.msgs).map((m) => m.id)), msgs = arr(next && next.msgs);
+      const groups = new Map(arr(next && next.groups).map((g) => [g && g.id, g]));
       for (const m of msgs) {
+        // a group's message: everyone else in it (not anyone who blocked the sender)
+        if (m.g) {
+          const g = groups.get(m.g);
+          if (had.has(m.id) || !g || banned[m.f]) continue;
+          for (const to of arr(g.members)) if (to !== m.f && ok(m.f, to)) notes.push({ to, kind: "msg", title: String(g.name || "Group").slice(0, 60), body: `${name(m.f)} sent a message`, tag: `g-${g.id}`, data: { g: g.id } });
+          continue;
+        }
         if (had.has(m.id) || !ok(m.f, m.t)) continue;
         const pr = obj(obj(meta && meta.prefs)[m.t]), dm = pr.dm || "all";
         const talked = msgs.some((x) => x.f === m.t && x.t === m.f), follows = lists("follows", m.t).includes(m.f), let_in = lists("dmok", m.t).includes(m.f);
@@ -414,7 +527,7 @@ export class Hub extends DurableObject {
   toPhone(phone, obj) { const text = JSON.stringify(obj); for (const ws of this.ctx.getWebSockets()) { const a = ws.deserializeAttachment(); if (a && a.me === phone) { try { ws.send(text); } catch {} } } }
 
   // ---------------------------------------------------------------- premium
-  /** Someone tapped Pay for unlimited rebassing: noted (for /premiums) and told to the owner in the server. */
+  /** Someone tapped Pay for Premium: noted (for /premiums) and told to the owner in the server. */
   async premiumAsk(phone) {
     const asks = obj(await this.ctx.storage.get("premium-asks"));
     const first = !asks[phone];
@@ -423,7 +536,7 @@ export class Hub extends DurableObject {
     if (first) {
       const feed = this.data(await this.load("index")) || {}, nm = (obj(feed.profiles)[phone] || {}).name || phone;
       const clean = String(nm).replace(/[\\*_~`|>#@<:\[\]()]/g, (c) => "\\" + c);
-      await this.tellPayments(`💸 **${clean}** wants unlimited rebassing ($10). Check PayPal for a $10 payment with "${clean}" in the note, then use /premium ${clean}.`).catch(() => {});
+      await this.tellPayments(`💸 **${clean}** wants Premium ($10: unlimited rebassing and downloads, 4th and 6th-order boxes). Check PayPal for a $10 payment with "${clean}" in the note, then use /premium ${clean}.`).catch(() => {});
     }
     return first;
   }

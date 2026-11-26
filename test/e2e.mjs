@@ -425,6 +425,17 @@ const drawn = await bx(`(b) => b.view && b.view.counts()`);
 console.log("box: 3D:", await bx(`(b) => b.view.webgl ? 'WebGL' : 'lines'`), JSON.stringify(drawn));
 check(!!drawn && drawn.opaque > 500 && drawn.lines > 50, "the box is drawn in 3D (panels, the sub, the port)");
 await shot("13_box");
+// Premium: 4th and 6th order are locked on a free account; tapping one shows what Premium is
+const locks = await ev(`[...document.querySelectorAll('#bx-type button')].filter(b => b.querySelector('.pm-lock')).map(b => b.dataset.k).join(',') + ' | ' + [...document.querySelectorAll('#bx-quick .chip')].filter(b => b.querySelector('.pm-lock')).map(b => b.dataset.k).join(',')`);
+await click(`#bx-type [data-k="bp6"]`); await sleep(600);
+const upsell = await ev(`(() => { const p = document.getElementById('sheet-panel'); return document.getElementById('sheet').classList.contains('open') ? (p.querySelector('.pm-pitch') || {}).textContent + ' | ' + (p.querySelector('.pm-why') || {}).textContent + ' | ' + p.querySelectorAll('.pm-feats li').length + ' features | ' + (p.querySelector('.pm-pay') || {}).textContent : 'closed'; })()`);
+const stillType = await bx(`(b) => b.state.type`);
+console.log("box: locks:", locks, "| tapped 6th order:", upsell, "| type stays", stillType);
+check(locks === "bp4,bp6 | band,hall" && /one-time payment for access to these dope features/.test(upsell) && /6th-order boxes are a Premium feature/.test(upsell) && /4 features/.test(upsell) && stillType !== "bp6", "4th and 6th order locked on a free account: tapping one shows the Premium sheet (one-time payment) instead");
+await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
+// (from here: Premium, switched on for this test on this computer)
+await ev(`localStorage.setItem('fifteam-test-premium', '1'), dispatchEvent(new Event('fifteam-premium')), 1`); await sleep(500);
+check(await ev(`!document.querySelector('#bx-type .pm-lock') && document.getElementById('bx-probar').hidden`), "with Premium: the locks and the Premium bar are gone");
 const types = [];
 for (const t of ["sealed", "ported", "bp4", "bp6"]) {
   await click(`#bx-type [data-k="${t}"]`); await sleep(500);
@@ -514,6 +525,26 @@ await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await 
 await ev(`import('./js/box.js').then(m => { m.box.openShared(${JSON.stringify(boxCode)}); return 1; })`); await sleep(1000);
 const opened = await bx(`(b) => location.hash + ' ' + b.state.fixed + ' ' + b.state.count + ' ' + b.state.paint`);
 check(opened === "#box true 4 #c8102e", `a shared box opens in Box as it was built (${opened})`);
+// My system: the big example build, worked out and drawn; a part and a wire picked
+await ev(`document.getElementById('view-box').scrollTop = 0`);
+await click('#bx-cats [data-k="system"]'); await sleep(1500);
+await ev(`[...document.querySelectorAll('.sy-quick .chip')].find(c => /example/i.test(c.textContent)).click(), 1`); await sleep(900);
+const sys = await ev(`({ tiles: [...document.querySelectorAll('.sy-tiles .bx-tile b')].map(b => b.textContent).join(' / '), parts: document.querySelectorAll('.sy-c').length, wires: document.querySelectorAll('.sy-w').length, banks: document.querySelectorAll('.sy-c.sy-lithium').length, spk: document.querySelectorAll('.sy-c.sy-speaker').length, hidden: document.getElementById('bx-root').classList.contains('sys-on') && getComputedStyle(document.getElementById('bx-3dcard')).display === 'none' })`);
+await ev(`document.querySelector('.sy-c[data-c="posbus"]').dispatchEvent(new MouseEvent('click', { bubbles: true })), 1`); await sleep(300);
+const busInfo = await ev(`document.getElementById('sy-info').innerText`);
+await ev(`(() => { const w = [...document.querySelectorAll('.sy-hit')].find(p => p.dataset.w); w.dispatchEvent(new MouseEvent('click', { bubbles: true })); return 1; })()`); await sleep(300);
+const lit = await ev(`({ on: document.querySelectorAll('.sy-w.on').length, ends: [...document.querySelectorAll('.sy-endl')].map(t => t.textContent).join(' / '), faded: document.querySelector('.sy-svg').classList.contains('picking') })`);
+console.log("box: my system:", JSON.stringify(sys), "| bus bar:", busInfo.split("\n").slice(0, 3).join(" / "), "| wire picked:", JSON.stringify(lit));
+check(sys.hidden && sys.parts > 30 && sys.wires > 50 && sys.banks === 4 && sys.spk === 12 && /1,556 A/.test(sys.tiles), "My system: the example build (4 15s, 2 8,000 W amps, 2 4-channel amps, a 4-battery lithium bank, 3 speakers in every door) worked out and drawn");
+check(/Its posts, left to right/i.test(busInfo) && /Lithium 1 \+/.test(busInfo) && lit.on === 1 && lit.faded && /^From: .+ \/ To: .+/.test(lit.ends), "tap the bus bar: what's on each post; tap a wire: it lights up, the rest fade, both its ends named");
+await shot("17_box_system");
+await click('#bx-cats [data-k="design"]'); await sleep(500);
+// downloads: 5 an hour on a free account (Premium off again for this)
+await ev(`localStorage.removeItem('fifteam-test-premium'), 1`);
+const dlCheck = await ev(`import('./js/premium.js').then(m => { const r = [], left = m.downloadsLeft(); for (let i = 0; i < left + 1; i++) { const ok = m.downloadAllowed('e2e-song-' + i); r.push(ok); if (ok) m.noteDownload('e2e-song-' + i); } const again = m.downloadAllowed('e2e-song-0'); const sheet = document.getElementById('sheet').classList.contains('open') && /downloaded 5 songs/.test(document.getElementById('sheet-panel').textContent); return (r.slice(0, -1).every(Boolean) && !r[r.length - 1] ? 'the ' + r.length + 'th refused' : r.join(',')) + ' | used before: ' + (5 - left) + ' | again: ' + again + ' | sheet: ' + sheet; })`);
+console.log("box: downloads:", dlCheck);
+check(/^the \d+th refused \| used before: \d \| again: true \| sheet: true$/.test(dlCheck) && +dlCheck.match(/the (\d+)th/)[1] + +dlCheck.match(/before: (\d)/)[1] === 6, "5 downloads an hour on a free account: the 6th shows the Premium sheet (one already downloaded can be again)");
+await ev(`document.getElementById('sheet').classList.remove('open'), localStorage.removeItem('fifteam-dl-hour'), localStorage.setItem('fifteam-test-premium', '1'), 1`);
 
 // the library's rebassed list
 await ev(`location.hash = '#library'`); await sleep(300);

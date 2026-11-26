@@ -5,6 +5,7 @@
 //   the service is gone from the feed.
 //   Everything from other people is shown as text (textContent), never as markup. @mentions never ping anyone.
 import { $, toast, openSheet, closeSheet, fmtTime, bus, placeholderArt, getCtx, artUrl, pushLayer, dropLayer } from "./ui.js";
+import { downloadAllowed, noteDownload } from "./premium.js";
 import * as store from "./store.js";
 import { library } from "./library.js";
 import { player } from "./player.js";
@@ -593,6 +594,7 @@ function playlistBlock(p) {
 /** Every song in a shared playlist into the library, and a category of them (with its cover). */
 async function addPlaylist(p, btn) {
   const pl = p.playlist;
+  if (!downloadAllowed(pl.items.map((it) => "post:" + it.id))) return;
   btn.disabled = true;
   const ids = [];
   try {
@@ -1079,7 +1081,9 @@ async function playClip(p, keepOn) {
 }
 function stopSong() { if (S.audio && S.playing) { S.audio.pause(); S.playing = null; paintPlay(); } }
 async function addToLibrary(p, block, btn) {
-  const s = p.song;
+  const s = p.song, dk = "post:" + p.id;
+  // (free accounts: 5 downloads an hour; a playlist is checked as a whole before it starts)
+  if (btn && !downloadAllowed(dk)) return null;
   try {
     if (btn) { btn.disabled = true; btn.classList.add("busy"); }
     const audio = await songBlob(p, block);
@@ -1089,6 +1093,7 @@ async function addToLibrary(p, block, btn) {
     const id = store.newId();
     await library.add({ id, kind: "rebass", title: s.title, artist: s.artist || nameOf(p), album: "FifTeam Social", note: s.note || `from ${nameOf(p)}`,
       duration: s.duration, size: file.size, type: file.type, fileName: file.name, added: Date.now(), hasArt: !!cover, from: "social" }, file, cover);
+    noteDownload(dk);
     if (btn) { btn.classList.remove("busy"); btn.classList.add("done"); toast("Added to your library, under Rebassed"); }
     return id;
   } catch (e) {

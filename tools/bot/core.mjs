@@ -12,7 +12,7 @@
 //   /tag-member, /tag-founder, /tag-developer <user>   the gradient tag next to their name (remove: True takes it off)
 //   /tags              who has which tag
 //   /listings [user], /delete-listing   Audio Market: the latest listings, and taking one down
-//   /premium <user> [remove]   unlimited rebassing for someone who paid (the $10 one-time unlock); /premiums lists
+//   /premium <user> [remove]   Premium for someone who paid (the $10 one-time unlock); /premiums lists
 //                      who has it and who has asked
 //   /accounts, /ban-email <email>, /unban-email <email>   FifTeam accounts: every account, online or not, with its
 //                      phone. The app keeps the list (social/config.json "accounts"), each email sealed for the bot's key
@@ -60,8 +60,8 @@ export const COMMANDS = [
   { name: "unban-email", description: "Lift an account's ban", type: 1, options: [{ type: 3, name: "email", description: "The account's email", required: true, autocomplete: true }] },
   { name: "listings", description: "The latest Audio Market listings (or one user's), with their ids", type: 1, options: [{ type: 3, name: "user", description: "Only this user's", required: false, autocomplete: true }] },
   { name: "delete-listing", description: "Take an Audio Market listing down", type: 1, options: [{ type: 3, name: "listing", description: "Start typing its title or the seller", required: true, autocomplete: true }] },
-  { name: "premium", description: "Unlock unlimited rebassing for someone who paid $10 (or take it away)", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }, { type: 5, name: "remove", description: "Take it away instead", required: false }] },
-  { name: "premiums", description: "Who has unlimited rebassing, and who has asked for it", type: 1 },
+  { name: "premium", description: "Unlock Premium for someone who paid $10 (or take it away)", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }, { type: 5, name: "remove", description: "Take it away instead", required: false }] },
+  { name: "premiums", description: "Who has Premium, and who has asked for it", type: 1 },
   { name: "allow-picture", description: "Let a user have a profile picture again", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }] },
 ].map((c) => ({ ...c, default_member_permissions: "4", dm_permission: false }));   // (4: Ban Members; admins only)
 
@@ -431,15 +431,15 @@ export function makeBot({ cfg, priv, notes, token = "", log = () => {}, stores =
     await changeMod((d) => { d.premium = obj(d.premium); for (const p of w.phones) { if (on) d.premium[p] = { at, name: (w.all[p] && w.all[p].name) || String(user).slice(0, 24) }; else delete d.premium[p]; } }, () => true);
     if (on && stores && stores.premiumDone) await stores.premiumDone(w.phones).catch(() => {});
     // (a record in #payments)
-    if (stores && stores.tellPayments) await stores.tellPayments(on ? `✅ Unlocked unlimited rebassing for **${clean(w.name)}**${by ? ` (by <@${by}>)` : ""}.` : `↩️ Took unlimited rebassing away from **${clean(w.name)}**${by ? ` (by <@${by}>)` : ""}.`).catch(() => {});
-    return on ? `**${clean(w.name)}** has unlimited rebassing now. It unlocks on their phone the next time it checks (straight away if the app is open, or when it's opened).`
-      : `Took unlimited rebassing away from **${clean(w.name)}**.`;
+    if (stores && stores.tellPayments) await stores.tellPayments(on ? `✅ Unlocked Premium for **${clean(w.name)}**${by ? ` (by <@${by}>)` : ""}.` : `↩️ Took Premium away from **${clean(w.name)}**${by ? ` (by <@${by}>)` : ""}.`).catch(() => {});
+    return on ? `**${clean(w.name)}** has Premium now (unlimited rebassing and downloads, 4th and 6th-order boxes). It unlocks on their phone the next time it checks (straight away if the app is open, or when it's opened).`
+      : `Took Premium away from **${clean(w.name)}**.`;
   }
   async function cmdPremiums() {
     const d = (await readStore("mod", "mod.json")) || {}, paid = Object.entries(obj(d.premium)).sort((a, b) => b[1].at - a[1].at);
     const asks = stores && stores.premiumAsks ? Object.entries(obj(await stores.premiumAsks().catch(() => ({})))).filter(([k]) => !obj(d.premium)[k]).sort((a, b) => b[1] - a[1]) : [];
     const all = asks.length ? await people() : {};
-    const lines = [`**Unlimited rebassing** · ${paid.length} paid${asks.length ? ` · ${asks.length} asked (check PayPal for $10 with their name in the note)` : ""}`];
+    const lines = [`**Premium** · ${paid.length} paid${asks.length ? ` · ${asks.length} asked (check PayPal for $10 with their name in the note)` : ""}`];
     for (const [k, v] of paid.slice(0, 25)) lines.push(`• **${clean(v.name)}** · since ${ago(v.at)} · \`${k}\``);
     for (const [k, t] of asks.slice(0, 15)) lines.push(`• asked: **${clean((all[k] && all[k].name) || k)}** · ${ago(t)} · \`${k}\` (unlock with /premium)`);
     if (!paid.length && !asks.length) lines.push("Nobody yet.");

@@ -6,7 +6,7 @@
 //   /v1/files        the current links to posts' files, for many posts at once
 //   /v1/live         a live connection: the app hears at once when something changes
 //   /v1/push         a phone signing up for notifications (with proof of its account), /v1/push/off to stop
-//   /v1/premium      "Unlock unlimited rebassing" tapped: the owner is told (in #payments)
+//   /v1/premium      "Get Premium" tapped: the owner is told (in #payments)
 //   /v1/report       a report about a user (or a post or comment of theirs): to #reports
 // And on a timer (the crons in wrangler.toml): every minute, anything older apps wrote merged in; every half hour, the
 // file links refreshed.
@@ -18,7 +18,7 @@ import { Hub, checkIdToken, STORES } from "./hub.mjs";
 export { Hub };
 
 const hex = (s) => Uint8Array.from(String(s).match(/.{2}/g) || [], (b) => parseInt(b, 16));
-const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, PUT, POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type", "Access-Control-Max-Age": "86400" };
+const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, PUT, POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, X-FT-Auth", "Access-Control-Max-Age": "86400" };
 const json = (o, status = 200, cors = false) => new Response(typeof o === "string" ? o : JSON.stringify(o), { status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...(cors ? CORS : {}) } });
 
 /** Whether Discord signed this request (Ed25519 over the timestamp and the body). */
@@ -89,8 +89,11 @@ async function app(req, env, url) {
   const m = /^\/v1\/store\/([a-z]+)$/.exec(path);
   if (m && req.method === "PUT") {
     const v = url.searchParams.get("v");
-    const r = await hub.write(m[1], v == null ? null : +v, await req.text(), "phone");
-    return json(r.status === 200 ? { v: r.v } : r.status === 409 ? { conflict: true, v: r.v } : { error: r.status }, r.status, true);
+    // (messages: which account wrote, so the server knows who may change a group chat)
+    let who = "";
+    if (m[1] === "dm" && req.headers.get("X-FT-Auth")) { try { who = await phoneOf(env, req.headers.get("X-FT-Auth")); } catch {} }
+    const r = await hub.write(m[1], v == null ? null : +v, await req.text(), "phone", who);
+    return json(r.status === 200 ? { v: r.v, ...(r.fixed ? { fixed: true } : {}) } : r.status === 409 ? { conflict: true, v: r.v } : { error: r.status }, r.status, true);
   }
   if (path === "/v1/files" && req.method === "POST") {
     const { ids } = await req.json().catch(() => ({}));

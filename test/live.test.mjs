@@ -240,9 +240,9 @@ try {
   log("the unlock sheet:", JSON.stringify(sj));
   check(/\$10/.test(sj.text) && /Alice/.test(sj.text) && sj.href === "https://www.paypal.com/paypalme/lnewman21s/10USD", "the unlock sheet: $10 once, PayPal, and her username for the note");
   await A.ev(`(() => { const a = document.querySelector('#sheet-panel .pm-pay'); a.addEventListener('click', (e) => e.preventDefault()); a.click(); return 1; })()`);
-  for (let i = 0; i < 40 && !posted.some((p) => /unlimited rebassing/.test(p.content || "")); i++) await sleep(150);
+  for (let i = 0; i < 40 && !posted.some((p) => /wants Premium/.test(p.content || "")); i++) await sleep(150);
   log("the owner was told:", (posted.find((p) => /unlimited/.test(p.content || "")) || {}).content);
-  check(posted.some((p) => /\*\*Alice\*\* wants unlimited rebassing/.test(p.content || "")), "tapping Pay tells the owner who paid");
+  check(posted.some((p) => /\*\*Alice\*\* wants Premium/.test(p.content || "")), "tapping Pay tells the owner who paid");
   await A.ev(`document.getElementById('sheet').classList.remove('open'), 1`);
   await signed(JSON.stringify({ type: 2, id: "2", token: "t2", application_id: "app1", data: { name: "premium", options: [{ name: "user", value: alice }] }, member: { user: { id: "1", username: "owner" } } }));
   t0 = Date.now();

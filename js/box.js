@@ -7,6 +7,7 @@ import { $, toast, bus, openSheet, closeSheet } from "./ui.js";
 import * as M from "./boxmath.js";
 import { boxView } from "./box3d.js";
 import { SUBS, subFrom, subName, subKey, findSub } from "./subs.js";
+import { premiumNow, requirePremium, openPremium } from "./premium.js";
 
 const KEY = "fifteam-box", SAVED = "fifteam-boxes";
 const { IN, FT3, L: LTR, CM } = M;
@@ -655,6 +656,14 @@ function paintLayers() {
   const bp = st.type.startsWith("bp"), n = st.count, thick = cutLen(st.layers * st.t);
   el.textContent = `${bp ? `The divider${styleOf() === "hall" ? "s" : ""} the subs mount on` : `The front the sub${n > 1 ? "s" : ""} mount${n > 1 ? "" : "s"} on`}: ${st.layers > 1 ? `${st.layers} layers glued together, ${thick}` : `one layer, ${thick}`}. More layers: stiffer, less flex at high power (and a little less air inside).`;
 }
+/** Premium's locks: on the 4th and 6th-order buttons and the bandpass quick builds (gone once it's unlocked). */
+function paintLocks() {
+  const pro = premiumNow();
+  const mark = (b, on) => { let l = b.querySelector(".pm-lock"); if (on && !l) { l = h("span", "pm-lock"); l.append(icon("i-lock")); b.append(l); b.setAttribute("aria-label", `${b.firstChild.textContent} (Premium)`); } if (!on && l) { l.remove(); b.removeAttribute("aria-label"); } };
+  document.querySelectorAll("#bx-type button").forEach((b) => mark(b, !pro && (b.dataset.k === "bp4" || b.dataset.k === "bp6")));
+  document.querySelectorAll("#bx-quick .chip").forEach((b) => { const q = QUICK.find((x) => x[0] === b.dataset.k); mark(b, !pro && q && (q[3].type === "bp4" || q[3].type === "bp6")); });
+  const bar = $("bx-probar"); if (bar) bar.hidden = pro;
+}
 function paintAll() {
   document.querySelectorAll("#bx-type button").forEach((b) => b.classList.toggle("on", b.dataset.k === st.type));
   document.querySelectorAll("#bx-units button").forEach((b) => b.classList.toggle("on", b.dataset.k === st.units));
@@ -668,7 +677,7 @@ function paintAll() {
   document.querySelectorAll("#bx-ohms .chip").forEach((c) => c.classList.toggle("on", +c.dataset.k === st.wire.ohms));
   document.querySelectorAll("#bx-amp .chip").forEach((c) => c.classList.toggle("on", +c.dataset.k === st.wire.amp));
   document.querySelectorAll("#bx-cabf .chip").forEach((c) => c.classList.toggle("on", +c.dataset.k === st.cabF));
-  $("bx-cabf").hidden = !st.cab; $("bx-cab").checked = st.cab; $("bx-fixed").checked = st.fixed; paintLayers(); if ($("bx-square")) $("bx-square").checked = st.drv.shape === "sq";
+  $("bx-cabf").hidden = !st.cab; $("bx-cab").checked = st.cab; $("bx-fixed").checked = st.fixed; paintLayers(); paintLocks(); if ($("bx-square")) $("bx-square").checked = st.drv.shape === "sq";
   $("bx-type-info").textContent = TYPE_INFO[st.type + ":" + styleOf()] || TYPE_INFO[st.type];
   if (document.activeElement !== $("bx-count")) $("bx-count").value = st.count;
   $("bx-3dcard").classList.toggle("pinned", st.pin); $("bx-pin").classList.toggle("on", st.pin);
@@ -712,6 +721,7 @@ function buildScreen(root) {
   const types = seg("bx-type", [["sealed", "Sealed"], ["ported", "Ported"], ["bp4", "4th order"], ["bp6", "6th order"]], st.type);
   types.onclick = (e) => {
     const b = e.target.closest("button"); if (!b || b.dataset.k === st.type) return;
+    if ((b.dataset.k === "bp4" || b.dataset.k === "bp6") && !requirePremium(b.dataset.k)) return;
     st.type = b.dataset.k;
     st.quick = null;
     if (!st.designed[designKey()]) design(st.type, true);
@@ -723,7 +733,12 @@ function buildScreen(root) {
     if (st.type === "bp6") st.style6 = b.dataset.k; else st.style4 = b.dataset.k;
     design(st.type, true); paintAll();
   };
-  sT.append(types, sty, h("p", "status bx-info", "")); sT.lastChild.id = "bx-type-info";
+  // (free accounts: what Premium adds here, one tap away)
+  const pro = h("button", "bx-probar"); pro.type = "button"; pro.id = "bx-probar";
+  const pb = h("span", "pm-badge"); pb.append(icon("i-spark"), "Premium");
+  pro.append(pb, h("span", "", "4th and 6th-order boxes, unlimited rebassing and downloads, for a one-time $10"));
+  pro.onclick = () => openPremium("bandpass");
+  sT.append(types, sty, h("p", "status bx-info", ""), pro); sT.querySelector(".bx-info").id = "bx-type-info";
   root.append(sT);
 
   // the sub
@@ -759,7 +774,7 @@ function buildScreen(root) {
 
   // the design
   const sG = section("bx-sec-design", "i-spark", "Design", "Build it for me, or set the volume and tuning yourself");
-  const quick = chips("bx-quick", QUICK.map((q) => [q[0], q[1]]), (k) => quickBuild(k));
+  const quick = chips("bx-quick", QUICK.map((q) => [q[0], q[1]]), (k) => { const t = QUICK.find((q) => q[0] === k)[3].type; if ((t === "bp4" || t === "bp6") && !requirePremium(t)) return; quickBuild(k); });
   const dz = h("div", "stack bx-design"); dz.id = "bx-design";
   const blk = (t, ...kids) => { const b = h("div", "bx-dblock"); b.dataset.t = t; b.append(...kids); return b; };
   const tgt = (el) => { el.classList.add("bx-target"); return el; };
@@ -993,7 +1008,9 @@ let pendingShare = null;
 /** Someone's shared box, opened in the designer (their exact measurements). */
 function openShared(code) {
   if (!built) { pendingShare = code; location.hash = "#box"; return; }
-  try { st = merge(defaults(), decodeBox(code)); } catch { toast("Couldn't open that box"); return; }
+  let s; try { s = merge(defaults(), decodeBox(code)); } catch { toast("Couldn't open that box"); return; }
+  if ((s.type === "bp4" || s.type === "bp6") && !requirePremium(s.type)) return;
+  st = s;
   location.hash = "#box"; paintAll(); $("view-box").scrollTo({ top: 0 });
   toast(`Opened: ${describe()}`, 3500);
 }
@@ -1006,6 +1023,34 @@ async function shareBox() {
   const { shareBoxPost } = await import("./social.js");
   location.hash = "#social";
   setTimeout(() => shareBoxPost({ img, box: encodeBox(), text: `${title} · ${lines[0]}` }), 250);
+}
+
+// ---------------------------------------------------------------------------------------------------- the two categories
+// Box designer (all of the above) and My system (what you're running, wired: system.js, loaded the first time it's opened)
+const CAT = "fifteam-box-cat";
+function categories(root) {
+  // (the designer's parts stay where they are, straight in the screen, for its layout; the class hides them)
+  const [head, ...rest] = [...root.children];
+  rest.forEach((n) => n.classList.add("bx-dpart"));
+  const sys = h("div", "bx-cat sy-root"); sys.id = "bx-system";
+  const seg = h("div", "seg bx-cats"); seg.id = "bx-cats";
+  for (const [k, t] of [["design", "Box designer"], ["system", "My system"]]) { const b = h("button", "", t); b.type = "button"; b.dataset.k = k; seg.append(b); }
+  let cat = "design"; try { cat = localStorage.getItem(CAT) === "system" ? "system" : "design"; } catch {}
+  const show = async (k) => {
+    cat = k; try { localStorage.setItem(CAT, k); } catch {}
+    seg.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.k === k));
+    root.classList.toggle("sys-on", k === "system");
+    head.querySelector(".sub").textContent = k === "system" ? "What you're running, and exactly how to wire it all." : "Design a sub box: the math, the port, the cut list, in 3D.";
+    if (k === "system" && !sys.dataset.on) {
+      sys.dataset.on = "1";
+      const { mountSystem } = await import("./system.js");
+      mountSystem(sys, () => { const s = st.sub && findSub(st.sub); return { count: st.count, size: Math.round((st.drv.size || 0.3) / IN), coil: s && /^[SD]\d$/.test(s.coils) ? s.coils : (st.wire.dual ? "D" : "S") + st.wire.ohms, rms: st.drv.pe, name: subLabel() }; });
+    }
+    if (k === "design") { view && view.redraw(); paintChart(); }
+  };
+  seg.onclick = (e) => { const b = e.target.closest("button"); if (b && b.dataset.k !== cat) show(b.dataset.k); };
+  root.insertBefore(seg, rest[0] || null); root.append(sys);
+  show(cat);
 }
 
 // ---------------------------------------------------------------------------------------------------- the pinned view and the top bar
@@ -1024,8 +1069,10 @@ function open() {
   if (built) { view && view.redraw(); paintChart(); if (pendingShare) { const c = pendingShare; pendingShare = null; openShared(c); } return; }
   built = true;
   st = load();
-  if (pendingShare) { try { st = merge(defaults(), decodeBox(pendingShare)); } catch {} pendingShare = null; }
+  if (pendingShare) { try { const s = merge(defaults(), decodeBox(pendingShare)); if ((s.type !== "bp4" && s.type !== "bp6") || requirePremium(s.type)) st = s; } catch {} pendingShare = null; }
+  if ((st.type === "bp4" || st.type === "bp6") && !premiumNow()) { st.type = "ported"; st.quick = null; }
   buildScreen($("bx-root"));
+  categories($("bx-root"));
   keepUnderBar();
   paintSaved();
   if (!st.designed.ported && st.type === "ported") design("ported", true);
@@ -1033,5 +1080,6 @@ function open() {
 }
 export function initBox() {
   bus.on("view", (v) => { if (v === "box") requestAnimationFrame(open); });
+  addEventListener("fifteam-premium", () => { if (built) paintAll(); });
   addEventListener("resize", () => { if (built && location.hash === "#box") paintChart(); });
 }
