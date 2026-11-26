@@ -26,13 +26,13 @@ export function defaults() {
     mono: { n: 1, watts: 2000, ohm: 1 },
     four: { n: 1, watts: 100, ohm: 2 },
     spk: { front: 2, rear: 2, tw: 0, ohm: 4 },
-    bank: { n: 0, ah: 100 },
-    alt: 160, run: 17, big3: true, knob: true, vm: 1,
+    bank: { n: 0, ah: 100, type: "lithium" },
+    alt: 160, run: 17, big3: true, knob: true, vm: 1, bus: false,
   };
 }
 const EXAMPLE = {
   head: "aftermarket", subs: { n: 4, size: 15, coil: "D1", rms: 4000 }, mono: { n: 2, watts: 8000, ohm: 1 }, four: { n: 2, watts: 150, ohm: 2 },
-  spk: { front: 3, rear: 3, tw: 0, ohm: 4 }, bank: { n: 4, ah: 100 }, alt: 370, run: 17, big3: true, knob: true, vm: 2,
+  spk: { front: 3, rear: 3, tw: 0, ohm: 4 }, bank: { n: 4, ah: 100, type: "lithium" }, alt: 370, run: 17, big3: true, knob: true, vm: 2, bus: true,
 };
 function load() {
   const d = defaults();
@@ -50,13 +50,28 @@ function powerWire(I, ft, minGauge = 0) {
   for (let runs = 1; runs <= 6; runs++) {
     for (let gi = minGauge; gi < GAUGES.length; gi++) {
       const [g, amp, r] = GAUGES[gi], each = I / runs;
-      if (each <= amp && each * r * ft <= 0.5) return { g, runs, each, amp, fuse: Math.min(floorFuse(amp), Math.max(ceilFuse(each * 1.1), 0)) };
+      if (each <= amp && each * r * ft <= 0.5) return withAlt({ g, runs, each, amp, fuse: Math.min(floorFuse(amp), Math.max(ceilFuse(each * 1.1), 0)) }, I, ft);
     }
   }
   const [g, amp] = GAUGES[GAUGES.length - 1], runs = Math.ceil(I / amp);
-  return { g, runs, each: I / runs, amp, fuse: floorFuse(amp), big: true };
+  return withAlt({ g, runs, each: I / runs, amp, fuse: floorFuse(amp), big: true }, I, ft);
+}
+/** The same current on thinner wire in more runs: 2/0 and up as runs of 1/0, 1/0 as runs of 4 AWG; each run fused for
+ * its share (a 400 A fuse becomes 2 × 200 A). */
+function withAlt(w, I, ft) {
+  const gi = GAUGES.findIndex((x) => x[0] === w.g), ai = gi >= 4 ? 3 : gi === 3 ? 1 : -1;
+  if (ai < 0) return w;
+  const [g, amp, r] = GAUGES[ai];
+  for (let n = 2; n <= 10; n++) {
+    const each = I / n;
+    if (each <= amp && each * r * ft <= 0.5) { if (n > w.runs) w.alt = { g, runs: n, fuse: Math.min(floorFuse(amp), ceilFuse(each * 1.1)) }; break; }
+  }
+  return w;
 }
 const wireText = (w) => `${w.runs > 1 ? w.runs + " × " : ""}${w.g} AWG`;
+/** The thinner way: "or 2 runs of 1/0 AWG (2 × 200 A fuses)". */
+const altText = (w, fuses = true) => (w && w.alt ? `or ${w.alt.runs} runs of ${w.alt.g} AWG${fuses && w.fuse ? ` (${w.alt.runs} × ${w.alt.fuse} A fuses, one on each run)` : ""}` : "");
+const fuseText = (w) => `${w.runs > 1 ? w.runs + " × " : ""}${w.fuse} A${w.alt ? `, or ${w.alt.runs} × ${w.alt.fuse} A on ${w.alt.runs} runs of ${w.alt.g}` : ""}`;
 const spkGauge = (I) => (SPK_GAUGES.find(([, a]) => a >= I * 1.15) || SPK_GAUGES[SPK_GAUGES.length - 1])[0];
 const coilOhms = (c) => +String(c).slice(1) || 2;
 const coilDual = (c) => String(c)[0] === "D";
@@ -131,7 +146,8 @@ export function compute(c) {
   const runI = c.bank.n ? Math.min(I, Math.max(altFree, 60)) : I;
   const run = powerWire(runI, c.run, 3);
   const deficit = Math.max(0, I - altFree);
-  const minutes = deficit > 0 && bankAh ? (bankAh * 0.9) / deficit * 60 : Infinity;
+  const usable = c.bank.type === "agm" ? 0.5 : 0.9, bankName = c.bank.type === "agm" ? "AGM" : "Lithium";
+  const minutes = deficit > 0 && bankAh ? (bankAh * usable) / deficit * 60 : Infinity;
   const ampWire = ampI.map((a) => ({ ...a, w: powerWire(a.I, 4) }));
   const bankWire = c.bank.n ? powerWire(Math.max(I - altFree, I * 0.6) / c.bank.n, 2, 3) : null;
   // warnings
@@ -150,7 +166,7 @@ export function compute(c) {
   if (run.big) warn.push(`That's more current than ${run.runs} runs of 4/0 take: split the load over more runs, or move power to the back (a bank) so the run only charges it.`);
   if (c.mono.n + c.four.n > 3) tips.push(`With ${c.mono.n + c.four.n} amps, the head unit's remote wire switches a relay, and the relay turns them all on (a remote output can't drive that many).`);
   if (c.bank.n && !c.big3) tips.push("With this much power, do the Big 3 too (alternator to battery, battery to chassis, engine to chassis, all at least as thick as the run).");
-  return { subs, spk, ampI: ampWire, I, P, altFree, bankAh, runI, run, deficit, minutes, bankWire, warn, tips };
+  return { subs, spk, ampI: ampWire, I, P, altFree, bankAh, bankName, runI, run, deficit, minutes, bankWire, warn, tips };
 }
 
 // ---------------------------------------------------------------------------------------------------- the drawing
@@ -228,26 +244,46 @@ function layout(c, R) {
   const bank = [];
   for (let i = 0; i < nb; i++) {
     const row = Math.floor(i / 5), inRow = Math.min(5, nb - row * 5), bw = 34, gap = 6, total = inRow * bw + (inRow - 1) * gap, x = W / 2 - total / 2 + (i % 5) * (bw + gap), y = yBank + row * 32;
-    const b = comp({ id: "bank" + i, kind: "lithium", label: `Lithium ${i + 1}`, sub: `${c.bank.ah} Ah`, x, y, w: bw, h: 24 });
-    term(b, "pos", x + 8, y + 24, "down", `Lithium ${i + 1} +`); term(b, "neg", x + 26, y + 24, "down", `Lithium ${i + 1} −`);
+    const b = comp({ id: "bank" + i, kind: "lithium", label: `${R.bankName} ${i + 1}`, sub: `${c.bank.ah} Ah ${R.bankName === "AGM" ? "AGM" : "lithium"}`, x, y, w: bw, h: 24 });
+    term(b, "pos", x + 8, y + 24, "down", `${R.bankName} ${i + 1} +`); term(b, "neg", x + 26, y + 24, "down", `${R.bankName} ${i + 1} −`);
     bank.push(b);
   }
-  const busX0 = 30, busX1 = 330;
-  const neg = comp({ id: "negbus", kind: "bus", label: "Negative bus bar", sub: "Every ground meets here", x: busX0, y: yNeg, w: busX1 - busX0, h: 8, posts: [] });
-  const pos = comp({ id: "posbus", kind: "bus", label: "Positive bus bar", sub: "Every amp's power starts here", x: busX0, y: yPos, w: busX1 - busX0, h: 8, posts: [] });
+  const busX0 = 30, busX1 = 330, busOn = !!c.bus, dist = !busOn && (nAmps > 1 || nb > 0);
+  const neg = busOn ? comp({ id: "negbus", kind: "bus", label: "Negative bus bar", sub: "Every ground meets here", x: busX0, y: yNeg, w: busX1 - busX0, h: 8, posts: [] }) : null;
+  const pos = busOn ? comp({ id: "posbus", kind: "bus", label: "Positive bus bar", sub: "Every amp's power starts here", x: busX0, y: yPos, w: busX1 - busX0, h: 8, posts: [] })
+    : dist ? comp({ id: "dist", kind: "bus", dist: true, label: "Fused distribution block", sub: "One power cable in, a fused output for each amp", x: busX0, y: yPos, w: busX1 - busX0, h: 8, posts: [] }) : null;
+  const posName = busOn ? "Positive bus bar" : "Distribution block";
   const post = (bus, x, fromAbove, label) => { const name = "p" + bus.posts.length; bus.posts.push({ name, x }); const t = term(bus, name, x, fromAbove ? bus.y : bus.y + bus.h, fromAbove ? "up" : "down", label); t.what = label.replace(/^.*?: /, ""); return name; };
   const rFuse = comp({ id: "rearfuse", kind: "fuse", label: `Rear fuse ${R.run.runs > 1 ? R.run.runs + " × " : ""}${R.run.fuse} A`, sub: "The run, fused at the back too", x: 32, y: yNeg - 30, w: 34, h: 14 });
   term(rFuse, "in", 49, yNeg - 30, "up", "Rear fuse in"); term(rFuse, "out", 49, yNeg - 16, "down", "Rear fuse out");
-  const gR = comp({ id: "gndr", kind: "ground", label: "Chassis ground", sub: "Back, bare metal", x: 318, y: yNeg - 32, w: 24, h: 16 });
-  term(gR, "g", 330, yNeg - 16, "down", "Rear chassis ground");
-  // the run: main fuse, down the left side, rear fuse, positive bus bar
-  wire({ kind: "power", from: ["mainfuse", "out"], to: ["rearfuse", "in"], lane: 40, ...R.run, label: `${wireText(R.run)} power run`, note: `About ${c.run} ft from the battery to the back, down the ${"left"} side under the trim (power one side, RCAs the other). Grommet it through the firewall.` });
-  wire({ kind: "power", from: ["rearfuse", "out"], to: ["posbus", post(pos, 49, true, "Positive bus bar: the run from the front")], ...R.run, label: `${wireText(R.run)} power run (into the bus bar)` });
-  wire({ kind: "ground", from: ["negbus", post(neg, 330, true, "Negative bus bar: to the chassis")], to: ["gndr", "g"], g: R.run.g, runs: R.run.runs, label: `${wireText(R.run)} ground to the chassis`, note: "As short as it can be, to bare metal near the bus bar." });
-  for (const b of bank) {
-    wire({ kind: "power", from: [b.id, "pos"], to: ["posbus", post(pos, b.terms.pos.x, true, `Positive bus bar: ${b.label} +`)], ...R.bankWire, runs: 1, label: `${R.bankWire.g} AWG ${b.label} +`, note: `Every battery's cable the same length, so they share the load. A ${R.bankWire.fuse} A fuse or breaker at each battery's + post.`, fuse: R.bankWire.fuse });
-    wire({ kind: "ground", from: [b.id, "neg"], to: ["negbus", post(neg, b.terms.neg.x, true, `Negative bus bar: ${b.label} −`)], g: R.bankWire.g, runs: 1, label: `${R.bankWire.g} AWG ${b.label} −` });
-  }
+  if (c.bus || nb) { const gR = comp({ id: "gndr", kind: "ground", label: "Chassis ground", sub: "Back, bare metal", x: 318, y: yNeg - 32, w: 24, h: 16 }); term(gR, "g", 330, yNeg - 16, "down", "Rear chassis ground"); }
+  // the run: main fuse, down the left side, rear fuse, then the bus bar (or the bank, or the distribution block, or the amp)
+  wire({ kind: "power", from: ["mainfuse", "out"], to: ["rearfuse", "in"], lane: 40, ...R.run, label: `${wireText(R.run)} power run`, note: `About ${c.run} ft from the battery to the back, down the left side under the trim (power one side, RCAs the other). Grommet it through the firewall.${R.run.alt ? ` Thinner wire works too: ${altText(R.run)}.` : ""}` });
+  if (busOn) {
+    wire({ kind: "power", from: ["rearfuse", "out"], to: ["posbus", post(pos, 49, true, "Positive bus bar: the run from the front")], ...R.run, label: `${wireText(R.run)} power run (into the bus bar)` });
+    wire({ kind: "ground", from: ["negbus", post(neg, 330, true, "Negative bus bar: to the chassis")], to: ["gndr", "g"], g: R.run.g, runs: R.run.runs, label: `${wireText(R.run)} ground to the chassis`, note: "As short as it can be, to bare metal near the bus bar." });
+    for (const b of bank) {
+      wire({ kind: "power", from: [b.id, "pos"], to: ["posbus", post(pos, b.terms.pos.x, true, `Positive bus bar: ${b.label} +`)], ...R.bankWire, runs: 1, label: `${R.bankWire.g} AWG ${b.label} +`, note: `Every battery's cable the same length, so they share the load. A ${R.bankWire.fuse} A fuse or breaker at each battery's + post.`, fuse: R.bankWire.fuse });
+      wire({ kind: "ground", from: [b.id, "neg"], to: ["negbus", post(neg, b.terms.neg.x, true, `Negative bus bar: ${b.label} −`)], g: R.bankWire.g, runs: 1, label: `${R.bankWire.g} AWG ${b.label} −` });
+    }
+  } else if (nb) {
+    // (no bus bars: the batteries linked + to + and − to −; the run in at one end, the power out of the other, the ground
+    // off the first, so every battery carries its share)
+    wire({ kind: "power", from: ["rearfuse", "out"], to: [bank[0].id, "pos"], ...R.run, label: `${wireText(R.run)} power run (into ${bank[0].label.toLowerCase()} +)` });
+    for (let i = 0; i + 1 < nb; i++) {
+      wire({ kind: "power", from: [bank[i].id, "pos"], to: [bank[i + 1].id, "pos"], ...R.bankWire, runs: 1, label: `${R.bankWire.g} AWG link, ${bank[i].label} + to ${bank[i + 1].label} +`, note: "Short, all the same length and gauge." });
+      wire({ kind: "ground", from: [bank[i].id, "neg"], to: [bank[i + 1].id, "neg"], g: R.bankWire.g, runs: 1, label: `${R.bankWire.g} AWG link, ${bank[i].label} − to ${bank[i + 1].label} −` });
+    }
+    wire({ kind: "ground", from: [bank[0].id, "neg"], to: ["gndr", "g"], g: R.run.g, runs: R.run.runs, label: `${wireText(R.run)} ground: the bank to the chassis`, note: "From the first battery's −, the opposite end from where the power leaves, to bare metal close by." });
+    wire({ kind: "power", from: [bank[nb - 1].id, "pos"], to: ["dist", post(pos, bank[nb - 1].terms.pos.x, true, `Distribution block: ${bank[nb - 1].label} +`)], ...R.bankWire, runs: 1, fuse: R.bankWire.fuse, label: `${R.bankWire.g} AWG ${bank[nb - 1].label} + to the distribution block`, note: `From the last battery's + (the other end from the run), fused ${R.bankWire.fuse} A at the battery.` });
+  } else if (dist) wire({ kind: "power", from: ["rearfuse", "out"], to: ["dist", post(pos, 49, true, "Distribution block: the run from the front")], ...R.run, label: `${wireText(R.run)} power run (into the distribution block)` });
+  // (an amp's ground: the negative bus bar, or bare chassis metal right by the amp)
+  const ampGround = (id, x, row, label) => {
+    if (busOn) return ["negbus", post(neg, x, false, `Negative bus bar: ${label}`)];
+    const g = comp({ id: "gnd-" + id, kind: "ground", flip: true, label: "Chassis ground", sub: "Bare metal, under 18″ from the amp", x: x - 12, y: yFuse - 2 + row * (ampH + 46), w: 24, h: 14 });
+    term(g, "g", x, g.y + 14, "down", "Chassis ground by the amp");
+    return [g.id, "g"];
+  };
   // the amps: 4-channel ones at the ends, the mono ones between
   const order = [];
   const monos = Array.from({ length: Math.max(0, c.mono.n | 0) }, (_, i) => ({ kind: "mono", i })), fours = Array.from({ length: n4 }, (_, i) => ({ kind: "four", i }));
@@ -268,12 +304,17 @@ function layout(c, R) {
     if (a.kind === "mono") { term(cp, "knob", x + 56, y, "up", `${label} bass knob port`); term(cp, "spk", x + 31, y + ampH, "down", `${label} speaker out`); }
     else for (let ch = 1; ch <= 4; ch++) term(cp, "ch" + ch, x + 10 + (ch - 1) * 14, y + ampH, "down", `${label} channel ${ch}`);
     amps.push(cp);
-    // power: bus bar post, its own fuse, the amp; ground: the amp to the negative bus bar
-    const f = comp({ id: "fuse-" + id, kind: "fuse", label: `${label} fuse: ${ai.w.runs > 1 ? ai.w.runs + " × " : ""}${ai.w.fuse} A`, sub: `On the bus bar, for ${label.toLowerCase()}`, x: x + 10 - 18, y: yFuse + row * (ampH + 46), w: 36, h: 12 });
-    term(f, "in", x + 10, f.y, "up", `${label} fuse in`); term(f, "out", x + 10, f.y + 12, "down", `${label} fuse out`);
-    wire({ kind: "power", from: ["posbus", post(pos, x + 10, false, `Positive bus bar: ${label}`)], to: [f.id, "in"], ...ai.w, label: `${wireText(ai.w)} to ${label.toLowerCase()}'s fuse` });
-    wire({ kind: "power", from: [f.id, "out"], to: [id, "pos"], ...ai.w, label: `${wireText(ai.w)} power to ${label.toLowerCase()}`, note: ai.w.runs > 1 ? `About ${Math.round(ai.I)} A at full power: ${ai.w.runs} runs, one into each of its power inputs (fuse each one).` : `About ${Math.round(ai.I)} A at full power.` });
-    wire({ kind: "ground", from: [id, "gnd"], to: ["negbus", post(neg, x + 22, false, `Negative bus bar: ${label}`)], ...ai.w, label: `${wireText(ai.w)} ground from ${label.toLowerCase()}`, note: "The same size as its power wire." });
+    // power: from the bus bar through its own fuse (or a fused output of the distribution block, or straight from the run);
+    // ground: to the negative bus bar, or the chassis right by it
+    const pnote = `About ${Math.round(ai.I)} A at full power${ai.w.runs > 1 ? `: ${ai.w.runs} runs, one into each of its power inputs (fuse each one)` : ""}.${ai.w.alt ? ` Or ${ai.w.alt.runs} runs of ${ai.w.alt.g} AWG, each fused ${ai.w.alt.fuse} A.` : ""}`;
+    if (busOn) {
+      const f = comp({ id: "fuse-" + id, kind: "fuse", label: `${label} fuse: ${ai.w.runs > 1 ? ai.w.runs + " × " : ""}${ai.w.fuse} A`, sub: `On the bus bar, for ${label.toLowerCase()}`, x: x + 10 - 18, y: yFuse + row * (ampH + 46), w: 36, h: 12, fuseOf: ai.w });
+      term(f, "in", x + 10, f.y, "up", `${label} fuse in`); term(f, "out", x + 10, f.y + 12, "down", `${label} fuse out`);
+      wire({ kind: "power", from: ["posbus", post(pos, x + 10, false, `Positive bus bar: ${label}`)], to: [f.id, "in"], ...ai.w, label: `${wireText(ai.w)} to ${label.toLowerCase()}'s fuse` });
+      wire({ kind: "power", from: [f.id, "out"], to: [id, "pos"], ...ai.w, label: `${wireText(ai.w)} power to ${label.toLowerCase()}`, note: pnote });
+    } else if (dist) wire({ kind: "power", from: ["dist", post(pos, x + 10, false, `Distribution block: ${label} (fused ${ai.w.runs > 1 ? ai.w.runs + " × " : ""}${ai.w.fuse} A)`)], to: [id, "pos"], ...ai.w, label: `${wireText(ai.w)} power to ${label.toLowerCase()} (fused ${fuseText(ai.w)})`, note: pnote });
+    else wire({ kind: "power", from: ["rearfuse", "out"], to: [id, "pos"], ...R.run, label: `${wireText(R.run)} power run into ${label.toLowerCase()}`, note: `One amp: the run goes straight into it; the main fuse at the battery protects it (and a fuse near the amp if the run is long). ${pnote}` });
+    wire({ kind: "ground", from: [id, "gnd"], to: ampGround(id, x + 22, row, label), ...ai.w, label: `${wireText(ai.w)} ground from ${label.toLowerCase()}`, note: busOn ? "The same size as its power wire." : "The same size as its power wire, to bare chassis metal under 18″ from the amp (sand off the paint)." });
   });
   const lastAmpY = yAmp + (rows - 1) * (ampH + 46) + ampH;
 
@@ -284,7 +325,7 @@ function layout(c, R) {
       const rl = comp({ id: "relay", kind: "relay", label: "Remote relay", sub: "Turns every amp on", x: 278, y: ry, w: 30, h: 14 });
       term(rl, "trig", 288, ry, "up", "Relay coil (86)"); term(rl, "pwr", 278, ry + 7, "left", "Relay 12V in (30)"); term(rl, "out", 300, ry + 14, "down", "Relay out (87)");
       wire({ kind: "remote", from: [src.id, "rem"], to: ["relay", "trig"], lane: 204, g: "18", label: "Remote to the relay", note: "18 AWG, with the RCAs (the signal side)." });
-      wire({ kind: "power", from: ["posbus", post(pos, 270, true, "Positive bus bar: the relay")], to: ["relay", "pwr"], g: "14", runs: 1, fuse: 10, label: "14 AWG relay power (10 A fuse)" });
+      wire({ kind: "power", from: [pos.id, post(pos, 270, true, `${posName}: the relay`)], to: ["relay", "pwr"], g: "14", runs: 1, fuse: 10, label: "14 AWG relay power (10 A fuse)" });
       for (const a of amps) wire({ kind: "remote", from: ["relay", "out"], to: [a.id, "rem"], lane: 318, g: "18", label: `Remote to ${a.label.toLowerCase()}` });
     } else amps.forEach((a, i) => wire({ kind: "remote", from: i ? [amps[i - 1].id, "rem"] : [src.id, "rem"], to: [a.id, "rem"], lane: i ? null : 204, g: "18", label: i ? `Remote, ${amps[i - 1].label.toLowerCase()} to ${a.label.toLowerCase()}` : `Remote to ${a.label.toLowerCase()}`, note: i ? "Daisy-chained: a short jumper from the last amp's REM." : "18 AWG blue, from the head unit's remote out (blue/white), down the RCA side." }));
   }
@@ -303,9 +344,12 @@ function layout(c, R) {
   // ---- voltmeters
   vms.forEach((v, i) => {
     const rear = i === 0 && nb;
-    if (rear) {
-      wire({ kind: "sense", from: [v.id, "plus"], to: ["posbus", post(pos, 300 - i * 6, true, `Positive bus bar: voltmeter ${i + 1}`)], lane: 34, g: "18", fuse: 2, label: `Voltmeter ${i + 1} sense + (2 A fuse)`, note: "18 AWG with a 2 A inline fuse at the bus bar: it reads the lithium bank." });
+    if (rear && busOn) {
+      wire({ kind: "sense", from: [v.id, "plus"], to: ["posbus", post(pos, 300 - i * 6, true, `Positive bus bar: voltmeter ${i + 1}`)], lane: 34, g: "18", fuse: 2, label: `Voltmeter ${i + 1} sense + (2 A fuse)`, note: `18 AWG with a 2 A inline fuse at the bus bar: it reads the ${R.bankName.toLowerCase()} bank.` });
       wire({ kind: "ground", from: [v.id, "minus"], to: ["negbus", post(neg, 306 - i * 6, true, `Negative bus bar: voltmeter ${i + 1}`)], lane: 30, g: "18", runs: 1, label: `Voltmeter ${i + 1} −`, note: "Grounded at the same bus bar as it reads, for a true reading." });
+    } else if (rear) {
+      wire({ kind: "sense", from: [v.id, "plus"], to: [bank[nb - 1].id, "pos"], lane: 34, g: "18", fuse: 2, label: `Voltmeter ${i + 1} sense + (2 A fuse)`, note: `18 AWG with a 2 A inline fuse at the battery: it reads the ${R.bankName.toLowerCase()} bank.` });
+      wire({ kind: "ground", from: [v.id, "minus"], to: [bank[0].id, "neg"], lane: 30, g: "18", runs: 1, label: `Voltmeter ${i + 1} −`, note: "Grounded at the bank it reads, for a true reading." });
     } else if (i <= 1 || !c.big3) {
       wire({ kind: "sense", from: [v.id, "plus"], to: ["batt", "pos2"], g: "18", fuse: 2, label: `Voltmeter ${i + 1} sense + (2 A fuse)`, note: "18 AWG with a 2 A inline fuse at the battery: it reads the front battery." });
       wire({ kind: "ground", from: [v.id, "minus"], to: ["gndf", "g"], g: "18", runs: 1, label: `Voltmeter ${i + 1} −` });
@@ -350,7 +394,7 @@ function layout(c, R) {
       wire({ kind: d.d, from: ["hu", "spk"], to: [cp.id, "t"], lane: lanes[d.d], g: "16", label: `16 AWG: the head unit to the ${cp.label.toLowerCase()}`, note: "No 4-channel amp: the head unit powers the door speakers itself." });
     }
   }
-  for (const bus of [neg, pos]) [...bus.posts].sort((a, b) => a.x - b.x).forEach((p, i) => { const t = bus.terms[p.name]; t.post = i + 1; t.label = `${bus.label}, post ${i + 1} (${t.what})`; });
+  for (const bus of [neg, pos].filter(Boolean)) [...bus.posts].sort((a, b) => a.x - b.x).forEach((p, i) => { const t = bus.terms[p.name]; t.post = i + 1; t.label = `${bus.label}, post ${i + 1} (${t.what})`; });
   const H = Math.max(box ? box.y + box.h + 22 : lastAmpY + 30, 760);
   return { comps, wires, H, yTrunk: 470 };
 }
@@ -429,7 +473,9 @@ function paint() {
     chooser("4-channel stable to", [["2", "2 Ω"], ["4", "4 Ω"]], () => S.four.ohm, (v) => (S.four.ohm = +v)));
   g(spkC, stepper("Speakers in each front door", () => S.spk.front, (v) => (S.spk.front = v), 0, 4), stepper("In each rear door", () => S.spk.rear, (v) => (S.spk.rear = v), 0, 4),
     stepper("Dash tweeters (each side)", () => S.spk.tw, (v) => (S.spk.tw = v), 0, 2), chooser("Speaker impedance", [["2", "2 Ω"], ["4", "4 Ω"], ["8", "8 Ω"]], () => S.spk.ohm, (v) => (S.spk.ohm = +v)));
-  g(powC, stepper("Lithium batteries (rear bank)", () => S.bank.n, (v) => (S.bank.n = v), 0, 8), stepper("Each battery", () => S.bank.ah, (v) => (S.bank.ah = v), 10, 400, 5, "Ah"),
+  g(powC, chooser("Rear batteries", [["lithium", "Lithium"], ["agm", "AGM"]], () => S.bank.type || "lithium", (v) => (S.bank.type = v)),
+    stepper("How many in the back", () => S.bank.n, (v) => (S.bank.n = v), 0, 20), stepper("Each battery", () => S.bank.ah, (v) => (S.bank.ah = v), 10, 600, 5, "Ah"),
+    chooser("Bus bars", [["true", "Yes"], ["false", "No"]], () => String(!!S.bus), (v) => (S.bus = v === "true")),
     stepper("Alternator", () => S.alt, (v) => (S.alt = v), 60, 1000, 10, "A"), stepper("Battery to the back", () => S.run, (v) => (S.run = v), 4, 40, 1, "ft"),
     chooser("Big 3 upgrade", [["true", "Yes"], ["false", "No"]], () => String(S.big3), (v) => (S.big3 = v === "true")));
   g(exC, chooser("Bass knob", [["true", "Yes"], ["false", "No"]], () => String(S.knob), (v) => (S.knob = v === "true")), stepper("Voltmeters", () => S.vm, (v) => (S.vm = v), 0, 3));
@@ -440,8 +486,8 @@ function paint() {
   const tl = (k, v, n, cls = "") => { const t = h("div", "bx-tile " + cls); t.append(h("small", "", k), h("b", "", v)); if (n) t.append(h("span", "", n)); tiles.append(t); };
   tl("Total power", `${Math.round(R.P).toLocaleString()} W`, `${S.mono.n} mono, ${S.four.n} 4-channel`);
   tl("Draw at full power", `${Math.round(R.I).toLocaleString()} A`, `alternator spares about ${R.altFree} A`, R.deficit > 0 && !R.bankAh ? "bad" : "");
-  tl("Power run", wireText(R.run), `${S.run} ft, fused ${R.run.runs > 1 ? R.run.runs + " × " : ""}${R.run.fuse} A at both ends`);
-  if (R.bankAh) tl("Lithium bank", `${R.bankAh} Ah`, R.deficit > 0 ? `full power for about ${R.minutes < 1 ? "<1" : Math.round(R.minutes)} min (music: much longer)` : "the alternator keeps up");
+  tl("Power run", wireText(R.run), `${S.run} ft, fused ${R.run.runs > 1 ? R.run.runs + " × " : ""}${R.run.fuse} A at both ends${R.run.alt ? ` · or ${R.run.alt.runs} runs of ${R.run.alt.g} AWG with ${R.run.alt.runs} × ${R.run.alt.fuse} A fuses` : ""}`);
+  if (R.bankAh) tl(`${R.bankName} bank`, `${R.bankAh} Ah`, R.deficit > 0 ? `full power for about ${R.minutes < 1 ? "<1" : Math.round(R.minutes)} min (music: much longer)` : "the alternator keeps up");
   for (const s of R.subs) tl(`Mono amp ${s.amp + 1}`, `${s.load} Ω`, `${s.k} sub${s.k > 1 ? "s" : ""}, about ${Math.round(s.P).toLocaleString()} W`, s.under ? "bad" : "");
   sum.append(h("div", "sy-ch", ""), tiles);
   sum.firstChild.append(h("b", "", "Your system, worked out"), h("small", "", "Tap anything in the diagram for exactly how it's wired"));
@@ -498,7 +544,8 @@ function paintDiagram() {
     const g = sv("g", { class: `sy-c sy-${cp.kind}`, "data-c": cp.id, tabindex: "0", role: "button", "aria-label": cp.label });
     if (cp.kind === "ground") {
       const x = cp.x + cp.w / 2, y = cp.y;
-      g.append(sv("rect", { x: cp.x - 4, y: cp.y - 4, width: cp.w + 8, height: cp.h + 8, class: "sy-pad" }), sv("path", { d: `M ${x} ${y} V ${y + 6} M ${x - 10} ${y + 6} H ${x + 10} M ${x - 6} ${y + 10} H ${x + 6} M ${x - 2} ${y + 14} H ${x + 2}`, class: "sy-gnd" }));
+      const d = cp.flip ? `M ${x} ${y + 14} V ${y + 8} M ${x - 10} ${y + 8} H ${x + 10} M ${x - 6} ${y + 4} H ${x + 6} M ${x - 2} ${y} H ${x + 2}` : `M ${x} ${y} V ${y + 6} M ${x - 10} ${y + 6} H ${x + 10} M ${x - 6} ${y + 10} H ${x + 6} M ${x - 2} ${y + 14} H ${x + 2}`;
+      g.append(sv("rect", { x: cp.x - 4, y: cp.y - 4, width: cp.w + 8, height: cp.h + 8, class: "sy-pad" }), sv("path", { d, class: "sy-gnd" }));
     } else if (cp.round) g.append(sv("circle", { cx: cp.x + cp.w / 2, cy: cp.y + cp.h / 2, r: cp.w / 2, class: "sy-shape" }));
     else g.append(sv("rect", { x: cp.x, y: cp.y, width: cp.w, height: cp.h, rx: cp.kind === "bus" ? 2 : 5, class: "sy-shape" }));
     if (cp.kind === "box") {
@@ -515,7 +562,7 @@ function paintDiagram() {
     const rearG = cp.id === "gndr";
     if (cp.kind === "ground") { anchor = rearG ? "middle" : "start"; ly = rearG ? cp.y - 5 : cp.y + 12; }
     const gx = cp.kind === "ground" ? (rearG ? cp.x + cp.w / 2 : cp.x + cp.w + 2) : null;
-    const short = cp.kind === "amp" ? cp.label.replace("4-channel amp", "4-ch").replace("Mono amp", "Mono") : cp.kind === "speaker" ? cp.label.split(" ").slice(-1)[0] : cp.kind === "fuse" ? cp.label.replace(/^.*?fuse:? ?/i, "") : cp.kind === "lithium" ? "" : cp.kind === "vm" ? "V" + (+cp.id.slice(2) + 1) : cp.kind === "relay" ? "Relay" : cp.id === "gndr" ? "Ground" : cp.label;
+    const short = cp.kind === "amp" ? cp.label.replace("4-channel amp", "4-ch").replace("Mono amp", "Mono") : cp.kind === "speaker" ? cp.label.split(" ").slice(-1)[0] : cp.kind === "fuse" ? cp.label.replace(/^.*?fuse:? ?/i, "") : cp.kind === "lithium" ? "" : cp.kind === "vm" ? "V" + (+cp.id.slice(2) + 1) : cp.kind === "relay" ? "Relay" : cp.id === "gndr" ? "Ground" : cp.flip ? "" : cp.label;
     if (short && cp.kind !== "bus") g.append(sv("text", { x: gx != null ? gx : lx, y: ly, class: "sy-lab" + (cp.kind === "fuse" || cp.kind === "vm" ? " sm" : ""), "text-anchor": anchor }, short));
     if (cp.kind === "bus") g.append(sv("text", { x: cp.x + 40, y: cp.y - 2, class: "sy-lab sm", "text-anchor": "start" }, cp.label));
     if (cp.kind === "amp") g.append(sv("text", { x: cp.x + cp.w / 2, y: cp.y + cp.h / 2 + 12, class: "sy-lab sm", "text-anchor": "middle" }, cp.amp.kind === "mono" ? `${(S.mono.watts / 1000).toFixed(S.mono.watts % 1000 ? 1 : 0)}k W` : `${S.four.watts} W × 4`));
@@ -571,7 +618,8 @@ function paintInfo() {
     box.append(ends);
     const facts = [];
     if (w.g) facts.push(`${w.runs > 1 ? w.runs + " runs of " : ""}${w.g} AWG${w.kind === "power" || w.kind === "ground" ? " OFC copper" : ""}`);
-    if (w.fuse) facts.push(`fused ${w.runs > 1 ? w.runs + " × " : ""}${w.fuse} A`);
+    if (w.alt && (w.kind === "power" || w.kind === "ground")) facts.push(altText(w, false));
+    if (w.fuse) facts.push(`fused ${w.runs > 1 ? w.runs + " × " : ""}${w.fuse} A${w.alt && w.kind === "power" ? ` (or ${w.alt.runs} × ${w.alt.fuse} A on the ${w.alt.g} runs)` : ""}`);
     if (w.kind === "rca") facts.push("twisted-pair RCA");
     if (facts.length) box.append(h("p", "sy-facts", facts.join(" · ")));
     if (w.note) box.append(h("p", "status", w.note));
@@ -611,16 +659,17 @@ function paintInfo() {
   if (cp.kind === "box") for (const s of R.subs) box.append(subWiringDiagram(s));
 }
 function describe(cp) {
-  if (cp.kind === "amp") { const d = cp.draw; return `${cp.sub} · about ${Math.round(d.P).toLocaleString()} W here · draws about ${Math.round(d.I).toLocaleString()} A at full power · power and ground: ${wireText(d.w)}, fused ${d.w.runs > 1 ? d.w.runs + " × " : ""}${d.w.fuse} A`; }
+  if (cp.kind === "amp") { const d = cp.draw; return `${cp.sub} · about ${Math.round(d.P).toLocaleString()} W here · draws about ${Math.round(d.I).toLocaleString()} A at full power · power and ground: ${wireText(d.w)}${d.w.alt ? ` (${altText(d.w, false)})` : ""}, fused ${fuseText(d.w)}`; }
+  if (cp.kind === "fuse") { const w = cp.fuseOf || R.run; return `${cp.sub} · ${fuseText(w)}`; }
   if (cp.kind === "bus") return `${cp.sub} · ${cp.posts.length} posts used`;
-  if (cp.kind === "lithium") return `${cp.sub} · the bank: ${R.bankAh} Ah in all, in parallel`;
+  if (cp.kind === "lithium") return `${cp.sub} · the bank: ${R.bankAh} Ah ${R.bankName === "AGM" ? "AGM" : "lithium"} in all, in parallel`;
   return cp.sub || "";
 }
 function howTo(cp) {
   const run = R.run;
   switch (cp.kind) {
-    case "battery": return ["Disconnect the battery's − cable before you start, and put it back last.", `Main fuse within 18″ of the + post: ${run.runs > 1 ? run.runs + " × " : ""}${run.fuse} A, then the ${wireText(run)} run to the back.`, ...(S.big3 ? ["Big 3: alternator B+ to battery + (fused), battery − to the chassis, engine block to the chassis, each at least as thick as the run."] : []), "Crimp ring lugs (don't just solder), heat-shrink every end."];
-    case "fuse": return ["Mount it solidly, close to where its wire starts (the battery, or the bus bar).", "The fuse protects the wire: never put in a bigger one than this.", "Leave the fuse out until everything's connected, then put it in last."];
+    case "battery": return ["Disconnect the battery's − cable before you start, and put it back last.", `Main fuse within 18″ of the + post: ${fuseText(run)}, then the ${wireText(run)} run to the back${run.alt ? ` (${altText(run, false)})` : ""}.`, ...(S.big3 ? ["Big 3: alternator B+ to battery + (fused), battery − to the chassis, engine block to the chassis, each at least as thick as the run."] : []), "Crimp ring lugs (don't just solder), heat-shrink every end."];
+    case "fuse": { const w = cp.fuseOf || R.run; return ["Mount it solidly, close to where its wire starts (the battery, or the bus bar).", ...(w.alt ? [`Split it if you like: ${w.alt.runs} runs of ${w.alt.g} AWG, each with its own ${w.alt.fuse} A fuse, instead of ${wireText(w)} on ${w.runs > 1 ? w.runs + " × " : "one "}${w.fuse} A.`] : []), "The fuse protects the wire: never put in a bigger one than this.", "Leave the fuse out until everything's connected, then put it in last."]; }
     case "alt": return [`Its output: ${S.alt} A, about ${R.altFree} A to spare for the system (the car takes about ${CAR_LOAD} A).`, R.deficit > 0 ? `At full power the system needs about ${Math.round(R.I)} A: ${R.bankAh ? "the bank covers the rest, in bursts" : "add a bigger alternator or a battery bank"}.` : "It keeps up with the system at full power."];
     case "ground": return ["Sand to bare metal (no paint, no seat bolts).", "Ring lug, star washer, bolted tight; a little dielectric grease over it after.", "As short as it can be: under 18″."];
     case "head": return S.head === "stock" ? ["Keep the factory radio: a line output converter takes its speaker wires (front, rear) and makes RCAs and a remote signal.", "Set the LOC's input level to the radio's volume at about 3/4."]
@@ -628,8 +677,13 @@ function howTo(cp) {
     case "loc": return ["Its inputs on the factory radio's front and rear speaker wires.", "Its RCAs to the amps; its remote out (signal-sensing) to every amp's REM."];
     case "knob": return ["Mount it in reach of the driver.", "Its cable (an RJ plug) into the first mono amp's remote/bass level port, along the RCA side.", "It turns the sub amp down from where its gain is set: set the gain with the knob all the way up."];
     case "vm": return ["Sense +: 18 AWG with a 2 A inline fuse, to what it reads (the bank's + bus bar, or the battery).", "−: to the ground nearest what it reads.", "Its power/trigger wire to the remote, so it's on only when the system is."];
-    case "lithium": return ["Charge every battery to the same voltage before connecting them.", "+ to the positive bus bar, − to the negative bus bar: every cable the same length and gauge.", "A fuse or breaker at each battery's + post.", "Strap them down: lithium batteries are heavy and must not move."];
-    case "bus": return cp.id === "posbus" ? ["Mount it on a board that doesn't conduct, with a cover over it.", "Each cable on its own post, ring lug, tightened to spec.", "From it: the run from the front, the bank's + cables, and every amp's fused power wire."] : ["Every ground meets here: the bank's − cables, every amp's ground, and one short, thick cable to the chassis.", "Mount it near the positive bus bar, but never touching it."];
+    case "lithium": return [
+      R.bankName === "AGM" ? "AGM batteries: the same size, make and age, all fully charged before they're connected." : "Charge every battery to the same voltage before connecting them.",
+      S.bus ? "+ to the positive bus bar, − to the negative bus bar: every cable the same length and gauge." : "Linked + to + and − to −, short cables all the same; the run comes in at the first battery's +, the power leaves from the last one's +, and the ground goes from the first one's −.",
+      "A fuse or breaker at each battery's + post.",
+      R.bankName === "AGM" ? "AGM: about half its amp-hours are usable before the voltage sags; vent it if it's in the cabin." : "Strap them down: lithium batteries are heavy and must not move.",
+    ];
+    case "bus": if (cp.dist) return ["One power cable in (from the run, or the bank's last battery), one fused output for each amp.", "Use fuses no bigger than each amp's wire takes (the diagram shows each one).", "Mount it where you can reach the fuses, away from anything that moves."]; return cp.id === "posbus" ? ["Mount it on a board that doesn't conduct, with a cover over it.", "Each cable on its own post, ring lug, tightened to spec.", "From it: the run from the front, the bank's + cables, and every amp's fused power wire."] : ["Every ground meets here: the bank's − cables, every amp's ground, and one short, thick cable to the chassis.", "Mount it near the positive bus bar, but never touching it."];
     case "amp": { const d = cp.draw; return [`Power: ${wireText(d.w)} from the positive bus bar through its ${d.w.runs > 1 ? d.w.runs + " × " : ""}${d.w.fuse} A fuse, into its +12V terminal${d.w.runs > 1 ? "s" : ""}.`, `Ground: ${wireText(d.w)} to the negative bus bar, the same size as the power.`, "Remote: 18 AWG to REM.", cp.amp.kind === "mono" ? "RCA: the sub signal in; its RCA out (pass-through) to the next mono amp." : "RCA: front into channels 1 and 2, rear into 3 and 4 (or what the diagram shows).", "Set its gain with a test tone and a multimeter (or an oscilloscope), not by ear."]; }
     case "speaker": return ["Speaker wire through the door's rubber boot, not over the hinge.", "+ to +, − to − (a backwards speaker cancels its partner's bass).", "Seal the door's holes and add deadening behind it: it sounds a lot better."];
     case "relay": return ["The head unit's remote wire switches its coil (86, with 85 to ground).", "Its 30 terminal on a 10 A fused feed from the positive bus bar; its 87 terminal to every amp's REM."];

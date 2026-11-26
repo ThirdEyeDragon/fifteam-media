@@ -71,7 +71,7 @@ await cdp("Emulation.setUserAgentOverride", { userAgent: "Mozilla/5.0 (Linux; An
 await cdp("Page.setDownloadBehavior", { behavior: "allow", downloadPath: dl });
 // (signed in already: a test session, so the sign-in screen doesn't stand in the way; signing in itself is tested in
 // test/social.test.mjs)
-await cdp("Page.addScriptToEvaluateOnNewDocument", { source: `try { if (!localStorage.getItem('fifteam-account')) { localStorage.setItem('fifteam-account', JSON.stringify({ email: 'e2e@test.invalid', uid: 'e2etest001', token: 'e2e-test-session-token-000000', checked: Date.now() + 30 * 86400e3 })); localStorage.setItem('fifteam-social-me', 'e2etest001'); } } catch (e) {}` });
+await cdp("Page.addScriptToEvaluateOnNewDocument", { source: `try { if (!localStorage.getItem('fifteam-account')) { localStorage.setItem('fifteam-account', JSON.stringify({ email: 'e2e@test.invalid', uid: 'e2etest001', token: 'e2e-test-session-token-000000', checked: Date.now() + 30 * 86400e3 })); localStorage.setItem('fifteam-social-me', 'e2etest001'); } if (!localStorage.getItem('fifteam-social-name') && !localStorage.getItem('fifteam-e2e-noname')) localStorage.setItem('fifteam-social-name', 'Tester'); } catch (e) {}` });
 await cdp("Page.navigate", { url });
 await sleep(2500);
 await shot("01_first_open");
@@ -582,6 +582,22 @@ await shot("12c_demo_lava_paused");
 console.log("paused, still drifting:", JSON.stringify(await ev(`import('./js/demo.js').then(m => m.demo.state)`)));
 
 console.log("tones polarity label:", await ev(`document.getElementById('tg-flip').closest('label').textContent.trim()`));
+// the way in: a browser tab shows only how to install the app; signed in without a username, picking one comes first
+// (nothing is saved: the screens are only looked at)
+await ev(`localStorage.setItem('fifteam-test-gate', '1'), 1`);
+await ev(`location.hash = "#player", 1`); await cdp("Page.reload", {}); await sleep(3500);
+const tabGate = await ev(`(() => { const g = document.getElementById('gate-install'); return g ? (g.querySelector('.acct-title') || {}).textContent + ' | app inert: ' + document.getElementById('app').inert + ' | others: ' + !!document.getElementById('acct') : 'none'; })()`);
+console.log("browser tab:", tabGate);
+check(/Get the FifTeam Media app \| app inert: true \| others: false/.test(tabGate), "a browser tab (not the installed app on a phone): only how to install it, nothing else");
+await shot("18_gate_install");
+// (an account with no profile anywhere yet: a new one)
+const keepAcct = await ev(`localStorage.getItem('fifteam-account')`);
+await ev(`localStorage.removeItem('fifteam-test-gate'), localStorage.removeItem('fifteam-social-name'), localStorage.setItem('fifteam-e2e-noname', '1'), (() => { const uid = 'e2enoname9' + Date.now().toString(36).slice(-4); localStorage.setItem('fifteam-account', JSON.stringify({ ...JSON.parse(localStorage.getItem('fifteam-account')), uid })); localStorage.setItem('fifteam-social-me', uid); })(), 1`);
+await cdp("Page.reload", {}); await sleep(5000);
+const nameGate = await ev(`(() => { const g = document.getElementById('gate-name'); return g ? (g.querySelector('.acct-title') || {}).textContent + ' | app inert: ' + document.getElementById('app').inert : 'none'; })()`);
+console.log("no username:", nameGate);
+check(nameGate === "Pick your username | app inert: true", "signed in with no username: picking one comes before anything else");
+await ev(`localStorage.removeItem('fifteam-e2e-noname'), localStorage.setItem('fifteam-account', ${JSON.stringify(keepAcct)}), localStorage.setItem('fifteam-social-me', 'e2etest001'), localStorage.setItem('fifteam-social-name', 'Tester'), 1`);
 console.log("errors:", errors.length ? errors.join("\n  ") : "none");
 console.log(fails ? `FAIL (${fails})` : "checks: all ok");
 ws.close(); edge.kill();

@@ -1304,3 +1304,29 @@ input.bx-countv { width: 56px; height: 40px; padding: 0 6px; text-align: center;
 .sy-jump { stroke: #ffd84d; stroke-width: 1.4; fill: none; }
 .sy-jump.p { stroke: #ff4d5e; } .sy-jump.n { stroke: #9aa0b8; }
 .sy-lser { stroke: #b388ff; stroke-width: 1.4; fill: none; }
+
+/* ---------------------------------------------------------------------------- the way in: install, account, username */
+.gate-steps { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 10px; color: var(--muted); font-size: 15px; line-height: 1.45; }
+.gate-steps b { color: var(--ink); }
+.gate-note { margin: 0; text-align: center; color: var(--ink); font-size: 14px; padding: 8px 12px; border-radius: 12px; background: rgba(122, 75, 255, 0.14); }
+.gate-foot { margin: 4px 0 0; text-align: center; color: var(--muted); font-size: 13px; }
+
+/* ---------------------------------------------------------------------------- Box: the build preview */
+.bx-prevbtn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+.bx-prevbtn svg { width: 18px; height: 18px; fill: currentColor; }
+.bx-asm { display: flex; flex-direction: column; gap: 8px; }
+.bx-asm[hidden] { display: none; }
+.bx-asm .label { margin: 0; }
+.bx-asmcard { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-radius: 16px; background: linear-gradient(135deg, rgba(122, 75, 255, 0.2), rgba(255, 79, 135, 0.12)); border: 1px solid rgba(190, 160, 255, 0.35); }
+.bx-asmcard b { font: 700 16px/1.3 var(--font-head); }
+.bx-asmcard p { margin: 0; font-size: 14px; line-height: 1.45; color: var(--ink); }
+.bx-asmnav { gap: 8px; margin-top: 4px; }
+.bx-asmnav .btn { flex: 1; }
+.bx-asmlist { margin: 0; padding: 0; list-style: none; counter-reset: st; display: flex; flex-direction: column; gap: 4px; }
+.bx-asmlist li { counter-increment: st; }
+.bx-asmstep { width: 100%; display: flex; align-items: center; gap: 10px; text-align: left; padding: 8px 10px; border-radius: 12px; background: rgba(255, 255, 255, 0.04); border: 1px solid var(--line); color: var(--ink); font: inherit; font-size: 14px; cursor: pointer; }
+.bx-asmstep::before { content: counter(st); flex: none; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font: 700 12px var(--font-head); background: rgba(255, 255, 255, 0.08); }
+.bx-asmstep.on { border-color: rgba(190, 160, 255, 0.6); background: rgba(122, 75, 255, 0.18); }
+.bx-asmstep.on::before { background: var(--grad); color: #fff; }
+.bx-asmstep.done { color: var(--muted); }
+.bx-asmstep.done::before { background: rgba(124, 255, 155, 0.25); }

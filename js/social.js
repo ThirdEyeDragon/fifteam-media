@@ -338,10 +338,8 @@ function render() {
       const v = inp.value.trim().replace(/\s+/g, " ");
       if (!NAME_OK.test(v)) { err.textContent = "2 to 24 letters, numbers, spaces, _ . or -"; return; }
       if (offensive(v)) { err.textContent = OFFENSIVE; return; }
-      S.name = v; S.editingName = false;
-      try { localStorage.setItem(NAME_KEY, v); } catch {}
-      render();
-      syncProfile();
+      if (nameTaken(v)) { err.textContent = `"${v}" is taken. Try another.`; return; }
+      setName(v);
     };
   }
   body.append(you);
@@ -441,6 +439,16 @@ async function pickAvatar() {
   } catch { toast("Couldn't set that picture. Try again."); }
 }
 /** This phone's picture and name on the feed's profiles (once per change; again later if it couldn't be sent). */
+/** Whether someone else already has this username. */
+const nameTaken = (v) => Object.entries(S.profiles || {}).some(([ph, p]) => ph !== S.me && p && String(p.name || "").toLowerCase() === v.toLowerCase());
+/** This phone's username: kept, shown, and put on its profile. */
+export function setName(v) {
+  S.name = v; S.editingName = false;
+  try { localStorage.setItem(NAME_KEY, v); } catch {}
+  try { render(); } catch {}
+  dispatchEvent(new Event("fifteam-named"));
+  return syncProfile();
+}
 function syncProfile(force) {
   if (S.avSync) return S.avSync;
   S.avSync = (async () => {

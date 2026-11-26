@@ -76,10 +76,34 @@ const norm = (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] 
 // ---------------------------------------------------------------------------------------------------- the meshes
 /** Triangles (position, normal, colour) and lines, from the layout. tri: { opaque: [], clear: [{ v: [30 floats], c: centre }] } */
 const rgbOf = (hex) => { const m = /^#?([0-9a-f]{6})$/i.exec(hex || ""); const n = m ? parseInt(m[1], 16) : 0x7a4bff; return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]; };
-function build(L, mode, finish, paint) {
+/** Which step of putting the box together a part belongs to (the build preview): bottom, back, left, right, top, front
+ * (every layer of the baffle), divider, port (its walls, bend strips, tubes and air), brace, subs; chamber. */
+export function partKey(p) {
+  if (p.kind === "dowel") return "brace";
+  if (p.kind === "prism") return "port";
+  if (p.group === "wall") return p.name;
+  if (p.group === "inner") return p.name === "divider" ? "divider" : "port";
+  if (p.group === "air") return "port";
+  return p.group;
+}
+// (where a piece comes from as it goes into place, world directions: the front toward the viewer, +z)
+const FROM = { bottom: [0, -1, 0], top: [0, 1, 0], left: [-1, 0, 0], right: [1, 0, 0], back: [0, 0, -1], front: [0, 0, 1], subs: [0, 0, 1], divider: [0, 1, 0], port: [0, 1, 0], brace: [0, 1, 0] };
+const TINT = [0.62, 0.47, 1];
+function build(L, mode, finish, paint, asm = null) {
   // (painted: the colour chosen on the outside, a satin look; MDF inside)
   const F = finish === "paint" ? { wall: rgbOf(paint).map((v) => Math.min(1, v * 0.92 + 0.04)), inner: FINISH.mdf.inner, edge: [...rgbOf(paint).map((v) => v * 0.45), 0.7] } : FINISH[finish] || FINISH.mdf;
-  const W = (p) => [p[0] - L.W / 2, p[1] - L.H / 2, (L.D + L.Dt) / 4 - p[2]];   // layout (z from the front) -> world (front toward +z)
+  // (the build preview: only the steps so far; the one going in now slides into place from its side, tinted)
+  let OFF = [0, 0, 0], HI = false;
+  const reach = Math.max(L.W, L.H, L.D) * 0.75;
+  const ease = (t) => 1 - Math.pow(1 - Math.max(0, Math.min(1, t)), 3);
+  const shown = (key) => !asm || asm.show.has(key);
+  const place = (key) => {
+    HI = !!asm && asm.hi && asm.hi.includes(key);
+    const d = FROM[key], k = asm && asm.anim && asm.anim.keys.includes(key) && d ? (1 - ease(asm.anim.t)) * reach : 0;
+    OFF = d ? [d[0] * k, d[1] * k, d[2] * k] : [0, 0, 0];
+  };
+  const tint = (col) => (HI ? [...col.slice(0, 3).map((v, i) => v * 0.45 + TINT[i] * 0.55), col[3]] : col);
+  const W = (p) => [p[0] - L.W / 2 + OFF[0], p[1] - L.H / 2 + OFF[1], (L.D + L.Dt) / 4 - p[2] + OFF[2]];   // layout (z from the front) -> world (front toward +z)
   const opaque = [], clear = [], lines = [];
   const tri = (a, b, c, n, col) => {
     const v = [...a, ...n, ...col, ...b, ...n, ...col, ...c, ...n, ...col];
@@ -136,9 +160,12 @@ function build(L, mode, finish, paint) {
   };
   for (const p of L.parts) {
     if (p.kind === "dowel") continue;                         // (drawn round, below)
+    const key = partKey(p);
+    if (!shown(key) && !(key === "chamber" && asm && asm.done)) continue;
+    place(key);
     if (p.kind === "prism") {
       // a port bend's 45° strip: a triangle run along the bend
-      const col = [...F.inner, 1], a = p.p.map(W), b = p.p.map((q) => W(q.map((x, k) => x + p.ext[k])));
+      const col = tint([...F.inner, 1]), a = p.p.map(W), b = p.p.map((q) => W(q.map((x, k) => x + p.ext[k])));
       const n0 = norm(cross(sub3(a[1], a[0]), sub3(a[2], a[0])));
       tri(a[0], a[1], a[2], n0, col); tri(b[0], b[2], b[1], n0, col);
       for (let i = 0; i < 3; i++) { const j = (i + 1) % 3; quad(a[i], a[j], b[j], b[i], col); lines.push(a[i], b[i], [0.35, 0.25, 0.15, 0.45]); }
@@ -153,6 +180,7 @@ function build(L, mode, finish, paint) {
     else if (p.group === "air") { if (!see && !open) continue; col = [...AIR, 0.3]; }
     else if (p.group === "chamber") { if (!see) continue; col = [...(p.vented ? VENTED : SEALED), 0.07]; }
     else continue;
+    col = tint(col);
     const c = p.c.map(W);
     const hs = p.group === "wall" || p.group === "inner" ? holesIn(p.c) : [];
     const ax = hs.length ? axisOf(hs[0].into) : -1;
@@ -161,8 +189,9 @@ function build(L, mode, finish, paint) {
       if ((ax === 2 && i < 2) || (ax === 0 && (i === 4 || i === 5))) holedFace(f.map((k) => c[k]), hs, ax, col);
       else quad(c[f[0]], c[f[1]], c[f[2]], c[f[3]], col);
     });
-    if (edge) for (const [a, b] of EDGES) lines.push(c[a], c[b], edge);
+    if (edge) for (const [a, b] of EDGES) lines.push(c[a], c[b], HI ? [0.85, 0.75, 1, 0.9] : edge);
   }
+  place("");
   // surfaces of revolution: a profile [[r, h]] round an axis (h along it) at a centre. Square (sq): the same profile
   // swept round a square instead (r its half side, the sides along the box's edges; seg a multiple of 8, so the
   // corners are on it)
@@ -184,7 +213,8 @@ function build(L, mode, finish, paint) {
     }
   };
   const toW = (d) => [d[0], d[1], -d[2]];          // a direction, layout -> world
-  for (const s of L.subs) {
+  if (shown("subs")) place("subs");
+  for (const s of shown("subs") ? L.subs : []) {
     const at = W(s.at), dir = toW(s.dir), S = subParts(s), z = S.z;
     const { rf, rc, rs1, rs0, rdc, cd } = S;
     const ring = [], sq = !!s.sq;                                                                                     // (square: frame, surround, cone, cutout)
@@ -213,8 +243,9 @@ function build(L, mode, finish, paint) {
     lathe([[0.012, h], [0.012, h + 0.002], [0, h + 0.002]], at, dir, [0.05, 0.05, 0.06, 1], 18);                     // the pole vent
   }
   // the bracing: wooden dowels
-  for (const p of L.parts) if (p.kind === "dowel") lathe([[p.r, 0], [p.r, p.len]], W(p.at), toW(p.dir), [0.86, 0.72, 0.52, 1], 18);
-  for (const p of L.ports) for (const tb of p.tubes || []) {
+  if (shown("brace")) { place("brace"); for (const p of L.parts) if (p.kind === "dowel") lathe([[p.r, 0], [p.r, p.len]], W(p.at), toW(p.dir), tint([0.86, 0.72, 0.52, 1]), 18); }
+  place("port");
+  for (const p of shown("port") ? L.ports : []) for (const tb of p.tubes || []) {
     const at = W(tb.at), dir = toW(tb.dir), r = tb.r, w = 0.003;
     lathe([[r + w, 0], [r + w, tb.len], [r, tb.len], [r, 0]], at, dir, [0.16, 0.16, 0.18, 1], 32);
     lathe([[r, -0.002], [r + 0.022, -0.002], [r + 0.022, 0.001]], at, dir, [0.22, 0.22, 0.25, 1], 32);                  // the flare
@@ -222,7 +253,8 @@ function build(L, mode, finish, paint) {
   }
   // "FifTeam Media" engraved in the right side (the side the view first looks at), on every box: cut into the wood's
   // face, not a part of the box (not in its volume or the cut list), and nothing turns it off
-  const E = engraveMask();
+  place("right");
+  const E = shown("right") ? engraveMask() : null;
   if (E) {
     const span = Math.min(L.D, L.Dt), th = Math.min(L.H * 0.12, (span * 0.76) / E.ar), px = th / E.h;
     const z0 = (span - E.w * px) / 2, yTop = L.H / 2 + th / 2, x = L.W + 0.0004;
@@ -298,7 +330,7 @@ export function boxView(canvas, overlay) {
     if (!V.L || !canvas.isConnected) return;
     const { w, h, dpr, cw, ch } = size();
     if (cw < 2 || ch < 2) return;
-    if (V.dirty) { V.mesh = build(V.L, V.mode, V.finish, V.paint); V.dirty = false; V.uploaded = false; }
+    if (V.dirty) { V.mesh = build(V.L, V.mode, V.finish, V.paint, V.asm); V.dirty = false; V.uploaded = false; }
     const { mv, mvp } = matrices(w / h);
     if (gl) {
       gl.viewport(0, 0, w, h); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -406,6 +438,9 @@ export function boxView(canvas, overlay) {
       req();
     },
     setMode(m) { V.mode = m; V.dirty = true; req(); },
+    /** The build preview: { show: Set of the steps' parts so far, anim: { keys, t } (going in now, 0 to 1), hi: [keys]
+     * (tinted), done } or null (the whole box). */
+    setAssembly(a) { V.asm = a; V.dirty = true; req(); },
     setFinish(f, paint) { V.finish = f; if (paint) V.paint = paint; V.dirty = true; req(); },
     /** A picture of the box (as it's turned now) with its name under it, for sharing: a square JPEG. */
     snapshot(title = "", lines = []) {

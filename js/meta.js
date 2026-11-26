@@ -8,7 +8,8 @@
 import { api } from "./social.js";
 import { APP_VERSION } from "./app.js";
 import { deviceName } from "./device.js";
-import { sealedEmail } from "./account.js";
+import { sealedEmail, account } from "./account.js";
+import { installed } from "./gate.js";
 import { hubOn, hubRead, hubWrite } from "./hub.js";
 
 const PHONE = /^[a-z0-9]{6,16}$/, POST = /^\d{5,25}$/;
@@ -205,7 +206,7 @@ function cleanPresence(d) {
 const presenceStore = jsonStore("presence", "presence.json", "FifTeam who's online", cleanPresence, true);
 let lastBeat = 0, beating = false;
 export async function heartbeat() {
-  if (beating || document.visibilityState !== "visible" || !api.state.me || Date.now() - lastBeat < 4 * 60e3) return;
+  if (beating || document.visibilityState !== "visible" || !api.state.me || !api.state.name || !account() || !installed() || Date.now() - lastBeat < 4 * 60e3) return;
   beating = true;
   try {
     const d = await deviceName(), me = api.state.me, e = await sealedEmail();
@@ -217,6 +218,7 @@ export async function heartbeat() {
 export function initPresence() {
   setTimeout(heartbeat, 4000);
   addEventListener("fifteam-signed-in", () => { lastBeat = 0; setTimeout(heartbeat, 1500); });
+  addEventListener("fifteam-named", () => { lastBeat = 0; setTimeout(heartbeat, 800); });
   setInterval(heartbeat, 60e3);
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") heartbeat(); });
 }

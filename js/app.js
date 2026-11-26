@@ -2,7 +2,7 @@
 import { $, bus, toast, openLayers } from "./ui.js";
 import { player } from "./player.js";
 
-export const APP_VERSION = "2.26";
+export const APP_VERSION = "2.27";
 import * as store from "./store.js";
 import { initPlayer } from "./player.js";
 import { initLibrary, library, importFiles, openCode } from "./library.js";
@@ -17,6 +17,7 @@ import { initSocial } from "./social.js";
 import { initBan } from "./ban.js";
 import { initAccount } from "./account.js";
 import { initPresence } from "./meta.js";
+import { installGate, nameGate } from "./gate.js";
 
 const VIEWS = ["player", "library", "rebass", "social", "tones", "box"];
 function route() {
@@ -96,7 +97,11 @@ async function boot() {
   topBar();
   swipeBack();
   initBan();
-  initAccount();          // (signed in, or the sign-in screen over everything until then)
+  // (a browser tab: only how to install the app; it still registers its service worker, so the phone can install it)
+  if (!installGate()) { registerWorker(); return; }
+  // (signed in, or the sign-in screen over everything until then; then a username, if the account has none)
+  initAccount().then((ok) => { if (ok) nameGate(); });
+  addEventListener("fifteam-signed-in", () => nameGate());
   // (the download page offers "Open" rather than "Download" on a phone that has the app)
   try { if (matchMedia("(display-mode: standalone)").matches || navigator.standalone) localStorage.setItem("fifteam-installed", "1"); } catch {}
   addEventListener("appinstalled", () => { try { localStorage.setItem("fifteam-installed", "1"); } catch {} });
@@ -128,8 +133,11 @@ async function boot() {
       }
     } catch { toast("Couldn't open the shared file"); }
   }
-  // updates: a new version installs itself in the background (checked on every open and every half hour); when it takes
-  // over, the app refreshes into it at once, unless music is playing or a rebass is running (then: next time it opens)
+  registerWorker();
+}
+// updates: a new version installs itself in the background (checked on every open and every half hour); when it takes
+// over, the app refreshes into it at once, unless music is playing or a rebass is running (then: next time it opens)
+function registerWorker() {
   if ("serviceWorker" in navigator && location.protocol !== "file:") {
     const hadController = !!navigator.serviceWorker.controller;
     navigator.serviceWorker.register("sw.js").then((reg) => {
@@ -139,7 +147,7 @@ async function boot() {
     let reloading = false;
     navigator.serviceWorker.addEventListener("controllerchange", () => {
       if (!hadController || reloading) return;
-      const busy = player.playing || !$("rb-busy").hidden;
+      const busy = player.playing || !!($("rb-busy") && !$("rb-busy").hidden);
       if (busy) { toast("FifTeam Media has an update. It switches over next time you open it.", 5000); return; }
       reloading = true; location.reload();
     });

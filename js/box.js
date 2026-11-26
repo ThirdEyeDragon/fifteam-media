@@ -5,7 +5,7 @@
 // watch out for, the cut list and how to wire the subs. Designs can be saved.
 import { $, toast, bus, openSheet, closeSheet } from "./ui.js";
 import * as M from "./boxmath.js";
-import { boxView } from "./box3d.js";
+import { boxView, partKey } from "./box3d.js";
 import { SUBS, subFrom, subName, subKey, findSub } from "./subs.js";
 import { premiumNow, requirePremium, openPremium } from "./premium.js";
 
@@ -538,6 +538,7 @@ function niceStep(x) { const p = Math.pow(10, Math.floor(Math.log10(x))), m = x 
 // ---------------------------------------------------------------------------------------------------- cut list, wiring, saved
 function paintCut() {
   const box = $("bx-cut"); if (!box || !res) return;
+  if (asm.on) { const was = asm.steps.map((x) => x.title).join(); asm.steps = assemblySteps(res.L); if (asm.steps.map((x) => x.title).join() !== was) asm.step = Math.min(asm.step, asm.steps.length - 1); showStep(asm.step, false); paintAssembly(); }
   const L = res.L;
   box.replaceChildren();
   const tb = h("div", "bx-cuts");
@@ -910,7 +911,11 @@ function buildScreen(root) {
     try { await navigator.clipboard.writeText(text); toast("Build sheet copied"); }
     catch { try { await navigator.share({ text }); } catch { toast("Couldn't copy it on this phone"); } }
   };
-  sC.append(cut, copy);
+  // the build preview: the box going together piece by piece, in the 3D view at the top
+  const prev = h("button", "btn primary block bx-prevbtn"); prev.type = "button"; prev.id = "bx-preview"; prev.append(icon("i-box"), "Show preview");
+  prev.onclick = () => (asm.on ? stopAssembly() : startAssembly());
+  const asmBox = h("div", "bx-asm"); asmBox.id = "bx-asm"; asmBox.hidden = true;
+  sC.append(cut, prev, asmBox, copy);
   root.append(sC);
 
   // wiring
@@ -1025,6 +1030,88 @@ async function shareBox() {
   setTimeout(() => shareBoxPost({ img, box: encodeBox(), text: `${title} · ${lines[0]}` }), 250);
 }
 
+// ---------------------------------------------------------------------------------------------------- the build preview
+// The box put together piece by piece in the 3D view (pinned at the top while the steps are read): every step's pieces
+// slide into place in turn, the new ones tinted; tap a step to see it, or play them all.
+const asm = { on: false, step: 0, steps: [], raf: 0, playing: false };
+/** The steps, from the layout: what goes in, in order, and what to do (with the cut list's sizes). */
+function assemblySteps(L) {
+  const has = (k) => L.parts.some((p) => partKey(p) === k) || (k === "port" && L.ports.some((p) => (p.tubes || []).length));
+  const cutOf = (re) => L.cut.find((c) => re.test(c.name));
+  const size = (c) => (c ? `${cutLen(c.a)} × ${cutLen(c.b)}${c.b2 ? ` / ${cutLen(c.b2)}` : ""}` : "");
+  const bp = st.type === "bp4" || st.type === "bp6", out = [];
+  const add = (keys, title, text) => { if (keys.some(has)) out.push({ keys, title, text }); };
+  add(["bottom"], "The bottom", `Lay the bottom (${size(cutOf(/^Bottom/))}) on a flat bench. Everything else sits on it, so check it's square.`);
+  add(["back"], "The back", `Glue and screw the back (${size(cutOf(/^Back/))}) along the bottom's back edge, standing straight up${L.Dt < L.D ? " (its edges are beveled for the wedge)" : ""}.`);
+  add(["left", "right"], "The sides", `The two sides (${size(cutOf(/^Sides/))}) between the front and back edges, on the bottom. Glue every joint; screws every 4 to 6″.`);
+  add(["divider"], bp ? "The divider (the baffle)" : "The divider", `The divider${(L.cut.find((c) => /^Divider/.test(c.name)) || {}).n > 1 ? "s" : ""} (${size(cutOf(/^Divider/))}): ${st.layers > 1 ? `${st.layers} layers glued together first, then ` : ""}stood in where the diagram shows, glued to the bottom, back and sides. The subs mount on it${L.hall ? ", facing each other" : ""}.`);
+  if (has("port")) {
+    const p = L.ports[0], slot = p && p.kind === "slot";
+    add(["port"], "The port", slot ? `The port wall${L.ports.length > 1 || (p.panels || []).length > 1 ? "s" : ""} (${L.cut.filter((c) => /port wall/i.test(c.name)).map(size).join(", ")}), ${cutLen(p.sw)} from the side, glued to the bottom${p.bend ? `, bent where it turns${L.parts.some((x) => x.kind === "prism") ? ", with a 45° strip in each bend's corner" : ""}` : ""}. It tunes to ${p.fb.toFixed(0)} Hz.`
+      : `The port tube${(p.n || 1) > 1 ? "s" : ""} (${cutLen(p.dia)} across, ${cutLen(p.len)} long) through ${p.inner ? "the divider" : "the front"}'s hole${(p.n || 1) > 1 ? "s" : ""}, glued and flush.`);
+  }
+  add(["brace"], "The bracing", `The dowels (${L.bracing.count}, ${cutLen(2 * L.bracing.r)} round) glued into shallow holes in both panels they join, where the diagram shows.`);
+  add(["front"], bp ? "The front" : st.layers > 1 ? `The front (the baffle, ${st.layers} layers)` : "The front (the baffle)", `${!bp && st.layers > 1 ? `Glue the ${st.layers} layers together and clamp them first. ` : ""}The front (${size(cutOf(/^Front/))}) with the ${bp ? "port opening" : `sub cutout${st.count > 1 ? "s" : ""}${L.ports.some((p) => !p.inner) ? " and the port opening" : ""}`} already cut, glued and screwed on.`);
+  add(["top"], "The top", `Seal every seam inside with glue or caulk, run the speaker wire to the terminal, then the top (${size(cutOf(/^Top/))}) on, glued and screwed.`);
+  add(["subs"], "The subs", `Wire the terminal to the subs (see Wiring), then each sub into its cutout${bp ? " on the divider" : ""} with its gasket, screws snugged evenly in a star pattern.`);
+  return out;
+}
+function startAssembly(step = 0) {
+  if (!view || !res) return;
+  asm.on = true; asm.steps = assemblySteps(res.L);
+  // (the 3D view stays at the top while the steps are read)
+  if (!st.pin) { st.pin = true; paintAll(); }
+  showStep(step, true);
+  paintAssembly();
+}
+function stopAssembly() {
+  asm.on = false; asm.playing = false; cancelAnimationFrame(asm.raf);
+  if (view) view.setAssembly(null);
+  paintAssembly();
+}
+/** One step: everything before it in place, its pieces sliding in (or straight in place, without the animation). */
+function showStep(i, animate = true) {
+  if (!asm.on || !view) return;
+  asm.step = Math.max(0, Math.min(asm.steps.length - 1, i));
+  const show = new Set(asm.steps.slice(0, asm.step + 1).flatMap((x) => x.keys)), keys = asm.steps[asm.step].keys, done = asm.step === asm.steps.length - 1;
+  cancelAnimationFrame(asm.raf);
+  const t0 = performance.now(), dur = 900;
+  const frame = (now) => {
+    const t = animate ? (now - t0) / dur : 1;
+    view.setAssembly({ show, anim: { keys, t: Math.min(1, t) }, hi: keys, done });
+    if (t < 1) asm.raf = requestAnimationFrame(frame);
+    else if (asm.playing) asm.raf = setTimeout(() => { if (!asm.playing) return; if (asm.step < asm.steps.length - 1) { showStep(asm.step + 1); paintAssembly(); } else { asm.playing = false; paintAssembly(); } }, 700);
+  };
+  asm.raf = requestAnimationFrame(frame);
+}
+function paintAssembly() {
+  const box = $("bx-asm"), btn = $("bx-preview"); if (!box || !btn) return;
+  btn.lastChild.textContent = asm.on ? "Hide preview" : "Show preview";
+  box.hidden = !asm.on;
+  if (!asm.on) { box.replaceChildren(); return; }
+  box.replaceChildren();
+  const cur = asm.steps[asm.step];
+  box.append(h("p", "label", `Putting it together: step ${asm.step + 1} of ${asm.steps.length}`));
+  const card = h("div", "bx-asmcard"); card.append(h("b", "", `${asm.step + 1}. ${cur.title}`), h("p", "", warnUnits(cur.text)));
+  const nav = h("div", "row bx-asmnav");
+  const back = h("button", "btn small", "‹ Back"), play = h("button", "btn small", asm.playing ? "Pause" : "Play all"), next = h("button", "btn small primary", asm.step === asm.steps.length - 1 ? "Done" : "Next ›");
+  for (const b of [back, play, next]) b.type = "button";
+  back.disabled = asm.step === 0;
+  back.onclick = () => { asm.playing = false; showStep(asm.step - 1); paintAssembly(); };
+  next.onclick = () => { asm.playing = false; if (asm.step === asm.steps.length - 1) { stopAssembly(); toast("That's the whole box"); return; } showStep(asm.step + 1); paintAssembly(); };
+  play.onclick = () => { asm.playing = !asm.playing; if (asm.playing) showStep(asm.playing && asm.step === asm.steps.length - 1 ? 0 : asm.step); paintAssembly(); };
+  nav.append(back, play, next);
+  card.append(nav);
+  // every step, to pick the one you're on
+  const list = h("ol", "bx-asmlist");
+  asm.steps.forEach((x, i) => {
+    const li = h("li", ""); const b = h("button", "bx-asmstep" + (i === asm.step ? " on" : i < asm.step ? " done" : ""), x.title); b.type = "button";
+    b.onclick = () => { asm.playing = false; showStep(i); paintAssembly(); };
+    li.append(b); list.append(li);
+  });
+  box.append(card, h("p", "label", "Pick the step you're on"), list);
+}
+
 // ---------------------------------------------------------------------------------------------------- the two categories
 // Box designer (all of the above) and My system (what you're running, wired: system.js, loaded the first time it's opened)
 const CAT = "fifteam-box-cat";
@@ -1063,7 +1150,7 @@ function keepUnderBar() {
   fit();
 }
 
-export const box = { get state() { return st; }, get result() { return res; }, get view() { return view; }, design, run, sheet, quickBuild, applySub, encode: encodeBox, openShared };
+export const box = { assembly: asm, startAssembly, stopAssembly, showStep, get state() { return st; }, get result() { return res; }, get view() { return view; }, design, run, sheet, quickBuild, applySub, encode: encodeBox, openShared };
 let built = false;
 function open() {
   if (built) { view && view.redraw(); paintChart(); if (pendingShare) { const c = pendingShare; pendingShare = null; openShared(c); } return; }

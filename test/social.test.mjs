@@ -150,7 +150,8 @@ const text = (sel) => ev(`[...document.querySelectorAll(${JSON.stringify(sel)})]
 const shot = async (name) => { if (!process.env.SHOTS) return; const r = await send("Page.captureScreenshot", { format: "png" }); writeFileSync(join(process.env.SHOTS, name + ".png"), Buffer.from(r.result.data, "base64")); };
 
 // creating an account through the sign-in screen: email and password; the link in the email (tapped); Continue
-async function signUp(br, email, pass = "bass-head-2026") {
+const gateNames = {};
+async function signUp(br, email, pass = "bass-head-2026", name = email.split("@")[0].replace(/^./, (c) => c.toUpperCase())) {
   const wait = async (expr, ms, what) => { const t = Date.now(); while (Date.now() - t < ms) { if (await br.ev(expr).catch(() => false)) return true; await sleep(200); } check(false, "timed out waiting for " + what); return false; };
   await wait(`!!document.getElementById('acct')`, 8000, "the sign-in screen");
   await br.ev(`[...document.querySelectorAll('#acct .acct-link')].find(x => x.textContent.includes('Create an account')).click(), 1`); await sleep(200);
@@ -162,7 +163,14 @@ async function signUp(br, email, pass = "bass-head-2026") {
   const early = await br.ev(`document.querySelector('#acct .acct-err').textContent`);
   fb.tapLink(email);
   await br.ev(`document.querySelector('#acct form').requestSubmit(), 1`);
-  await wait(`!document.getElementById('acct') && !document.getElementById('app').inert`, 15000, "signed in");
+  await wait(`!document.getElementById('acct') && !!document.getElementById('gate-name')`, 15000, "signed in (then the username screen)");
+  const gate = (v) => br.ev(`(() => { const f = document.querySelector('#gate-name form'); f.querySelector('input').value = ${JSON.stringify(v)}; f.requestSubmit(); return 1; })()`);
+  await gate("a"); await sleep(300);
+  const tooShort = await br.ev(`document.querySelector('#gate-name .acct-err').textContent`);
+  const appShut = await br.ev(`document.getElementById('app').inert`);
+  await gate(name);
+  await wait(`!document.getElementById('gate-name') && !document.getElementById('app').inert`, 15000, "the username picked, the app open");
+  gateNames[email] = { tooShort, appShut, kept: await br.ev(`localStorage.getItem('fifteam-social-name')`) };
   return early;
 }
 
@@ -192,12 +200,10 @@ try {
   await until(`/cdn\.discordapp\.com.*avatar\.jpg/.test(document.querySelector('#so-body .so-post .so-av').style.backgroundImage)`, 8000, "Bob's picture on his post (from his profile)");
   console.log("Bob's picture on his older post:", await ev(`/avatar\.jpg/.test(document.querySelector('#so-body .so-post .so-av').style.backgroundImage)`));
 
-  // the username
-  const setName = (v) => ev(`(() => { const f = document.querySelector('#so-body .so-nameform'); f.querySelector('input').value = ${JSON.stringify(v)}; f.requestSubmit(); return 1; })()`);
-  await setName("a"); await sleep(200);
-  console.log("too short a name:", await text("#so-body .so-you .set-err"));
-  await setName("Alice"); await sleep(300);
-  console.log("name set:", await text("#so-body .so-you"), "| kept:", await ev(`localStorage.getItem('fifteam-social-name')`));
+  // the username: picked on its own screen straight after the account is made (the app shut until then)
+  const gn = gateNames["alice@example.com"] || {};
+  console.log("username screen:", JSON.stringify(gn), "| post box:", await text("#so-body .so-pill"));
+  check(gn.appShut === true && /2 to 24 letters/.test(gn.tooShort || "") && gn.kept === "Alice", "a new account picks its username before anything else (too short refused)");
   check((await text("#so-body .so-pill")) === "What's on your mind, Alice?", "username set (it greets you on the post box)");
 
   // a profile picture (goes with each post)
@@ -810,6 +816,7 @@ try {
   check(ed.text === "Fresh one (edited) @everyone" && ed.edited && /edited/.test(edCard), "a post edited after it went up (marked edited)");
 
   // a new username: on this phone's older posts too (the post itself still says who it was sent as)
+  const setName = (v) => ev(`(() => { const f = document.querySelector('#so-body .so-nameform'); f.querySelector('input').value = ${JSON.stringify(v)}; f.requestSubmit(); return 1; })()`);
   const rename = async (v) => {
     await ev(`document.querySelector('#so-body .so-avbtn').click(), 1`); await sleep(400);
     await ev(`[...document.querySelectorAll('#sheet-panel .pf-btns .btn')].find(b => b.textContent === 'Change username').click(), 1`); await sleep(300);

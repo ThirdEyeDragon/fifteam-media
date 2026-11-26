@@ -58,21 +58,21 @@
   },
   "screenshots": [
     {
-      "src": "get/shots/rebass.jpg",
+      "src": "get/shots/rebass.jpg?v=227",
       "sizes": "780x1688",
       "type": "image/jpeg",
       "form_factor": "narrow",
       "label": "Rebass any song"
     },
     {
-      "src": "get/shots/player.jpg",
+      "src": "get/shots/player.jpg?v=227",
       "sizes": "780x1688",
       "type": "image/jpeg",
       "form_factor": "narrow",
       "label": "Your music"
     },
     {
-      "src": "get/shots/social.jpg",
+      "src": "get/shots/social.jpg?v=227",
       "sizes": "780x1688",
       "type": "image/jpeg",
       "form_factor": "narrow",
