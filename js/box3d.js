@@ -109,6 +109,15 @@ function build(L, mode, finish, paint) {
     }
   };
   for (const p of L.parts) {
+    if (p.kind === "dowel") continue;                         // (drawn round, below)
+    if (p.kind === "prism") {
+      // a port bend's 45° strip: a triangle run along the bend
+      const col = [...F.inner, 1], a = p.p.map(W), b = p.p.map((q) => W(q.map((x, k) => x + p.ext[k])));
+      const n0 = norm(cross(sub3(a[1], a[0]), sub3(a[2], a[0])));
+      tri(a[0], a[1], a[2], n0, col); tri(b[0], b[2], b[1], n0, col);
+      for (let i = 0; i < 3; i++) { const j = (i + 1) % 3; quad(a[i], a[j], b[j], b[i], col); lines.push(a[i], b[i], [0.35, 0.25, 0.15, 0.45]); }
+      continue;
+    }
     let col, edge = null;
     if (p.group === "wall") {
       if (open && p.name === "top") continue;
@@ -171,6 +180,8 @@ function build(L, mode, finish, paint) {
     disc(0.012, mr * 0.96, h, h - S.plate, plateC); h -= S.plate;                                                      // back plate
     lathe([[0.012, h], [0.012, h + 0.002], [0, h + 0.002]], at, dir, [0.05, 0.05, 0.06, 1], 18);                     // the pole vent
   }
+  // the bracing: wooden dowels
+  for (const p of L.parts) if (p.kind === "dowel") lathe([[p.r, 0], [p.r, p.len]], W(p.at), toW(p.dir), [0.86, 0.72, 0.52, 1], 18);
   for (const p of L.ports) for (const tb of p.tubes || []) {
     const at = W(tb.at), dir = toW(tb.dir), r = tb.r, w = 0.003;
     lathe([[r + w, 0], [r + w, tb.len], [r, tb.len], [r, 0]], at, dir, [0.16, 0.16, 0.18, 1], 32);

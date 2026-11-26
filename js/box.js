@@ -31,6 +31,7 @@ function defaults() {
     finish: "mdf", paint: "#7a4bff", view: "solid", chart: "spl", pin: true,
     style4: "std", style6: "std",                    // bandpass styles: standard (side by side), series (6th), hallway
     lim: { w: 0, h: 0, d: 0 },                       // the space you have (0: no limit)
+    gap: 1 * IN, braceMode: "std", round: true,      // space between the subs' frames; dowel bracing; rounded port bends
     sub: null, est: [], quick: null,                 // a sub from the list (its brand and model), and what its maker doesn't publish
     wire: { dual: true, ohms: 4, amp: 1 },
     fu: { "drv.vas": "cm", "drv.sd": "cm" },          // fields with their own units (as spec sheets give them: litres, cm²)
@@ -211,13 +212,13 @@ function design(type = st.type, quiet = false) {
   // the ports: sized for the air flow at this power (after a first look)
   // (from the same neutral ports every time, so the same sub always gets the same design)
   if (type !== "sealed") {
-    for (const P of [st.port, st.port2]) { P.auto = true; if (P.kind === "round" && P.n > 1) P.kind = "slot"; P.w = 1.5 * IN; P.dia = 4 * IN; P.n = 1; }
-    compute(); sizePorts(true, portRule);
+    for (const P of [st.port, st.port2]) { P.auto = true; if (P.autoRound) { P.kind = "slot"; P.autoRound = false; } P.w = 1.5 * IN; P.dia = 4 * IN; P.n = 1; }
+    compute(true); sizePorts(true, portRule);
   }
   grown = false;
   let moved = reshape();
   // (a port along a hallway's top grows with the middle chamber's width: sized again for the new box, and shaped again)
-  if (type !== "sealed") { compute(); sizePorts(true, portRule); moved = reshape() || moved; compute(); sizePorts(true, portRule, true); compute(); }
+  if (type !== "sealed") moved = finishPorts() || moved;
   if (grown) toast(`${st.count > 1 ? "These subs need" : "This sub needs"} a bigger box than that to fit: ${fmt("vol", st.vbS)}, Qtc ${st.qtc.toFixed(2)}`, 4500);
   else if (sanity().length) toast("Check your sub's numbers first: one looks like the wrong unit (see Your sub)", 4500);
   else if (!quiet) toast(M.misfits(res.L) ? "Designed, but something doesn't fit: see the notes under How it plays" : moved ? "Designed for this sub, and re-sized so it all fits" : "Designed for this sub", 3500);
@@ -231,7 +232,7 @@ function reshape() {
   for (let k = 0; k < 7; k++) {
     const f = M.shapeBox(spec(), st.solve, ...targets(), st.lim);
     if (f) { st.w = f.w; st.h = f.h; st.d = f.d; if (st.shape === "wedge") st.dt = f.dt; if (f.split != null) st.split = f.split; if (f.grow) setTargets(f.grow); }
-    const R = compute();
+    const R = compute(true);
     if (!M.misfits(R.L) || !R.L.ports.length) break;
     let shrunk = false;
     R.L.ports.forEach((p) => {
@@ -241,15 +242,24 @@ function reshape() {
       shrunk = true;
     });
     if (!shrunk) break;
-    if (k === 6) { const g = M.shapeBox(spec(), st.solve, ...targets(), st.lim); if (g) { st.w = g.w; st.h = g.h; st.d = g.d; if (st.shape === "wedge") st.dt = g.dt; if (g.split != null) st.split = g.split; } compute(); }
+    if (k === 6) { const g = M.shapeBox(spec(), st.solve, ...targets(), st.lim); if (g) { st.w = g.w; st.h = g.h; st.d = g.d; if (st.shape === "wedge") st.dt = g.dt; if (g.split != null) st.split = g.split; } compute(true); }
   }
   return before !== [st.w, st.h, st.d].join();
+}
+/** The ports' last sizing for the box as it's now shaped (a hallway's top port grows with the middle chamber, say),
+ * then their last look; if that moved something so it no longer fits, the box is shaped once more round it. */
+function finishPorts() {
+  compute(true); sizePorts(true, portRule); let moved = reshape(); compute(true); sizePorts(true, portRule, true);
+  if (M.misfits(compute(true).L)) { moved = reshape() || moved; compute(true); sizePorts(true, portRule, true); }
+  compute(true);
+  return moved;
 }
 /** Port sizes for the air flow at the power used: by default under 26 m/s, between 10 and 24 in² per ft³ (a quick
  * build can ask for more air, or less). The area is shared between a port's copies (a hallway's two rear ports). */
 let portRule = { v: 26, lo: 10, hi: 24 };
 function sizePorts(quiet, rule = portRule, capOnly = false) {
-  const R = res || compute();
+  // (capOnly: the finished box's last look; only then may a too-small slot become round tubes)
+  const R = res || compute(true);
   R.L.ports.forEach((p, i) => {
     const P = p.key === "port2" ? st.port2 : st.port;
     // (capOnly: kept as it is, only made bigger if it's too small to reach the tuning)
@@ -261,9 +271,10 @@ function sizePorts(quiet, rule = portRule, capOnly = false) {
     while (S < top && M.lenFor(V, S, one(S), p.fbWant) < p.through + 2 * IN) S *= 1.1;
     S /= p.copies;
     // (a slot under ⅜″ is no good to build: a port that small is a round tube, or a few)
-    if (P.kind === "slot" && S / p.span < 0.3 * IN) { P.kind = "round"; P.n = Math.max(1, Math.min(4, Math.round(S / (Math.PI * (2 * IN) ** 2)))); }
+    if (capOnly && P.kind === "slot" && S / p.span < 0.3 * IN) { P.autoRound = true; P.kind = "round"; P.n = Math.max(1, Math.min(4, Math.round(S / (Math.PI * (2 * IN) ** 2)))); }
     // (a hallway's top port: no deeper than 30% of the inside's height, or it crowds the subs off the dividers)
-    if (P.kind === "slot") P.w = p.top ? Math.max(0.3 * IN, Math.min(S / p.span, 0.3 * R.L.Hi, R.L.topRoom)) : S / p.span;
+    if (P.kind === "slot") P.w = p.top ? Math.max(0.3 * IN, Math.min(S / p.span, 0.3 * R.L.Hi)) : S / p.span;
+    if (p.center) P.w = Math.min(P.w, Math.max(0.5 * IN, p.xb - p.xa - 2 * R.L.t - 3 * IN));   // (a hallway's: room for the cones each side)
     else P.dia = Math.max(1.25 * IN, 2 * Math.sqrt(S / P.n / Math.PI));
   });
   if (!quiet) { toast("Port sized for clean air flow"); schedule(); }
@@ -294,7 +305,7 @@ function quickBuild(key) {
   portRule = o.rule || { v: 26, lo: 10, hi: 24 };
   st.port.kind = st.port2.kind = "slot";
   design(o.type, true);
-  if (o.type === "ported" && o.vol !== 1) { st.vbP = M.ventedVolumeFor(d, st.count, st.fbP) * o.vol; compute(); sizePorts(true, portRule); reshape(); }
+  if (o.type === "ported" && o.vol !== 1) { st.vbP = M.ventedVolumeFor(d, st.count, st.fbP) * o.vol; finishPorts(); }
   portRule = { v: 26, lo: 10, hi: 24 };
   paintAll();
   toast(`${q[1]}: ${res.L.net.map((v) => fmt("vol", v)).join(" + ")}${res.L.ports.length ? " at " + res.L.ports.map((p) => p.fb.toFixed(0)).join("/") + " Hz" : ""}`, 3500);
@@ -312,14 +323,14 @@ function spec() {
   const P1 = { ...st.port, fb: st.type === "ported" ? st.fbP : st.type === "bp4" ? st.fb4 : st.ff6 };
   const P2 = { ...st.port2, fb: st.fr6 };
   return {
-    type: st.type, series: isSeries(), style: styleOf(), shape: st.shape, w: st.w, h: st.h, d: st.d, dt: Math.min(st.dt, st.d), t: st.t, dbl: st.dbl, brace: st.brace, count: st.count,
+    type: st.type, series: isSeries(), style: styleOf(), shape: st.shape, gap: st.gap, braceMode: st.braceMode, round: st.round, power: st.power, w: st.w, h: st.h, d: st.d, dt: Math.min(st.dt, st.d), t: st.t, dbl: st.dbl, brace: st.brace, count: st.count,
     sub: { size: st.drv.size, cutout: st.drv.cutout, depth: st.drv.depth, disp: st.drv.disp, pe: st.drv.pe, xmax: st.drv.xmax }, port: P1, port2: P2, split: st.split,
   };
 }
 
 // ---------------------------------------------------------------------------------------------------- working it out
 let res = null;
-function compute() {
+function compute(lite = false) {
   const drv = drvNow();
   let B = spec(), fitFail = false;
   if (!st.fixed) {
@@ -328,7 +339,7 @@ function compute() {
     if (f) { B = f; st[st.solve] = f[st.solve]; if (st.solve === "d" && st.shape === "wedge") st.dt = f.dt; if (f.split != null) st.split = f.split; }
     else fitFail = true;
   }
-  const L = M.layout(B);
+  const L = M.layout(B, false, lite);                                // (lite: working it out, no dowels placed yet)
   L.ports.forEach((p) => { const P = p.key === "port2" ? st.port2 : st.port; if (P.auto) P.len = p.len; });
   const sim = M.simulate({ drv, count: st.count, power: st.power, type: st.type, series: isSeries(), V: L.net, ports: L.ports.map((p) => ({ S: p.S, S1: p.S1, len: p.len })), ql: st.ql }, FR);
   const tunes = L.ports.map((p) => p.fb);
@@ -346,8 +357,18 @@ const schedule = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; 
 function run() {
   const R = compute();
   persist();
-  paintFields(); paintDesign(); paintCheck(); paint3D(); paintResults(); paintCut(); paintWiring(); paintPorts();
+  paintFields(); paintDesign(); paintCheck(); paint3D(); paintResults(); paintCut(); paintWiring(); paintPorts(); paintBracing();
   return R;
+}
+
+/** What the bracing does (or would): the dowels, and the longest span any panel is left with. */
+function paintBracing() {
+  const el = $("bx-brace-info"); if (!el || !res) return;
+  const b = res.L.bracing;
+  el.textContent = b.mode === "off"
+    ? `The longest unsupported panel span is ${cutLen(b.span)}; at ${st.power} W this wood is good for about ${cutLen(b.Lmax)}.${b.span > b.Lmax ? " Brace it, or the panels flex and you lose output." : " No bracing needed."}`
+    : b.count ? `${b.count} dowel${b.count > 1 ? "s" : ""} (${cutLen(2 * b.r)} round), so no panel spans more than about ${cutLen(b.Lmax)} unsupported${b.dropped ? `; ${b.dropped} had nowhere clear to go` : ""}. Their room is taken out of the volume.`
+    : `No panel spans more than ${cutLen(b.Lmax)}: no bracing needed.`;
 }
 
 // ---------------------------------------------------------------------------------------------------- the 3D view
@@ -517,7 +538,7 @@ function paintCut() {
   const tb = h("div", "bx-cuts");
   for (const c of L.cut) {
     const r = h("div", "bx-cutrow");
-    const n = h("div", "bx-cutn"); n.append(h("b", "", c.name), c.note ? h("small", "", c.note) : "");
+    const n = h("div", "bx-cutn"); n.append(h("b", "", warnUnits(c.name)), c.note ? h("small", "", warnUnits(c.note)) : "");
     r.append(h("span", "bx-cutq", `${c.n}×`), n, h("span", "bx-cutd", `${cutLen(c.a)} × ${cutLen(c.b)}${c.b2 ? ` / ${cutLen(c.b2)}` : ""}`));
     tb.append(r);
   }
@@ -645,8 +666,9 @@ function paintAll() {
   $("bx-paint-row").hidden = st.finish !== "paint"; $("bx-paint").value = st.paint;
   document.querySelectorAll("#bx-swatches .bx-sw").forEach((b) => b.classList.toggle("on", b.dataset.c.toLowerCase() === st.paint.toLowerCase()));
   paintStyle(); paintSubName();
+  document.querySelectorAll("#bx-brace button").forEach((b) => b.classList.toggle("on", b.dataset.k === st.braceMode));
+  $("bx-round").checked = st.round;
   document.querySelectorAll("#bx-quick .chip").forEach((c) => c.classList.toggle("on", c.dataset.k === st.quick));
-  const q = QUICK.find((x) => x[0] === st.quick); $("bx-quick-info").textContent = q ? q[2] : "Pick one and the whole box is designed for your sub: type, volume, tuning, port and size.";
   run();
 }
 
@@ -694,7 +716,7 @@ function buildScreen(root) {
 
   // the sub
   const sD = section("bx-sec-sub", "i-bass", "Your sub", "Its Thiele/Small numbers, from the spec sheet");
-  const pick = h("button", "btn primary block bx-pick"); pick.type = "button"; pick.append(icon("i-search"), `Choose your sub (${SUBS.length} real subs)`);
+  const pick = h("button", "btn primary block bx-pick"); pick.type = "button"; pick.append(icon("i-search"), "Choose your sub");
   pick.onclick = () => openSubList();
   const nameLine = h("div", "bx-subname"); nameLine.id = "bx-subname";
   const pre = chips("bx-presets", [["8", "Typical 8″"], ["10", "10″"], ["12", "12″"], ["15", "15″"], ["18", "18″"], ["custom", "My own"]], (k) => {
@@ -725,7 +747,6 @@ function buildScreen(root) {
   // the design
   const sG = section("bx-sec-design", "i-spark", "Design", "Build it for me, or set the volume and tuning yourself");
   const quick = chips("bx-quick", QUICK.map((q) => [q[0], q[1]]), (k) => quickBuild(k));
-  const qi = h("p", "status bx-info"); qi.id = "bx-quick-info";
   const dz = h("div", "stack bx-design"); dz.id = "bx-design";
   const blk = (t, ...kids) => { const b = h("div", "bx-dblock"); b.dataset.t = t; b.append(...kids); return b; };
   const tgt = (el) => { el.classList.add("bx-target"); return el; };
@@ -756,7 +777,7 @@ function buildScreen(root) {
   );
   const rec = h("button", "btn primary block", "Recommended for this sub"); rec.type = "button"; rec.prepend(icon("i-spark"));
   rec.onclick = () => { st.quick = null; design(); paintAll(); };
-  sG.append(h("span", "label", "Build it for me"), quick, qi, h("span", "label", "Or set it yourself"), dz, rec);
+  sG.append(h("span", "label", "Build it for me"), quick, h("span", "label", "Or set it yourself"), dz, rec);
   root.append(sG);
 
   // the measurements
@@ -798,7 +819,14 @@ function buildScreen(root) {
   // the space you have: the box is kept inside it (0: no limit)
   const reshapeSoon = (() => { let tm = 0; return () => { clearTimeout(tm); tm = setTimeout(() => { if (!st.fixed) { reshape(); paintAll(); } }, 600); }; })();
   const space = grid(3, field("lim.w", "Max width", "len", { zero: true, on: reshapeSoon }), field("lim.h", "Max height", "len", { zero: true, on: reshapeSoon }), field("lim.d", "Max depth", "len", { zero: true, on: reshapeSoon }));
-  sM.append(un, shp, fixedSw, solveRow, dims, h("span", "label", "The space you have (optional: 0 is no limit)"), space, h("span", "label", "Wood thickness"), thick, grid(2, field("t", "Wood", "len"), field("brace", "Bracing (volume)", "vol", { zero: true })), dbl, splitRow, h("span", "label", "Finish (for the 3D view)"), fin, paintRow);
+  const gapF = grid(2, field("gap", "Space between subs", "len", { zero: true, on: reshapeSoon }));
+  const brace = seg("bx-brace", [["off", "No bracing"], ["std", "Braced"], ["heavy", "Heavy (SPL)"]], st.braceMode);
+  brace.onclick = (e) => { const b = e.target.closest("button"); if (!b) return; st.braceMode = b.dataset.k; paintAll(); };
+  const braceInfo = h("small", "status bx-braceinfo"); braceInfo.id = "bx-brace-info";
+  const roundSw = sw("Round the port's bends", "A 45° strip in each bend, so the air never turns a square 90°: smoother, quieter", st.round, (on) => { st.round = on; paintAll(); });
+  roundSw.querySelector("input").id = "bx-round";
+  sM.append(un, shp, fixedSw, solveRow, dims, h("span", "label", "The space you have (optional: 0 is no limit)"), space, gapF, h("span", "label", "Wood thickness"), thick, grid(2, field("t", "Wood", "len"), field("brace", "Other bracing (volume)", "vol", { zero: true })), dbl,
+    h("span", "label", "Bracing"), brace, braceInfo, roundSw, splitRow, h("span", "label", "Finish (for the 3D view)"), fin, paintRow);
   root.append(sM);
 
   // the ports
@@ -807,7 +835,7 @@ function buildScreen(root) {
   for (const key of ["port", "port2"]) {
     const el = h("div", "stack-sm bx-pblock"); el.id = "bx-" + key;
     const kind = seg(null, [["slot", "Slot"], ["round", "Round"]], st[key].kind);
-    kind.onclick = (e) => { const b = e.target.closest("button"); if (!b || b.dataset.k === st[key].kind) return; st[key].kind = b.dataset.k; compute(); sizePorts(true); const moved = reshape(); if (M.misfits(res.L)) toast(b.dataset.k === "round" ? "A round port that long can't fit straight here: a slot port can bend" : "The port still doesn't fit: see the notes under How it plays", 4000); else if (moved) toast("Box re-shaped so the port fits"); paintAll(); };
+    kind.onclick = (e) => { const b = e.target.closest("button"); if (!b || b.dataset.k === st[key].kind) return; st[key].kind = b.dataset.k; st[key].autoRound = false; compute(); sizePorts(true); const moved = reshape(); if (M.misfits(res.L)) toast(b.dataset.k === "round" ? "A round port that long can't fit straight here: a slot port can bend" : "The port still doesn't fit: see the notes under How it plays", 4000); else if (moved) toast("Box re-shaped so the port fits"); paintAll(); };
     const slot = grid(2, field(key + ".w", "Slot width", "len")); slot.classList.add("bx-pslot");
     const round = grid(2, field(key + ".dia", "Diameter (inside)", "len"), field(key + ".n", "How many", "n", { min: 1, max: 8 })); round.classList.add("bx-pround");
     const auto = sw("Length from the tuning", "Off: type the length and see the tuning", st[key].auto, (on) => { st[key].auto = on; schedule(); });
@@ -924,7 +952,7 @@ function openSubList() {
 }
 
 // ---------------------------------------------------------------------------------------------------- sharing
-const SHARE_KEYS = ["units", "type", "style4", "style6", "count", "power", "qtc", "vbS", "vbP", "fbP", "s4", "g4", "c4", "vr4", "vf4", "fb4", "vr6", "fr6", "vf6", "ff6", "lo6", "hi6", "shape", "w", "h", "d", "dt", "t", "dbl", "brace", "split", "solve", "finish", "paint", "preset", "sub", "est", "drv", "port", "port2", "wire", "fu"];
+const SHARE_KEYS = ["gap", "braceMode", "round", "units", "type", "style4", "style6", "count", "power", "qtc", "vbS", "vbP", "fbP", "s4", "g4", "c4", "vr4", "vf4", "fb4", "vr6", "fr6", "vf6", "ff6", "lo6", "hi6", "shape", "w", "h", "d", "dt", "t", "dbl", "brace", "split", "solve", "finish", "paint", "preset", "sub", "est", "drv", "port", "port2", "wire", "fu"];
 /** The design as a short code (base64url JSON), for a post. */
 function encodeBox() {
   const o = { v: 1, fixed: true }; for (const k of SHARE_KEYS) o[k] = st[k];

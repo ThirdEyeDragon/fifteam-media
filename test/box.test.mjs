@@ -203,9 +203,9 @@ for (const [type, series, a, b, f1, f2, w1] of [["sealed", 0, 1.3], ["ported", 0
   const L = M.layout(B);
   const wr = L.rooms[0].x[1] - L.rooms[0].x[0], gr = 2 * wr * L.Hi * L.Davg;
   const p1 = L.ports[0], p2 = L.ports[1];
-  check(L.rooms.length === 3 && near(L.gross[0], gr, 1e-9) && near(L.rooms[2].x[1] - L.rooms[2].x[0], wr, 1e-9) && p2.copies === 2 && near(p2.S, 2 * p2.S1, 1e-12) && p1.top
+  check(L.rooms.length === 3 && near(L.gross[0], gr, 1e-9) && near(L.rooms[2].x[1] - L.rooms[2].x[0], wr, 1e-9) && p2.copies === 2 && near(p2.S, 2 * p2.S1, 1e-12) && p1.center
     && L.subs.length === 4 && L.subs.filter((s) => s.dir[0] > 0).length === 2 && L.cut.some((c) => c.name === "Divider" && c.n === 2) && near(p1.fb, 55, 0.01) && near(p2.fb, 30, 0.01),
-    `hallway: two rear rooms (${(wr / IN).toFixed(1)}″ each, ${(L.net[0] / FT3).toFixed(2)} ft³ together), two subs facing two, a top port ${(p1.len / IN).toFixed(1)}″ at 55 Hz, two rear ports ${(p2.len / IN).toFixed(1)}″ at 30 Hz`);
+    `hallway: two rear rooms (${(wr / IN).toFixed(1)}″ each, ${(L.net[0] / FT3).toFixed(2)} ft³ together), two subs facing two, a port up the middle ${(p1.len / IN).toFixed(1)}″ at 55 Hz, two rear ports ${(p2.len / IN).toFixed(1)}″ at 30 Hz`);
   const f = M.fitBox({ ...B }, "w", 3 * FT3, 1.2 * FT3), Lf = f && M.layout(f);
   check(!!Lf && near(Lf.net[0], 3 * FT3, 0.01 * FT3) && near(Lf.net[1], 1.2 * FT3, 0.01 * FT3), `hallway sized to 3 + 1.2 ft³: ${Lf && (Lf.W / IN).toFixed(1)}″ wide`);
   // 20 subs on a front
@@ -217,6 +217,37 @@ for (const [type, series, a, b, f1, f2, w1] of [["sealed", 0, 1.3], ["ported", 0
   // the space you have
   const fl = M.shapeBox({ ...base, type: "ported", port: { kind: "slot", w: 1.6 * IN, auto: true, fb: 32 } }, "w", 1.75 * FT3, undefined, { h: 14 * IN, d: 16 * IN });
   check(!!fl && fl.h <= 14 * IN + 1e-6 && fl.d <= 16 * IN + 1e-6, `kept inside the space given (14″ tall, 16″ deep): ${(fl.w / IN).toFixed(1)}×${(fl.h / IN).toFixed(0)}×${(fl.d / IN).toFixed(0)}″`);
+}
+
+// ---------------------------------------------------------------------------------------------------- spacing, no sub in a port, bracing, rounded bends
+{
+  // frames at least the gap apart (and never overlapping), on the front and on dividers
+  const minGap = (L) => { let g = Infinity; const s = L.subs; for (let i = 0; i < s.length; i++) for (let j = i + 1; j < s.length; j++) if (s[i].dir.join() === s[j].dir.join()) g = Math.min(g, Math.hypot(s[i].at[0] - s[j].at[0], s[i].at[1] - s[j].at[1], s[i].at[2] - s[j].at[2]) - s[i].size); return g; };
+  const B4 = { ...base, type: "ported", count: 4, gap: 2 * IN, w: 60 * IN, h: 30 * IN, d: 20 * IN, port: { kind: "slot", w: 2 * IN, auto: true, fb: 32 } };
+  const L4 = M.layout(B4), Lb = M.layout({ ...B4, type: "bp6", style: "hall", w: 70 * IN, h: 42 * IN, split: 0.6, port: { kind: "slot", w: 2 * IN, auto: true, fb: 55 }, port2: { kind: "slot", w: 1 * IN, auto: true, fb: 28 } });
+  check(minGap(L4) >= 2 * IN - 1e-6 && minGap(Lb) >= 2 * IN - 1e-6 && ![...L4.warn, ...Lb.warn].some((w) => /fit|runs into|deeper/.test(w)), `subs spaced by the gap asked for (2″): ${(minGap(L4) / IN).toFixed(2)}″ on a front, ${(minGap(Lb) / IN).toFixed(2)}″ on hallway dividers, frame to frame`);
+  // no sub may run into a port: for every shape the designer makes (4 types and styles, 1–10 subs), none does
+  let crash = 0, n = 0;
+  const P15 = M.PRESETS[15], s15 = { size: P15.size, cutout: P15.cutout, depth: P15.depth, disp: P15.disp, pe: 1500 };
+  for (const [type, series, style] of [["ported", 0], ["bp4", 0], ["bp6", 0], ["bp6", 1], ["bp6", 0, "hall"]]) for (const count of [1, 3, 6, 10]) {
+    const d15 = M.driver(P15), b6 = M.bp6Design(d15, count, !!series, 30, 80), b4 = M.bp4At(d15, count, 0.7, 50);
+    const t1 = type === "ported" ? M.ventedVolumeFor(d15, count, 32) : type === "bp4" ? b4.vr : b6.vr, t2 = type === "bp4" ? b4.vf : b6.vf;
+    const B = { ...base, type, series: !!series, style, count, sub: s15, braceMode: "std", power: 1500 * count,
+      port: { kind: "slot", w: 1.5 * IN, auto: true, fb: type === "ported" ? 32 : type === "bp4" ? b4.fb : b6.ff }, port2: { kind: "slot", w: 1.2 * IN, auto: true, fb: b6.fr } };
+    const f = M.shapeBox(B, "w", t1, t2), L = f && M.layout(f);
+    n++; if (L && L.warn.some((w) => /runs into/.test(w))) crash++;
+  }
+  check(crash === 0, `no sub runs into a port in any of ${n} shaped boxes (ported, 4th, 6th, series, hallway; 1–10 subs)`);
+  // bracing: where a panel spans more than about 16× the wood's thickness, dowels; none on a small box
+  const big = M.layout({ ...base, type: "sealed", w: 40 * IN, h: 20 * IN, d: 20 * IN, braceMode: "std", power: 1000 }), small = M.layout({ ...base, type: "sealed", w: 14 * IN, h: 14 * IN, d: 13 * IN, braceMode: "std", power: 1000 });
+  const off = M.layout({ ...base, type: "sealed", w: 40 * IN, h: 20 * IN, d: 20 * IN, braceMode: "off", power: 1000 });
+  check(big.bracing.count > 0 && small.bracing.count === 0 && big.net[0] < off.net[0] && big.cut.some((c) => /Dowel/.test(c.name)) && big.parts.filter((p) => p.kind === "dowel").length === big.bracing.count,
+    `bracing: a 40×20×20″ box gets ${big.bracing.count} dowels (their ${((off.net[0] - big.net[0]) / FT3 * 1728).toFixed(0)} in³ taken off the volume), a 14″ cube none (spans under ${(big.bracing.Lmax / IN).toFixed(1)}″)`);
+  // rounded bends: a strip in each bend's corner, and the port made a little longer so it still tunes to 32 Hz
+  const Lr = M.layout({ ...base, type: "ported", w: 30 * IN, round: true, port: { kind: "slot", w: 2 * IN, auto: true, fb: 32 } });
+  const Ls = M.layout({ ...base, type: "ported", w: 30 * IN, round: false, port: { kind: "slot", w: 2 * IN, auto: true, fb: 32 } });
+  check(Lr.ports[0].bends >= 1 && Lr.parts.filter((p) => p.name === "fillet").length === Lr.ports[0].bends && near(Lr.ports[0].fb, 32, 0.01) && Lr.ports[0].len > Ls.ports[0].len,
+    `rounded bends: ${Lr.ports[0].bends} strip(s), the port ${((Lr.ports[0].len - Ls.ports[0].len) / IN).toFixed(2)}″ longer to stay at 32 Hz`);
 }
 
 // ---------------------------------------------------------------------------------------------------- the list of real subs

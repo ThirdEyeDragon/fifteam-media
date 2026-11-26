@@ -446,6 +446,7 @@ check(pinned, "the 3D view stays at the top while the inputs scroll");
 await shot("14_box_scrolled");
 // real subs from the list, quick builds, a hallway, 20 subs, paint, and sharing a box to Social
 await ev(`document.getElementById('view-box').scrollTop = 0`);
+check(await ev(`document.querySelector('.bx-pick').textContent === 'Choose your sub' && !document.getElementById('bx-quick-info')`), "the sub button just says Choose your sub; no description under the quick builds");
 await click(".bx-pick"); await sleep(500);
 const listRows = await ev(`document.querySelectorAll('.bx-subrow').length`);
 await ev(`(() => { const i = document.querySelector('.bx-subsheet input[type=search]'); i.value = 'sundown z v.6 12'; i.dispatchEvent(new Event('input')); return 1; })()`); await sleep(200);
@@ -469,6 +470,13 @@ check(twenty.subs === 20 && twenty.fit === 0 && twenty.wires >= 4, "20 subs: all
 await ev(`(() => { const i = document.getElementById('bx-count'); i.value = '2'; i.dispatchEvent(new Event('change')); return 1; })()`); await sleep(800);
 await click('#bx-finish [data-k="paint"]'); await click('#bx-swatches [data-c="#c8102e"]'); await sleep(300);
 check(await bx(`(b) => b.view.state.finish === 'paint' && b.view.state.paint === '#c8102e'`), "the box painted red");
+// bracing and the subs' spacing: a 4-sub box, braced, the subs 2″ apart, nothing in a port
+await ev(`(() => { const i = document.getElementById('bx-count'); i.value = '4'; i.dispatchEvent(new Event('change')); return 1; })()`); await sleep(1200);
+await ev(`(() => { const i = document.querySelector('[data-path="gap"]'); i.focus(); i.value = '2'; i.dispatchEvent(new Event('input', { bubbles: true })); i.blur(); return 1; })()`); await sleep(1500);
+await click('#bx-brace [data-k="std"]'); await sleep(800);
+const br = await bx(`(b) => { const L = b.result.L, s = L.subs; let g = 1e9; for (let i = 0; i < s.length; i++) for (let j = i + 1; j < s.length; j++) if (s[i].dir.join() === s[j].dir.join()) g = Math.min(g, Math.hypot(s[i].at[0] - s[j].at[0], s[i].at[1] - s[j].at[1], s[i].at[2] - s[j].at[2]) - s[i].size); return { gap: +(g / 0.0254).toFixed(2), dowels: L.bracing.count, info: document.getElementById('bx-brace-info').textContent, crash: L.warn.some(w => /runs into/.test(w)), strips: L.parts.filter(p => p.name === 'fillet').length, bends: L.ports.reduce((a, p) => a + (p.bends || 0), 0) }; }`);
+console.log("box: bracing & spacing:", JSON.stringify(br));
+check(br.gap >= 1.99 && !br.crash && br.info.length > 20 && br.strips === br.bends, "subs 2″ apart frame to frame, none in a port, bracing worked out, a rounded strip in every port bend");
 await ev(`document.getElementById('view-box').scrollTop = 0`); await sleep(300);
 await shot("15_box_painted");
 const boxCode = await bx(`(b) => b.encode()`);
@@ -481,7 +489,7 @@ check(/#social \| 1 picture \| design attached/.test(comp), "Share on Social: a 
 await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
 await ev(`import('./js/box.js').then(m => { m.box.openShared(${JSON.stringify(boxCode)}); return 1; })`); await sleep(1000);
 const opened = await bx(`(b) => location.hash + ' ' + b.state.fixed + ' ' + b.state.count + ' ' + b.state.paint`);
-check(opened === "#box true 2 #c8102e", `a shared box opens in Box as it was built (${opened})`);
+check(opened === "#box true 4 #c8102e", `a shared box opens in Box as it was built (${opened})`);
 
 // the library's rebassed list
 await ev(`location.hash = '#library'`); await sleep(300);

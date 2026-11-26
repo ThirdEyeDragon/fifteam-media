@@ -1161,3 +1161,4 @@ input.bx-countv { width: 56px; height: 40px; padding: 0 6px; text-align: center;
 .so-boxopen { align-self: flex-start; gap: 8px; margin: 2px 0 4px; }
 .so-boxopen svg, .so-boxchip svg { width: 18px; height: 18px; flex: none; }
 .so-boxchip { display: flex; align-items: center; gap: 8px; }
+.bx-braceinfo { font-size: 12.5px; line-height: 1.45; }
