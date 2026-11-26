@@ -463,7 +463,8 @@ function paintResults() {
   if (st.power / st.count > drv.pe * 1.25) W.push(`${Math.round(st.power / st.count)} W per sub is well over its ${drv.pe} W rating.`);
   if (M.PRESETS[st.preset]) ok.push(`These are typical ${st.preset}-inch numbers. Pick your sub from the list, or enter its spec sheet, for real results.`);
   const dbs = st.sub && findSub(st.sub);
-  if (dbs && st.est.length) ok.push(`${subName(dbs)}: its maker doesn't publish ${st.est.join(", ")}, so typical values for its size are used there.`);
+  if (dbs && st.est.includes("Fs")) W.push(`${subName(dbs)}: its maker doesn't publish its Fs, Qts or Vas, so this box is worked out for a typical ${dbs.size}″ sub. Check the maker's own box recommendation too, or type in its numbers if you have them.`);
+  else if (dbs && st.est.length) ok.push(`${subName(dbs)}: its maker doesn't publish ${st.est.join(", ")}, so typical values for its size are used there.`);
   const wl = $("bx-warn"); wl.replaceChildren();
   for (const w of W) { const r = h("div", "bx-w bad"); r.append(icon("i-warn"), h("span", "", w)); wl.append(r); }
   for (const w of ok) { const r = h("div", "bx-w"); r.append(icon("i-info"), h("span", "", w)); wl.append(r); }
@@ -957,7 +958,7 @@ function openSubList() {
       const found = SUBS.filter((s) => (!brand || s.brand === brand) && words.every((w) => `${s.brand} ${s.model} ${s.coils} ${s.size}in ${s.size}″${s.sq ? " square" : ""}`.toLowerCase().includes(w)));
       for (const s of found) {
         const r = h("button", "bx-subrow" + (st.sub === subKey(s) ? " on" : "")); r.type = "button";
-        const left = h("div", "bx-subl"); left.append(h("b", "", `${s.brand} ${s.model}`), h("small", "", `${s.size}″ ${s.coils || ""}${s.rms ? ` · ${s.rms} W RMS` : ""} · Fs ${s.fs} · Qts ${s.qts} · Vas ${s.vas} L${s.sq ? " · square" : ""}${s.full ? "" : " · partial specs"}`));
+        const left = h("div", "bx-subl"); left.append(h("b", "", `${s.brand} ${s.model}`), h("small", "", `${s.size}″ ${s.coils || ""}${s.rms ? ` · ${s.rms} W RMS` : ""} · ${s.fs ? `Fs ${s.fs} · Qts ${s.qts} · Vas ${s.vas} L` : "Fs, Qts, Vas not published"}${s.sq ? " · square" : ""}${s.full ? "" : " · partial specs"}`));
         r.append(left, h("span", "bx-subsize", `${s.size}″`));
         r.onclick = () => { closeSheet(); applySub(s); };
         list.append(r);

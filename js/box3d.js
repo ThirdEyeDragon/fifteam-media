@@ -32,6 +32,31 @@ export function subParts(s) {
   return { z, rf, rc, rs1, rs0, dm, slugs, slugH, plate, gap, motor, depth, panel, rdc: z * 0.17, cd: z * 0.085 + xmax * 0.6 };
 }
 
+/** The words engraved in every box's side: "FifTeam Media" drawn once into a small bitmap, as runs of ink along its
+ * rows ([row, from, to] in pixels), with its size and shape. (Nothing to draw with, outside a browser: null.) */
+let ENGRAVE;
+export function engraveMask() {
+  if (ENGRAVE !== undefined) return ENGRAVE;
+  ENGRAVE = null;
+  try {
+    const cv = typeof OffscreenCanvas !== "undefined" ? new OffscreenCanvas(720, 96) : typeof document !== "undefined" ? Object.assign(document.createElement("canvas"), { width: 720, height: 96 }) : null;
+    const g = cv && cv.getContext("2d", { willReadFrequently: true });
+    if (!g) return null;
+    g.fillStyle = "#000"; g.font = '800 62px "Segoe UI", system-ui, -apple-system, Roboto, Arial, sans-serif'; g.textBaseline = "middle";
+    g.fillText("FifTeam Media", 8, 48);
+    const d = g.getImageData(0, 0, 720, 96).data, ink = (x, y) => d[(y * 720 + x) * 4 + 3] > 110;
+    let x0 = 720, x1 = -1, y0 = 96, y1 = -1;
+    for (let y = 0; y < 96; y++) for (let x = 0; x < 720; x++) if (ink(x, y)) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+    if (x1 < 0) return null;
+    // (at half the resolution: plenty for its size, a quarter of the pieces)
+    const runs = [], h2 = Math.ceil((y1 - y0 + 1) / 2), w2 = Math.ceil((x1 - x0 + 1) / 2);
+    const on = (cx, cy) => { let n = 0; for (let j = 0; j < 2; j++) for (let i = 0; i < 2; i++) { const x = x0 + cx * 2 + i, y = y0 + cy * 2 + j; if (x <= x1 && y <= y1 && ink(x, y)) n++; } return n >= 2; };
+    for (let r = 0; r < h2; r++) { let s = -1; for (let c = 0; c <= w2; c++) { const o = c < w2 && on(c, r); if (o && s < 0) s = c; if (!o && s >= 0) { runs.push([r, s, c]); s = -1; } } }
+    ENGRAVE = { runs, w: w2, h: h2, ar: w2 / h2 };
+  } catch { ENGRAVE = null; }
+  return ENGRAVE;
+}
+
 // ---------------------------------------------------------------------------------------------------- matrices
 const m4 = () => { const m = new Float32Array(16); m[0] = m[5] = m[10] = m[15] = 1; return m; };
 function mul4(a, b) {
@@ -194,6 +219,20 @@ function build(L, mode, finish, paint) {
     lathe([[r + w, 0], [r + w, tb.len], [r, tb.len], [r, 0]], at, dir, [0.16, 0.16, 0.18, 1], 32);
     lathe([[r, -0.002], [r + 0.022, -0.002], [r + 0.022, 0.001]], at, dir, [0.22, 0.22, 0.25, 1], 32);                  // the flare
     if (see || open) lathe([[r * 0.98, 0], [r * 0.98, tb.len]], at, dir, [...AIR, 0.28], 20);
+  }
+  // "FifTeam Media" engraved in the right side (the side the view first looks at), on every box: cut into the wood's
+  // face, not a part of the box (not in its volume or the cut list), and nothing turns it off
+  const E = engraveMask();
+  if (E) {
+    const span = Math.min(L.D, L.Dt), th = Math.min(L.H * 0.12, (span * 0.76) / E.ar), px = th / E.h;
+    const z0 = (span - E.w * px) / 2, yTop = L.H / 2 + th / 2, x = L.W + 0.0004;
+    // (the cut: darker than the wood; on a dark finish, lighter, like bare wood showing)
+    const lum = 0.3 * F.wall[0] + 0.59 * F.wall[1] + 0.11 * F.wall[2];
+    const col = [...F.wall.map((v) => (lum < 0.25 ? Math.min(1, v * 0.5 + 0.4) : v * 0.45)), 1];
+    for (const [r, a, b] of E.runs) {
+      const y1 = yTop - r * px, y0 = y1 - px, za = z0 + a * px, zb = z0 + b * px;
+      quad(W([x, y0, za]), W([x, y0, zb]), W([x, y1, zb]), W([x, y1, za]), col);
+    }
   }
   // a faint floor grid under it
   const y = -L.H / 2 - 0.002, ext = Math.max(L.W, L.D) * 0.95, step = ext / 6;

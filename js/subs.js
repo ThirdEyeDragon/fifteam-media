@@ -59,6 +59,7 @@ export const SUB_ROWS = [
   ["Sundown Audio", "SA v.2 15", "D2", 15, 1250, 36.84, 0.5245, 0.5847, 5.1005, 51.94, 3.89, 3.63, 1141.9, 19, 14.01, 9.0, 0.16, S],
   ["Sundown Audio", "SD v.4 12", "D2", 12, 600, 26.04, 0.5554, 0.6187, 5.4253, 63.51, 3.93, 6.28, 735.5, 14.5, 10.5, 4.9, 0.10, S],
   ["Sundown Audio", "X v.3 8", "D2", 8, 1000, 46.77, 0.485, 0.544, 4.432, 4.19, 4, 2.01, null, 19, 7.375, 7, 0.13, S],
+  ["Sundown Audio", "InHuman 18", "D1", 18, 7500, 23.9, 0.197, null, null, 55.58, null, null, null, 41, null, null, 0.7, "caraudioapp.com"],
   ["Sundown Audio", "M12", "D2", 12, 2000, 32.714, 0.6, 0.686, 4.768, 15.06, 4.0669, 3.641, null, null, null, null, null, "ampedupcaraudio.com"],
   // ---- DD Audio
   ["DD Audio", "9912c", "D2", 12, 3200, 31.63, 0.352, 0.377, 5.398, 23.63, null, null, pist(11), 32, 12.19, 9.69, 0.33, D],
@@ -109,6 +110,11 @@ export const SUB_ROWS = [
   ["Resilient Sounds", "Team 18", "D1", 18, null, 25.5, 0.3, null, null, 163, null, null, null, 38, null, null, null, X],
   ["Resilient Sounds", "RS 12", "D4", 12, 500, 27.1, 0.36, null, null, 58.9, null, null, null, 17, null, null, null, "resilientsounds.com"],
   ["Resilient Sounds", "RS 15", "D4", 15, 500, 27.3, 0.64, null, null, 142.2, null, null, null, 17, null, null, null, "resilientsounds.com"],
+  // (the V2s: Resilient publishes their power, Xmax, mounting and box, not their Thiele/Small numbers)
+  ["Resilient Sounds", "Platinum 15 V2", "D2", 15, 2500, null, null, null, null, null, null, null, null, null, null, null, null, "bigjeffaudio.com"],
+  ["Resilient Sounds", "Platinum 12 V2", "D2", 12, 2500, null, null, null, null, null, null, null, null, 35, 11.175, 10.25, 0.25, "audiosellerz.com"],
+  ["Resilient Sounds", "Platinum 10 V2", "", 10, 2500, null, null, null, null, null, null, null, null, null, null, null, null, "audiosellerz.com"],
+  ["Resilient Sounds", "Gold 12 V2", "D4", 12, 1500, null, null, null, null, null, null, null, null, 31, null, 9.125, 0.2, "resilientsounds.com"],
   ["Resilient Sounds", "RS 12 V2", "D4", 12, 750, 31.14, 0.416, null, null, 38.83, null, null, null, null, null, null, null, "sparkedinnovations.com"],
   // ---- Rockford Fosgate
   ["Rockford Fosgate", "Power T1D215", "D2", 15, 1000, 26.3, 0.43, 0.46, 6.5, 102, 3.25, 1.6, 845, 16.4, 13.9375, 8.39, 0.191, R],
@@ -332,12 +338,17 @@ export const SUB_ROWS = [
 ];
 
 const IN = 0.0254, FT3 = 0.0283168466;
-const NAMES = { qes: "Qes", re: "Re", le: "Le", sd: "Sd", xmax: "Xmax", pe: "RMS power", cutout: "cutout", depth: "mounting depth", disp: "displacement" };
+// a typical sub of each size: Fs, Qts, Vas (L)
+const TYPICAL = { 8: [38, 0.55, 14.2], 10: [32, 0.5, 28.3], 12: [30, 0.48, 45.3], 15: [28, 0.45, 99.1], 18: [26, 0.42, 178.4] };
+const NAMES = { fs: "Fs", qts: "Qts", vas: "Vas", qes: "Qes", re: "Re", le: "Le", sd: "Sd", xmax: "Xmax", pe: "RMS power", cutout: "cutout", depth: "mounting depth", disp: "displacement" };
 /** A sub from the list, ready for the designer (SI units), and the numbers its maker doesn't publish (filled with
  * values typical for its size). */
 export function subFrom(row) {
-  const [brand, model, coils, size, rms, fs, qts, qes0, qms, vas, re, le, sd, xmax, cut, dep, disp] = row;
+  const [brand, model, coils, size, rms, fs0, qts0, qes0, qms, vas0, re, le, sd, xmax, cut, dep, disp] = row;
   const est = [];
+  // (a maker that publishes none of its Thiele/Small numbers: a typical sub of the size's, and said so)
+  const T = TYPICAL[[8, 10, 12, 15, 18].reduce((a, b) => (Math.abs(b - size) < Math.abs(a - size) ? b : a))];
+  const fs = fs0 > 0 ? fs0 : (est.push("fs"), T[0]), qts = qts0 > 0 ? qts0 : (est.push("qts"), T[1]), vas = vas0 > 0 ? vas0 : (est.push("vas"), T[2] * (size / [8, 10, 12, 15, 18].reduce((a, b) => (Math.abs(b - size) < Math.abs(a - size) ? b : a))) ** 3);
   // Qes: published; or from Qts and Qms; or (only Qts published) with a typical sub's Qms of 8
   let qes = qes0 > qts * 1.001 ? qes0 : null;
   if (qes == null && qms > qts) qes = (qts * qms) / (qms - qts);
