@@ -7,9 +7,10 @@
 //   /posts, /comments  the latest posts or comments (anyone's, or one user's), with their ids
 //   /delete-post, /delete-comment   take one down (a comment goes with its replies)
 //   /purge <user>      every post and comment of theirs, gone
-//   /clear-profile <user>   their picture and about me removed, and no new picture shown until /allow-picture
+//   /clear-profile <user>   their picture, about me and setup removed, and no new picture shown until /allow-picture
 //   /devices           every phone that has used the app (the last half year), with its device; the full list as a file
-//   /tag-member, /tag-founder, /tag-developer <user>   the gradient tag next to their name (remove: True takes it off)
+//   /tag-member, /tag-founder, /tag-developer, /tag-advertiser <user>   the gradient tag next to their name (remove: True
+//                              takes it off). (FifTeam Premium shows by itself for anyone with Premium.)
 //   /tags              who has which tag
 //   /listings [user], /delete-listing   Audio Market: the latest listings, and taking one down
 //   /premium <user> [remove]   Premium for someone who paid (the $10 one-time unlock); /premiums lists
@@ -49,11 +50,12 @@ export const COMMANDS = [
   { name: "delete-post", description: "Take a post down", type: 1, options: [{ type: 3, name: "post", description: "Start typing a name or words from it", required: true, autocomplete: true }] },
   { name: "delete-comment", description: "Take a comment down (and the replies to it)", type: 1, options: [{ type: 3, name: "comment", description: "Start typing a name or words from it", required: true, autocomplete: true }] },
   { name: "purge", description: "Remove every post and comment by a user", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }] },
-  { name: "clear-profile", description: "Remove a user's profile picture and about me (and block new pictures)", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }] },
+  { name: "clear-profile", description: "Remove a user's profile picture, about me and setup (and block new pictures)", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }] },
   { name: "devices", description: "Every phone that has used FifTeam Media, with its device (the full list as a file)", type: 1, options: [{ type: 3, name: "user", description: "Only this user's", required: false, autocomplete: true }] },
   { name: "tag-member", description: "Give someone the FifTeam Member tag (next to their name)", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }, { type: 5, name: "remove", description: "Take the tag off instead", required: false }] },
   { name: "tag-founder", description: "Give someone the FifTeam Founder tag", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }, { type: 5, name: "remove", description: "Take the tag off instead", required: false }] },
   { name: "tag-developer", description: "Give someone the FifTeam Media Developer tag", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }, { type: 5, name: "remove", description: "Take the tag off instead", required: false }] },
+  { name: "tag-advertiser", description: "Give someone the FifTeam Advertiser tag", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }, { type: 5, name: "remove", description: "Take the tag off instead", required: false }] },
   { name: "tags", description: "Who has which FifTeam tag", type: 1 },
   { name: "accounts", description: "Every FifTeam account: email, username, phone, online or last seen", type: 1 },
   { name: "ban-email", description: "Ban an account by its email (every phone signed in to it)", type: 1, options: [{ type: 3, name: "email", description: "The account's email", required: true, autocomplete: true }] },
@@ -267,7 +269,7 @@ export function makeBot({ cfg, priv, notes, token = "", log = () => {}, stores =
     if (!w.phones.length) return `No phone goes by **${clean(user)}**.`;
     const at = Date.now(), pics = [];
     await changeMod((d) => { for (const p of w.phones) d.nopic[p] = at; }, (d) => w.phones.every((p) => d.nopic[p]));
-    await changeMeta((d) => { for (const p of w.phones) delete d.about[p]; }, (d) => w.phones.every((p) => !d.about[p]));
+    await changeMeta((d) => { d.setup = obj(d.setup); for (const p of w.phones) { delete d.about[p]; delete d.setup[p]; } }, (d) => w.phones.every((p) => !d.about[p] && !obj(d.setup)[p]));
     await changeFeed((d) => { for (const p of w.phones) if (d.profiles[p] && d.profiles[p].av) { pics.push(d.profiles[p].av); d.profiles[p].av = ""; } }, (d) => w.phones.every((p) => !d.profiles[p] || !d.profiles[p].av));
     for (const id of pics) await hook(`/messages/${id}`, { method: "DELETE" }).catch(() => {});
     return `Cleared **${clean(w.name)}**'s profile picture and about me. A new picture from ${w.phones.length === 1 ? "that phone" : "those phones"} won't show until /allow-picture.`;
@@ -296,7 +298,7 @@ export function makeBot({ cfg, priv, notes, token = "", log = () => {}, stores =
     const rows = [["Username", "Device", "App version", "Last seen", "Phone id"].join("\t"), ...list.map(([k, v]) => [v.name || "(no username)", v.device || "unknown", v.v || "", v.at ? new Date(v.at).toISOString().replace("T", " ").slice(0, 16) + " UTC" : "before 2.4", k].join("\t"))];
     return { text, file: { name: "fifteam-devices.txt", data: rows.join("\n") + "\n" } };
   }
-  const TAG_NAMES = { member: "FifTeam Member", founder: "FifTeam Founder", dev: "FifTeam Media Developer" };
+  const TAG_NAMES = { member: "FifTeam Member", founder: "FifTeam Founder", dev: "FifTeam Media Developer", advertiser: "FifTeam Advertiser" };
   async function cmdTag(kind, user, remove) {
     const w = await whoIs(user);
     if (!w.phones.length) return `No phone goes by **${clean(user)}**.`;
@@ -309,7 +311,7 @@ export function makeBot({ cfg, priv, notes, token = "", log = () => {}, stores =
   async function cmdTags() {
     const d = (await readStore("mod", "mod.json")) || {}, all = await people();
     const list = Object.entries(obj(d.badges)).filter(([, v]) => Array.isArray(v) && v.length);
-    if (!list.length) return "Nobody has a tag yet. Give one with /tag-member, /tag-founder or /tag-developer.";
+    if (!list.length) return "Nobody has a tag yet. Give one with /tag-member, /tag-founder, /tag-developer or /tag-advertiser.";
     return [`**Tags** (${list.length})`, ...list.map(([k, v]) => `• **${clean((all[k] && all[k].name) || k)}** · ${v.map((t) => TAG_NAMES[t] || t).join(", ")} · \`${k}\``)].join("\n");
   }
   async function suggestPosts(low) {
@@ -439,7 +441,7 @@ export function makeBot({ cfg, priv, notes, token = "", log = () => {}, stores =
     const d = (await readStore("mod", "mod.json")) || {}, paid = Object.entries(obj(d.premium)).sort((a, b) => b[1].at - a[1].at);
     const asks = stores && stores.premiumAsks ? Object.entries(obj(await stores.premiumAsks().catch(() => ({})))).filter(([k]) => !obj(d.premium)[k]).sort((a, b) => b[1] - a[1]) : [];
     const all = asks.length ? await people() : {};
-    const lines = [`**Premium** · ${paid.length} paid${asks.length ? ` · ${asks.length} asked (check PayPal for $10 with their name in the note)` : ""}`];
+    const lines = [`**Premium** · ${paid.length} paid${asks.length ? ` · ${asks.length} asked (check PayPal and Cash App for $10 with their name in the note)` : ""}`];
     for (const [k, v] of paid.slice(0, 25)) lines.push(`• **${clean(v.name)}** · since ${ago(v.at)} · \`${k}\``);
     for (const [k, t] of asks.slice(0, 15)) lines.push(`• asked: **${clean((all[k] && all[k].name) || k)}** · ${ago(t)} · \`${k}\` (unlock with /premium)`);
     if (!paid.length && !asks.length) lines.push("Nobody yet.");
@@ -527,6 +529,7 @@ export function makeBot({ cfg, priv, notes, token = "", log = () => {}, stores =
         : name === "accounts" ? await cmdAccounts() : name === "ban-email" ? await cmdBanEmail(v("email"), true, who.id) : name === "unban-email" ? await cmdBanEmail(v("email"), false)
         : name === "listings" ? await cmdListings(v("user")) : name === "delete-listing" ? await cmdDeleteListing(v("listing"))
         : name === "tag-member" ? await cmdTag("member", v("user"), v("remove")) : name === "tag-founder" ? await cmdTag("founder", v("user"), v("remove")) : name === "tag-developer" ? await cmdTag("dev", v("user"), v("remove"))
+        : name === "tag-advertiser" ? await cmdTag("advertiser", v("user"), v("remove"))
         : name === "premium" ? await cmdPremium(v("user"), v("remove"), who.id) : name === "premiums" ? await cmdPremiums()
         : name === "purge" ? await cmdPurge(v("user")) : name === "clear-profile" ? await cmdClearProfile(v("user")) : name === "allow-picture" ? await cmdAllowPicture(v("user"))
         : "Unknown command";

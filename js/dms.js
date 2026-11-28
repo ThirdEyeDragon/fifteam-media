@@ -23,7 +23,7 @@ import { squareJpeg, fitJpeg } from "./image.js";
 import { openProfile } from "./profile.js";
 import { openReport } from "./report.js";
 import { blocksOf, setBlock } from "./meta.js";
-import { hubOn, hubRead, hubWrite, live } from "./hub.js";
+import { hubOn, hubRead, hubWrite, hubBase, live } from "./hub.js";
 import { pushing, syncPush } from "./push.js";
 import { offensive, OFFENSIVE } from "./filter.js";
 import { marketItem, openListing, loadMarket } from "./market.js";
@@ -820,15 +820,22 @@ function postBubble(id) {
   return wrap;
 }
 /** A sealed file from a message's own store message, opened (and kept for the rest of the visit). */
+// (a sealed file is uploaded as "<name>-x.mp4": the file service only lets the app read a file from another site for
+// types like that. Older ones are "<name>.bin", which it won't: those come through the FifTeam server instead.)
+const upName = (n) => n.replace(/\.bin$/, "-x.mp4");
 async function sealedFile(m, msgId, name, iv, type) {
   const k = msgId + "/" + name;
   if (D.files.has(k)) return D.files.get(k);
   const job = (async () => {
     const key = await msgKey(m);
     if (!key) throw new Error("nokey");
-    const f = fileOf(await api.message(msgId), name);
+    const msg = await api.message(msgId), f = fileOf(msg, upName(name)) || fileOf(msg, name);
     if (!f) throw new Error("gone");
-    const r = await fetch(f.url, { cache: "no-store" });
+    let r = null;
+    if (!/\.bin$/.test(f.filename)) { try { r = await fetch(f.url, { cache: "no-store" }); } catch { r = null; } }
+    if (!r || !r.ok) { const base = await hubBase(); if (base) { try { r = await fetch(`${base}/v1/file?id=${encodeURIComponent(msgId)}&name=${encodeURIComponent(f.filename)}`, { cache: "no-store" }); } catch { r = null; } } }
+    if (!r) throw new Error("download");
+    if (r.status === 404) throw new Error("gone");
     if (!r.ok) throw new Error("download");
     const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64u(iv) }, key, await r.arrayBuffer());
     return new Blob([plain], { type: type || (name === "song.bin" ? "audio/mpeg" : "image/jpeg") });
@@ -918,7 +925,7 @@ async function upMedia(other, file, say) {
   try { const bm = await createImageBitmap(poster || main); w = bm.width; hh = bm.height; bm.close && bm.close(); } catch {}
   const seal1 = async (blob) => { const iv = crypto.getRandomValues(new Uint8Array(12)); return { iv: b64u(iv), blob: new Blob([await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, await blob.arrayBuffer())], { type: "application/octet-stream" }) }; };
   const a = await seal1(main), p = poster ? await seal1(poster) : null;
-  const files = [["m.bin", a.blob], ...(p ? [["p.bin", p.blob]] : [])];
+  const files = [[upName("m.bin"), a.blob], ...(p ? [[upName("p.bin"), p.blob]] : [])];
   const fd = new FormData();
   fd.append("payload_json", JSON.stringify({ content: "FifTeam sealed message file (only the two phones can open it)", username: "FifTeam", allowed_mentions: { parse: [] }, attachments: files.map(([n], i) => ({ id: i, filename: n })) }));
   files.forEach(([n, bl], i) => fd.append(`files[${i}]`, bl, n));
@@ -945,7 +952,7 @@ async function upSong(other, song, say) {
   const a = await seal1(f);
   let c = null;
   if (song.cover) { try { c = await seal1(await squareJpeg(song.cover, 300)); } catch {} }
-  const files = [["song.bin", a.blob], ...(c ? [["cover.bin", c.blob]] : [])];
+  const files = [[upName("song.bin"), a.blob], ...(c ? [[upName("cover.bin"), c.blob]] : [])];
   const fd = new FormData();
   fd.append("payload_json", JSON.stringify({ content: "FifTeam sealed message file (only the two phones can open it)", username: "FifTeam", allowed_mentions: { parse: [] }, attachments: files.map(([n], i) => ({ id: i, filename: n })) }));
   files.forEach(([n, bl], i) => fd.append(`files[${i}]`, bl, n));

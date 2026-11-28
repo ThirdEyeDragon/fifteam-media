@@ -65,7 +65,7 @@ export function jsonStore(key, file, label, clean, low = false) {
 // ---------------------------------------------------------------------------------------------------- votes, follows, about
 const phones = (a, n) => (Array.isArray(a) ? [...new Set(a.filter((x) => typeof x === "string" && PHONE.test(x)))].slice(0, n) : []);
 function cleanMeta(d) {
-  const out = { v: 1, votes: {}, follows: {}, about: {}, prefs: {}, dmok: {}, dmreq: {}, fok: {}, freq: {}, blocks: {} };
+  const out = { v: 1, votes: {}, follows: {}, about: {}, setup: {}, prefs: {}, dmok: {}, dmreq: {}, fok: {}, freq: {}, blocks: {} };
   if (!d || typeof d !== "object") return out;
   for (const [k, v] of Object.entries(d.prefs || {}).slice(0, 5000)) if (PHONE.test(k) && v && typeof v === "object") {
     const dm = v.dm === "req" || v.dm === "off" ? v.dm : "all", priv = v.priv ? 1 : 0;
@@ -79,7 +79,17 @@ function cleanMeta(d) {
   for (const [k, v] of vs) { const l = phones(v, 5000); if (l.length) out.votes[k] = l; }
   for (const [k, v] of Object.entries(d.follows || {}).slice(0, 5000)) if (PHONE.test(k)) { const l = phones(v, 1000).filter((x) => x !== k); if (l.length) out.follows[k] = l; }
   for (const [k, v] of Object.entries(d.about || {}).slice(0, 5000)) if (PHONE.test(k) && typeof v === "string" && v.trim()) out.about[k] = v.slice(0, 160);
+  // their setup: subs, amps, vehicle, and their loudest (dB)
+  for (const [k, v] of Object.entries(d.setup || {}).slice(0, 5000)) if (PHONE.test(k)) { const x = cleanSetup(v); if (x) out.setup[k] = x; }
   return out;
+}
+/** Someone's setup, made safe (null if there's nothing in it): { subs, amps, vehicle (words), db (a number) }. */
+export function cleanSetup(v) {
+  if (!v || typeof v !== "object") return null;
+  const t = (x) => String(x || "").replace(/\s+/g, " ").trim().slice(0, 60);
+  const db = Math.round(+v.db * 10) / 10;
+  const o = { ...(t(v.subs) ? { subs: t(v.subs) } : {}), ...(t(v.amps) ? { amps: t(v.amps) } : {}), ...(t(v.vehicle) ? { vehicle: t(v.vehicle) } : {}), ...(db > 0 && db < 200 ? { db } : {}) };
+  return Object.keys(o).length ? o : null;
 }
 const metaStore = jsonStore("meta", "meta.json", "FifTeam votes, follows and about", cleanMeta);
 const M = { d: cleanMeta(null), at: 0, loading: null, pending: new Map() };
@@ -116,6 +126,8 @@ export const followersOf = (phone) => Object.keys(M.d.follows).filter((k) => M.d
 /** "following", "requested" (a private account that hasn't let them in yet) or "". */
 export function followState(who, owner) { if (!list("follows", who).includes(owner)) return ""; return approved(who, owner) ? "following" : "requested"; }
 export const aboutOf = (phone) => M.d.about[phone] || "";
+/** Someone's setup ({ subs, amps, vehicle, db }, or null). */
+export const setupOf = (phone) => (M.d.setup && M.d.setup[phone]) || null;
 /** Blocking: either one having blocked the other keeps them apart (posts, comments, messages, follows). */
 export const blocksOf = (phone) => list("blocks", phone);
 export const blocked = (a, b) => !!a && !!b && (list("blocks", a).includes(b) || list("blocks", b).includes(a));
@@ -187,10 +199,13 @@ export function answerDm(who, yes) {
   const me = api.state.me, a = edit("dmreq", me, who, false), b = edit("dmok", me, who, yes);
   return metaChange("dmans|" + who, (d) => { a(d); b(d); }, (d) => !has("dmreq", me, who)(d) && has("dmok", me, who)(d) === yes);
 }
-export function setAbout(text) {
-  const me = api.state.me, t = String(text || "").trim().slice(0, 160);
-  const fn = (d) => { if (t) d.about[me] = t; else delete d.about[me]; };
-  return metaChange("about", fn, (d) => (d.about[me] || "") === t);
+export function setAbout(text, setup) {
+  const me = api.state.me, t = String(text || "").trim().slice(0, 160), su = setup === undefined ? undefined : cleanSetup(setup);
+  const fn = (d) => {
+    if (t) d.about[me] = t; else delete d.about[me];
+    if (su !== undefined) { d.setup = d.setup || {}; if (su) d.setup[me] = su; else delete d.setup[me]; }
+  };
+  return metaChange("about", fn, (d) => (d.about[me] || "") === t && (su === undefined || JSON.stringify((d.setup || {})[me] || null) === JSON.stringify(su)));
 }
 
 // ---------------------------------------------------------------------------------------------------- who's online

@@ -14,7 +14,7 @@ import { makeFile, sizeText } from "./export.js";
 import { myPublicKey, initDms, sendTo } from "./dms.js";
 import { openProfile } from "./profile.js";
 import { loadMeta, votesOf, setVote, meta, canSee, blocked } from "./meta.js";
-import { bannedPhones, noPicPhones, checkBans, badgesOf } from "./ban.js";
+import { bannedPhones, noPicPhones, checkBans, badgesOf, isPremium } from "./ban.js";
 import { activityChanged, initActivity, openActivity } from "./activity.js";
 import { hookFetch, holdFor } from "./limiter.js";
 import { offensive, OFFENSIVE } from "./filter.js";
@@ -263,12 +263,13 @@ const NAME_OK = /^[\p{L}\p{N} _.\-]{2,24}$/u;
 /** Who wrote it, by their username now (a username changed later shows on their older posts and comments too). */
 const nameOf = (x) => (x.by && x.by === S.me && S.name) || (x.by && S.profiles[x.by] && S.profiles[x.by].name) || x.user;
 const hidden = (x) => !!(x.by && (bannedPhones().has(x.by) || blocked(S.me, x.by)));
-/** A name with the tags the FifTeam team gave them (FifTeam Founder, FifTeam Media Developer, FifTeam Member). */
-const TAGS = { founder: "FifTeam Founder", dev: "FifTeam Media Developer", member: "FifTeam Member" };
+/** A name with the tags the FifTeam team gave them (FifTeam Founder, FifTeam Media Developer, FifTeam Advertiser,
+ * FifTeam Member), and FifTeam Premium on its own for anyone with Premium. */
+const TAGS = { founder: "FifTeam Founder", dev: "FifTeam Media Developer", advertiser: "FifTeam Advertiser", member: "FifTeam Member", premium: "FifTeam Premium" };
 function nameLine(name, phone) {
   const w = h("span", "nline"); w.append(h("b", "", name));
   if (!phone && name) phone = findPhone(name);      // (older posts and comments don't say which phone: by username)
-  for (const t of badgesOf(phone)) w.append(h("span", "tag tag-" + t, TAGS[t]));
+  for (const t of [...badgesOf(phone), ...(isPremium(phone) ? ["premium"] : [])]) w.append(h("span", "tag tag-" + t, TAGS[t]));
   return w;
 }
 /** The picture in the top bar (always there): your page, or first a username. */
@@ -303,15 +304,97 @@ function avatarEl(size, url, name) {
   a.style.backgroundImage = `url("${url || placeholderArt(name || "?")}")`;
   return a;
 }
-function render() {
+// Drawing the feed again keeps what's already on screen: each post's card (with its loaded pictures, a song or video
+// playing, where it's scrolled to) stays as it is unless the post itself changed; new posts go in where they belong,
+// gone ones come out, and the counts are brought up to date in place. Scrolled down the feed, what you're looking at
+// stays where it is (new posts above it don't push it down; a "New posts" button takes you up to them).
+let OLD = new Map();
+/** The node for key from what's on screen if it was drawn the same way (sig), else a new one from make(). */
+function keep(key, sig, make) {
+  const o = OLD.get(key);
+  if (o && o._sig === sig) { OLD.delete(key); return o; }
+  const n = make(); n._key = key; n._sig = sig; return n;
+}
+/** What a post's card shows apart from its counts: the same, and its card can stay. */
+function cardSig(p) {
+  const { likes, comments, ...rest } = p;
+  return JSON.stringify(rest) + "|" + nameOf(p) + "|" + nameLine(nameOf(p), p.by).textContent + "|" + (pictureFor(p) || "") + "|" + (mineAs(p) ? "me" + (S.avatarUrl || "") : "");
+}
+/** A post's card: the one on screen if it still fits (its counts and time brought up to date), else a new one. */
+function cardFor(p) {
+  const c = keep("p:" + p.id, cardSig(p), () => postCard(p));
+  if (c._p && c._p !== p) {
+    Object.assign(c._p, p);                            // (its buttons hold the post they were made with: kept current)
+    const i = S.feed.indexOf(p); if (i >= 0) S.feed[i] = c._p;
+  }
+  const q = c._p || p;
+  if (c._when) c._when.textContent = ago(q.at) + (q.edited ? " · edited" : "") + (q.priv ? " · 🔒 only you" : "");
+  if (!S.liking.has(q.id)) { const lk = c.querySelector(".so-like"); if (lk) paintLike(lk, q); }
+  paintCount(c, q);
+  if (c._fill && seen && !c._filled) seen.observe(c);
+  return c;
+}
+/** Put nodes in parent in order, moving as little as possible (a playing video or song isn't moved). */
+function reconcile(parent, nodes) {
+  const want = new Set(nodes);
+  for (const c of [...parent.children]) if (!want.has(c)) c.remove();
+  let ref = parent.firstElementChild;
+  for (const n of nodes) { if (n === ref) { ref = ref.nextElementSibling; continue; } parent.insertBefore(n, ref); }
+}
+/** fresh: everything drawn new (pulled down to refresh: every post's files looked up again). */
+function render(fresh = false) {
   paintMe();
-  const body = $("so-body");
-  if (!body) return;
+  const real = $("so-body");
+  if (!real) return;
   S.ids = sigIds(S.feed); S.shownError = S.error;
-  body.replaceChildren();
+  // what's on screen now, by key
+  OLD = new Map();
+  if (fresh === true) { if (seen) seen.disconnect(); seen = null; }
+  else {
+    for (const c of real.children) if (c._key) OLD.set(c._key, c);
+    for (const c of real.querySelectorAll(".so-week .so-post")) if (c._key) OLD.set(c._key, c);
+  }
+  // where you are: the first thing at least partly on screen, and how far from the top it is
+  const view = $("view-social"), vt = view ? view.getBoundingClientRect().top : 0;
+  let anchor = null, at = 0;
+  if (view && view.scrollTop > 40) for (const c of real.children) { const r = c.getBoundingClientRect(); if (r.bottom > vt + 8) { anchor = c; at = r.top; break; } }
+  const before = new Set([...real.querySelectorAll(".so-post")].map((c) => c.dataset.id));
+  const out = [];
+  renderInto({ append: (...n) => out.push(...n) });
+  reconcile(real, out);
+  OLD = new Map();
+  // kept where you were; told about new posts above it
+  if (anchor && anchor.isConnected) {
+    const d = anchor.getBoundingClientRect().top - at;
+    if (Math.abs(d) > 1) view.scrollTop += d;
+    const fresh = [...real.querySelectorAll(".so-post")].filter((c) => !before.has(c.dataset.id) && c.getBoundingClientRect().bottom < vt);
+    if (fresh.length && before.size) newPostsPill(fresh.length);
+  }
+}
+/** "New posts" over the feed (scrolled down when they came in): tapped, up to the top. Gone when you get there. */
+function newPostsPill(n) {
+  const view = $("view-social"); if (!view) return;
+  let b = $("so-newpill");
+  if (!b) {
+    b = h("button", "so-newpill"); b.id = "so-newpill"; b.type = "button";
+    b.onclick = () => { view.scrollTo({ top: 0, behavior: "smooth" }); b.remove(); };
+    const gone = () => { if (view.scrollTop < 60 || location.hash !== "#social") { b.remove(); view.removeEventListener("scroll", gone); removeEventListener("hashchange", gone); } };
+    view.addEventListener("scroll", gone, { passive: true }); addEventListener("hashchange", gone);
+    document.body.append(b);
+  }
+  b.textContent = `↑ New post${n === 1 ? "" : "s"}`;
+}
+function renderInto(body) {
   if (S.tab === "rebass") { renderRebasses(body); return; }
   // you: your picture (your profile) and "what's on your mind", or first of all a username
-  const you = h("div", "card so-you");
+  const youSig = [S.name, S.editingName ? 1 : 0, S.avatarUrl || ""].join("|");
+  const kept = OLD.get("you");
+  if (kept && kept._sig === youSig) { OLD.delete("you"); body.append(kept); }
+  else body.append(youCard(youSig));
+  renderFeed(body);
+}
+function youCard(sig) {
+  const you = h("div", "card so-you"); you._key = "you"; you._sig = sig;
   if (S.name && !S.editingName) {
     const row = h("div", "so-compose-row");
     const me = h("button", "so-avbtn"); me.setAttribute("aria-label", "Your profile"); me.append(avatarEl(42, S.avatarUrl, S.name));
@@ -342,7 +425,9 @@ function render() {
       setName(v);
     };
   }
-  body.append(you);
+  return you;
+}
+function renderFeed(body) {
   if (S.error) body.append(h("p", "status", S.error));
   const all = S.feed.filter((p) => !S.gone.has(p.id) && visible(p));
   // the rebass of the week, on top
@@ -354,10 +439,9 @@ function render() {
     e.append(h("b", "", S.loading ? "Loading…" : "Nothing here yet"), h("p", "status", S.loading ? "" : "Be the first to post."));
     body.append(e); return;
   }
-  if (seen) seen.disconnect();
-  seen = "IntersectionObserver" in window ? new IntersectionObserver((es) => { for (const x of es) if (x.isIntersecting) { seen.unobserve(x.target); x.target._fill && x.target._fill(); } }, { rootMargin: "400px" }) : null;
-  if (top) { const w = h("section", "so-week"); const t = h("div", "so-week-h"); t.append(h("span", "so-trophy", "🏆"), h("b", "", "Rebass of the week"), h("small", "", "top votes · 7 days")); w.append(t, postCard(top)); body.append(w); }
-  for (const p of posts.slice(0, S.shown)) body.append(postCard(p));
+  watcher();
+  if (top) body.append(weekBox(top));
+  for (const p of posts.slice(0, S.shown)) body.append(cardFor(p));
   if (posts.length > S.shown) { const m = h("button", "btn block", "Show more"); m.onclick = () => { S.shown += 30; render(); }; body.append(m); }
 }
 // ---------------------------------------------------------------------------------------------------- Community Rebass
@@ -373,7 +457,13 @@ function rebassList() {
   return all.sort((a, b) => b.at - a.at);
 }
 function renderRebasses(body) {
-  const head = h("div", "card so-rbhead");
+  const old = OLD.get("rbhead");
+  if (old && old._sig === S.rbSort) { OLD.delete("rbhead"); body.append(old); }
+  else body.append(rbHead());
+  rebassRest(body);
+}
+function rbHead() {
+  const head = h("div", "card so-rbhead"); head._key = "rbhead"; head._sig = S.rbSort;
   const t = h("div", "so-rbtitle"); t.append(h("span", "so-rbico", "🔥"), h("div", "", null));
   t.lastChild.append(h("b", "", "Community Rebass"), h("small", "", "Every rebassed song people have posted, in one place"));
   const sort = h("div", "chips so-rbsort");
@@ -385,7 +475,9 @@ function renderRebasses(body) {
   const post = h("button", "btn small primary so-rbpost"); post.append(icon("i-bass"), "Post a rebass");
   post.onclick = () => (S.name ? pickRebass((song) => composer({ song })) : toast("Pick a username in the Feed tab first"));
   head.append(t, sort, post);
-  body.append(head);
+  return head;
+}
+function rebassRest(body) {
   if (S.error) body.append(h("p", "status", S.error));
   const list = rebassList();
   S.rbList = list.filter((p) => p.song).map((p) => p.id);
@@ -394,14 +486,27 @@ function renderRebasses(body) {
     e.append(h("b", "", S.loading ? "Loading…" : S.rbSort === "top" ? "No rebasses this week yet" : "No rebasses yet"), h("p", "status", S.loading ? "" : "Post the first one: tap Post a rebass."));
     body.append(e); return;
   }
-  if (seen) seen.disconnect();
-  seen = "IntersectionObserver" in window ? new IntersectionObserver((es) => { for (const x of es) if (x.isIntersecting) { seen.unobserve(x.target); x.target._fill && x.target._fill(); } }, { rootMargin: "400px" }) : null;
+  watcher();
   // (newest first: the rebass of the week on top, as in the feed)
   const top = S.rbSort === "new" ? weekly(list) : null;
-  if (top) { const w = h("section", "so-week"); const tt = h("div", "so-week-h"); tt.append(h("span", "so-trophy", "🏆"), h("b", "", "Rebass of the week"), h("small", "", "top votes · 7 days")); w.append(tt, postCard(top)); body.append(w); }
+  if (top) body.append(weekBox(top));
   const rest = list.filter((p) => p !== top);
-  for (const p of rest.slice(0, S.shown)) body.append(postCard(p));
+  for (const p of rest.slice(0, S.shown)) body.append(cardFor(p));
   if (rest.length > S.shown) { const m = h("button", "btn block", "Show more"); m.onclick = () => { S.shown += 30; render(); }; body.append(m); }
+}
+/** The one watcher that fills in a card's pictures, video and song when it nears the screen. */
+function watcher() {
+  if (seen || !("IntersectionObserver" in window)) return;
+  seen = new IntersectionObserver((es) => { for (const x of es) if (x.isIntersecting) { seen.unobserve(x.target); if (x.target._fill && !x.target._filled) { x.target._filled = true; x.target._fill(); } } }, { rootMargin: "400px" });
+}
+/** The rebass of the week, on top: kept while it's the same post drawn the same way. */
+function weekBox(top) {
+  const old = OLD.get("week"), oc = old && old.querySelector(".so-post");
+  if (old && oc && oc._key === "p:" + top.id && oc._sig === cardSig(top)) { OLD.delete("week"); cardFor(top); return old; }
+  const w = h("section", "so-week"); w._key = "week"; w._sig = top.id;
+  const t = h("div", "so-week-h"); t.append(h("span", "so-trophy", "🏆"), h("b", "", "Rebass of the week"), h("small", "", "top votes · 7 days"));
+  w.append(t, cardFor(top));
+  return w;
 }
 /** In the Rebasses tab, a song that ends: the next one down plays (scrolled into view). */
 function playNextRebass(id) {
@@ -496,17 +601,18 @@ async function showPicture(av, p) {
 }
 function postCard(p) {
   const card = h("article", "card so-post");
-  card.dataset.id = p.id;
+  card.dataset.id = p.id; card._p = p;
   // (a gentle fade in, the first time a post shows; not again when the list is redrawn)
   S.shownCards = S.shownCards || new Set();
-  if (!S.shownCards.has(p.id)) { S.shownCards.add(p.id); card.classList.add("so-enter"); }
+  if (!S.shownCards.has(p.id)) { S.shownCards.add(p.id); card.classList.add("so-enter"); card.addEventListener("animationend", () => card.classList.remove("so-enter"), { once: true }); }
   const name = nameOf(p);
   const head = h("div", "so-head");
   const who = h("div", "so-who");
   const av = avatarEl(40, "", name);
   showPicture(av, p);
   av.classList.add("tap"); av.setAttribute("role", "button"); av.setAttribute("aria-label", `${name}'s profile`);
-  const nm = h("span", "so-name tap"); nm.append(nameLine(name, p.by), h("small", "", ago(p.at) + (p.edited ? " · edited" : "") + (p.priv ? " · 🔒 only you" : "")));
+  const nm = h("span", "so-name tap"), when = h("small", "", ago(p.at) + (p.edited ? " · edited" : "") + (p.priv ? " · 🔒 only you" : ""));
+  nm.append(nameLine(name, p.by), when); card._when = when;
   av.onclick = nm.onclick = () => openProfile({ by: p.by, user: p.user });
   who.append(av, nm); head.append(who);
   { const d = h("button", "so-more"); d.setAttribute("aria-label", "More"); d.append(icon("i-more")); d.onclick = () => (S.mine.has(p.id) || mineAs(p) ? postMenu(p) : otherMenu(p)); head.append(d); }
@@ -570,7 +676,7 @@ function postCard(p) {
         else if (img) img.textContent = "Couldn't load the picture";
       }
     };
-    if (seen) seen.observe(card); else card._fill();
+    if (seen) seen.observe(card); else { card._filled = true; card._fill(); }
   }
   return card;
 }
@@ -885,15 +991,25 @@ function paintSheet() {
   const list = document.querySelector("#sheet.open #sheet-panel .cs-list");
   if (!S.cs || !list) return;
   const p = postNow(S.cs.id);
-  list.replaceChildren();
-  if (!p) { list.append(h("p", "status", "That post is gone.")); return; }
-  const shown = commentsOf(p);
+  if (!p) { list.replaceChildren(h("p", "status", "That post is gone.")); return; }
+  const old = new Map(); for (const r of list.children) if (r._key) old.set(r._key, r);
+  const scroller = list.closest("#sheet-panel") || list;
+  const atEnd = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40, had = old.size;
+  const row = (c, reply) => {
+    const key = c.id + (reply ? "r" : ""), sig = JSON.stringify(c) + "|" + nameOf(c) + "|" + nameLine(nameOf(c), c.by).textContent + "|" + S.me;
+    const o = old.get(key); if (o && o._sig === sig) { o._time.textContent = ago(c.at); return o; }
+    const n = commentRow(p, c, reply); n._key = key; n._sig = sig; return n;
+  };
+  const shown = commentsOf(p), out = [];
   const tops = shown.filter((c) => !c.re || !shown.some((x) => x.id === c.re)).sort((a, b) => a.at - b.at);
-  if (!tops.length) list.append(h("p", "status cs-none", "No comments yet. Be the first."));
+  if (!tops.length) out.push(h("p", "status cs-none", "No comments yet. Be the first."));
   for (const c of tops) {
-    list.append(commentRow(p, c, false));
-    for (const r of shown.filter((x) => x.re === c.id).sort((a, b) => a.at - b.at)) list.append(commentRow(p, r, true));
+    out.push(row(c, false));
+    for (const r of shown.filter((x) => x.re === c.id).sort((a, b) => a.at - b.at)) out.push(row(r, true));
   }
+  const grew = out.filter((n) => n._key && !old.has(n._key)).length;
+  reconcile(list, out);
+  if (had && grew && atEnd) scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
 }
 function commentRow(p, c, reply) {
   const row = h("div", "cs-c" + (reply ? " reply" : "") + (c.sending ? " sending" : ""));
@@ -902,7 +1018,7 @@ function commentRow(p, c, reply) {
   showPicture(av, { by: c.by, user: c.user, id: "" });
   av.classList.add("tap"); av.onclick = () => openProfile({ by: c.by, user: c.user });
   const body = h("div", "cs-body");
-  const top = h("div", "cs-name"); top.append(nameLine(cname, c.by), h("small", "", ago(c.at)));
+  const top = h("div", "cs-name"), when = h("small", "", ago(c.at)); top.append(nameLine(cname, c.by), when); row._time = when;
   const acts = h("div", "cs-acts");
   const rp = h("button", "cs-act", "Reply"); rp.onclick = () => setReply(c);
   const lk = h("button", "cs-act cs-like" + (c.likes.includes(S.me) ? " on" : ""));
@@ -1591,7 +1707,7 @@ async function refresh({ manual = false } = {}) {
   if (!S.error) activityChanged();
   const week = (weekly(S.feed.filter((x) => !S.gone.has(x.id) && visible(x))) || {}).id || "";
   const seeSig = S.feed.filter(visible).length + "|" + [...noPicPhones()].join();
-  if (manual || firstTime || sigIds(S.feed) !== S.ids || S.error !== S.shownError || JSON.stringify(S.profiles) !== before || week !== S.weekId || S.bansSig !== [...bannedPhones()].join() || seeSig !== S.seeSig) { S.bansSig = [...bannedPhones()].join(); S.seeSig = seeSig; render(); }
+  if (manual || firstTime || sigIds(S.feed) !== S.ids || S.error !== S.shownError || JSON.stringify(S.profiles) !== before || week !== S.weekId || S.bansSig !== [...bannedPhones()].join() || seeSig !== S.seeSig) { S.bansSig = [...bannedPhones()].join(); S.seeSig = seeSig; render(manual); }
   else for (const p of S.feed) {
     if (!S.liking.has(p.id)) document.querySelectorAll(`#so-body .so-like[data-id="${p.id}"]`).forEach((btn) => paintLike(btn, p));
     const card = document.querySelector(`#so-body .so-post[data-id="${p.id}"]`);

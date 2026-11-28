@@ -9,7 +9,8 @@ import { FORMATS, makeFile, saveFile, sizeText, isIOS, fitFormat } from "./expor
 import { openShareSheet, fingerprint } from "./share.js";
 import { noteName, linToDb } from "./dsp.js";
 import { pickImage } from "./image.js";
-import { rebassAllowed, noteRebass, openUnlock, downloadAllowed, noteDownload } from "./premium.js";
+import { rebassAllowed, noteRebass, openUnlock, downloadAllowed, noteDownload, premiumNow, requirePremium } from "./premium.js";
+import * as myIntro from "./myintro.js";
 import { noteEditor } from "./notes.js";
 
 const S = {
@@ -24,11 +25,25 @@ const S = {
 try { if (localStorage.getItem("fifteam-rebass-how") === "custom") S.how = "custom"; } catch {}
 
 // ---------------------------------------------------------------------------------------------------- the intro
-// The FifTeam Production tag (media/intro.wav), put before the song when the Intro switch is on. Brought up to the
-// song's level (its loudest moment at −1 dBFS), so it doesn't sound small next to a mastered rebass.
+// The FifTeam Production tag (media/intro.wav), or (Premium) the user's own recorded intro, slowed and pitched as they
+// like (myintro.js), put before the song when the Intro switch is on. Brought up to the song's level (its loudest
+// moment at −1 dBFS), so it doesn't sound small next to a mastered rebass.
 const INTRO_KEY = "fifteam-intro";
-let introBuf = null, introLoading = null;
-function loadIntro(rate = SONG_RATE) {
+let introBuf = null, introLoading = null, myBuf = null;
+/** Whether the user's own intro is the one (chosen, and Premium). */
+const useMine = () => myIntro.settings().src === "mine" && premiumNow();
+/** The intro going before the song now (null if it isn't ready). */
+const activeIntro = () => (useMine() ? myBuf : introBuf);
+const myKey = () => { const t = myIntro.settings(); return `${t.speed}|${t.pitch}`; };
+async function loadIntro(rate = SONG_RATE) {
+  if (!useMine()) return loadTag(rate);
+  if (myBuf && myBuf.sampleRate === rate && myBuf.key === myKey()) return myBuf;
+  const b = await myIntro.makeIntro(getCtx(), rate, myIntro.settings());
+  if (!b) { const e = new Error("norec"); throw e; }
+  b.key = myKey(); myBuf = b;
+  return b;
+}
+function loadTag(rate = SONG_RATE) {
   if (introBuf && introBuf.sampleRate === rate) return Promise.resolve(introBuf);
   if (!introLoading) introLoading = (async () => {
     const ctx = getCtx();
@@ -75,21 +90,26 @@ export function checkLight(version) {
 const busyMark = (on) => { try { on ? localStorage.setItem(BUSY_KEY, String(Date.now())) : localStorage.removeItem(BUSY_KEY); } catch {} };
 /** The rebass as heard and saved: the intro (if it's on and ready) and then the song. Returns { ob, k } (k: intro samples). */
 function compose(L, R, sr) {
-  const ctx = getCtx(), k = introWanted() && introBuf && introBuf.sampleRate === sr ? introBuf.length : 0;
+  const ib = activeIntro(), ctx = getCtx(), k = introWanted() && ib && ib.sampleRate === sr ? ib.length : 0;
   const ob = ctx.createBuffer(2, k + L.length, sr);
-  if (k) { ob.copyToChannel(introBuf.getChannelData(0), 0); ob.copyToChannel(introBuf.getChannelData(1), 1); }
+  if (k) { ob.copyToChannel(ib.getChannelData(0), 0); ob.copyToChannel(ib.getChannelData(1), 1); }
   ob.copyToChannel(L, 0, k); ob.copyToChannel(R, 1, k);
   return { ob, k };
 }
 /** The switch moved: the rebass rebuilt with or without the intro, right away (no need to rebass again). */
-async function introChanged() {
+async function introChanged(force = false) {
   try { localStorage.setItem(INTRO_KEY, introWanted() ? "1" : "0"); } catch {}
+  paintIntroBox();
   if (introWanted()) {
-    try { await loadIntro(S.origBuf ? S.origBuf.sampleRate : SONG_RATE); } catch { $("rb-intro").checked = false; toast("Couldn't load the intro. Are you online?"); return; }
+    try { await loadIntro(S.origBuf ? S.origBuf.sampleRate : SONG_RATE); }
+    catch (e) {
+      if (e.message === "norec") { if (!S.outBuf) return; toast("Record your intro first", 2500); }
+      else { $("rb-intro").checked = false; paintIntroBox(); toast("Couldn't load the intro. Are you online?"); return; }
+    }
   }
   if (!S.outBuf || S.busy) return;                       // (a rebass under way puts it in when it's done)
-  const sr = S.outBuf.sampleRate, old = S.introN;
-  if ((introWanted() && introBuf ? introBuf.length : 0) === old) return;
+  const sr = S.outBuf.sampleRate, old = S.introN, ib = activeIntro();
+  if (!force && (introWanted() && ib ? ib.length : 0) === old) return;
   const wasPlaying = !!S.pl, at = curTime() - old / sr;
   stopPreview();
   const { ob, k } = compose(S.outBuf.getChannelData(0).subarray(old), S.outBuf.getChannelData(1).subarray(old), sr);
@@ -99,6 +119,74 @@ async function introChanged() {
   buildSegments(); drawOverview(); paintSize();
   S.pausedAt = Math.max(0, at < 0 ? 0 : at + k / sr);
   if (wasPlaying) playPreview(S.pausedAt); else kickGraph();
+}
+
+/** Under the Intro switch: FifTeam's tag or My own (Premium); my own: record it (up to 15 s), slow it, pitch it, hear it. */
+function buildIntroBox() {
+  const sw = $("rb-intro").closest("label"), box = document.createElement("div");
+  box.className = "stack rb-introbox"; box.id = "rb-intro-box";
+  const h = (t, c, x) => { const e = document.createElement(t); if (c) e.className = c; if (x != null) e.textContent = x; return e; };
+  const seg = h("div", "seg"); seg.id = "rb-intro-src";
+  for (const [k, t] of [["tag", "FifTeam"], ["mine", "My own"]]) { const b = h("button", "", t); b.type = "button"; b.dataset.k = k; seg.append(b); }
+  const mine = h("div", "stack-sm rb-myintro"); mine.id = "rb-myintro";
+  const rec = h("button", "btn block rb-rec", "Record my intro"); rec.type = "button"; rec.id = "rb-rec";
+  const st = h("span", "status", ""); st.id = "rb-rec-st";
+  const slider = (id, label, min, max, step, val, fmt) => {
+    const w = h("div", "stack-sm"), top = h("div", "row between"), v = h("span", "val", fmt(val)), r = h("input"); r.type = "range"; r.id = id; r.min = min; r.max = max; r.step = step; r.value = val; r.setAttribute("aria-label", label);
+    top.append(h("span", "label", label), v); w.append(top, r); r.oninput = () => { v.textContent = fmt(+r.value); }; return { w, r };
+  };
+  const t = myIntro.settings();
+  const slow = slider("rb-my-speed", "Slow it", 50, 100, 1, Math.round(t.speed * 100), (x) => (x >= 100 ? "Normal" : `${x}%`));
+  const pitch = slider("rb-my-pitch", "Pitch", -12, 12, 1, t.pitch, (x) => (x === 0 ? "Normal" : `${x > 0 ? "+" : ""}${x} semitone${Math.abs(x) === 1 ? "" : "s"}`));
+  const row = h("div", "row wrap"), hear = h("button", "btn small", "Hear it"), del = h("button", "btn small", "Delete"); hear.type = del.type = "button";
+  row.append(hear, del);
+  mine.append(rec, st, slow.w, pitch.w, row, h("small", "status", "Your voice before every song you rebass with the intro on: saved, posted and sent with it. Only on this phone."));
+  box.append(seg, mine);
+  sw.after(box);
+  // which intro
+  seg.onclick = (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    if (b.dataset.k === "mine" && !requirePremium("intro")) return;
+    myIntro.saveSettings({ src: b.dataset.k }); introChanged(true);
+  };
+  // recording
+  let r = null;
+  rec.onclick = async () => {
+    if (!requirePremium("intro")) return;
+    if (r && r.on) { rec.disabled = true; await r.stop(); rec.disabled = false; rec.classList.remove("rec-on"); r = null; myBuf = null; paintIntroBox(); st.textContent = "Recorded. Slow it or pitch it, then Hear it."; if (introWanted() && useMine()) introChanged(true); return; }
+    try {
+      r = myIntro.recorder((s) => { st.textContent = `Recording… ${s.toFixed(1)} s (up to 15)`; });
+      await r.start();
+      rec.textContent = "Stop"; rec.classList.add("rec-on");
+    } catch { r = null; toast("Couldn't use the microphone. Allow it in your phone's settings for this app.", 4000); }
+  };
+  const changed = () => { myIntro.saveSettings({ speed: +slow.r.value / 100, pitch: +pitch.r.value }); myBuf = null; if (introWanted() && useMine()) introChanged(true); };
+  slow.r.onchange = changed; pitch.r.onchange = changed;
+  let au = null;
+  hear.onclick = async () => {
+    try {
+      const b = await myIntro.makeIntro(getCtx(), getCtx().sampleRate, myIntro.settings());
+      if (!b) { toast("Record your intro first"); return; }
+      if (au) try { au.stop(); } catch {}
+      au = getCtx().createBufferSource(); au.buffer = b; au.connect(getCtx().destination); au.start();
+    } catch { toast("Couldn't play the intro."); }
+  };
+  del.onclick = async () => { if (!confirm("Delete your intro recording?")) return; await myIntro.forget(); myBuf = null; st.textContent = ""; paintIntroBox(); if (introWanted() && useMine()) introChanged(true); };
+  addEventListener("fifteam-premium", () => paintIntroBox());
+  paintIntroBox();
+}
+async function paintIntroBox() {
+  const box = $("rb-intro-box"); if (!box) return;
+  box.hidden = !introWanted();
+  const src = myIntro.settings().src === "mine" && premiumNow() ? "mine" : "tag";
+  box.querySelectorAll("#rb-intro-src button").forEach((b) => {
+    b.classList.toggle("on", b.dataset.k === src);
+    if (b.dataset.k === "mine" && !premiumNow() && !b.querySelector(".pm-lock")) { const l = document.createElement("span"); l.className = "pm-lock"; l.innerHTML = '<svg><use href="#i-lock"/></svg>'; b.append(l); }
+    if (b.dataset.k === "mine" && premiumNow()) b.querySelector(".pm-lock")?.remove();
+  });
+  $("rb-myintro").hidden = src !== "mine";
+  const has = !!(await myIntro.recording()), rec = $("rb-rec");
+  if (rec && !rec.classList.contains("rec-on")) rec.textContent = has ? "Record it again" : "Record my intro";
 }
 
 // ---------------------------------------------------------------------------------------------------- choosing a song
@@ -809,7 +897,7 @@ async function keep() {
   const name = $("rb-name").value.trim() || defaultName();
   toast("Adding to your library…", 60000);
   const chs = [S.outBuf.getChannelData(0), S.outBuf.getChannelData(1)];
-  const fmt = segValue($("rb-format")) === "mp3" ? "mp3" : "wav16";
+  const want = segValue($("rb-format")), fmt = want === "mp3" ? "mp3" : want === "flac" ? "flac" : "wav16";
   const cover = coverBlob();
   const { file } = await makeFile(chs, S.outBuf.sampleRate, name, fmt, getCtx(), null, { title: name, artist: S.src.artist || "", album: "FifTeam Media", cover });
   const p = S.params;
@@ -891,9 +979,10 @@ export function initRebass() {
     seekTo(t);
   };
   ov.addEventListener("pointerup", ovEnd); ov.addEventListener("pointercancel", ovEnd);
-  // the intro switch (remembered)
+  // the intro switch (remembered), and which intro: FifTeam's, or the user's own (Premium)
   try { $("rb-intro").checked = localStorage.getItem(INTRO_KEY) === "1"; } catch {}
-  $("rb-intro").onchange = introChanged;
+  $("rb-intro").onchange = () => introChanged();
+  buildIntroBox();
   // the cover
   $("rb-cover-pick").onclick = async () => {
     const b = await pickImage(); if (!b) return;

@@ -8,7 +8,7 @@ import { api } from "./social.js";
 import { openChat, talkedWith } from "./dms.js";
 import { offensive, OFFENSIVE } from "./filter.js";
 import { openReport } from "./report.js";
-import { loadMeta, followersOf, followingOf, aboutOf, setFollow, setAbout, votesOf, followState, setFollowRequest, canSee, prefsOf, dmState, requestDm, blocksOf, blocked, setBlock } from "./meta.js";
+import { loadMeta, followersOf, followingOf, aboutOf, setupOf, setFollow, setAbout, votesOf, followState, setFollowRequest, canSee, prefsOf, dmState, requestDm, blocksOf, blocked, setBlock } from "./meta.js";
 
 const PHONE = /^[a-z0-9]{6,16}$/;
 const h = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
@@ -83,25 +83,49 @@ function paint() {
     const lk = h("div", "pf-likes"); lk.append(h("b", "", String(likes)), document.createTextNode(likes === 1 ? " like" : " likes"));
     head.append(lk);
   }
-  // about me
-  const about = P.phone ? aboutOf(P.phone) : "";
+  // about me, and their setup (subs, amps, vehicle, their loudest)
+  const about = P.phone ? aboutOf(P.phone) : "", setup = P.phone ? setupOf(P.phone) : null;
   if (self && P.editing) {
     const f = h("form", "pf-aboutform");
     const t = h("textarea", "input"); t.rows = 3; t.maxLength = 160; t.value = about; t.placeholder = "A line or two about you"; t.setAttribute("aria-label", "About me");
+    const su = setup || {}, fields = {};
+    const grid = h("div", "pf-setupform");
+    for (const [k, label, ph] of [["subs", "Subs", "2 × 15″ Skar VXF"], ["amps", "Amps", "Sundown SFB-5000D"], ["vehicle", "Vehicle", "2015 Chevy Tahoe"], ["db", "dB", "148.6"]]) {
+      const l = h("label", "pf-sf"); l.append(h("span", "", label));
+      const i = h("input", "input"); i.maxLength = k === "db" ? 6 : 60; i.placeholder = ph; i.value = su[k] != null ? String(su[k]) : ""; i.autocomplete = "off";
+      if (k === "db") { i.inputMode = "decimal"; }
+      fields[k] = i; l.append(i); grid.append(l);
+    }
     const row = h("div", "row"), save = h("button", "btn small primary", "Save"), cancel = h("button", "btn small", "Cancel");
     save.type = "submit"; cancel.type = "button"; cancel.onclick = () => { P.editing = false; paint(); };
-    row.append(save, cancel); f.append(t, row);
-    f.onsubmit = async (e) => { e.preventDefault(); if (offensive(t.value)) { toast(OFFENSIVE, 3500); return; } P.editing = false; const job = setAbout(t.value); paint(); if (!(await job)) toast("Couldn't save that. Try again."); paint(); };
+    row.append(save, cancel); f.append(t, h("span", "label", "My setup"), grid, row);
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      const words = [t.value, fields.subs.value, fields.amps.value, fields.vehicle.value];
+      if (offensive(...words)) { toast(OFFENSIVE, 3500); return; }
+      const db = fields.db.value.trim().replace(",", ".");
+      if (db && !(+db > 0 && +db < 200)) { toast("dB: a number like 148.6", 3000); return; }
+      P.editing = false;
+      const job = setAbout(t.value, { subs: fields.subs.value, amps: fields.amps.value, vehicle: fields.vehicle.value, db: db ? +db : 0 });
+      paint(); if (!(await job)) toast("Couldn't save that. Try again."); paint();
+    };
     head.append(f);
     setTimeout(() => t.focus(), 50);
-  } else if (about) head.append(h("p", "pf-about", about));
-  else if (self) head.append(h("p", "pf-about dim", "Nothing about you yet."));
+  } else {
+    if (about) head.append(h("p", "pf-about", about));
+    else if (self && !setup) head.append(h("p", "pf-about dim", "Nothing about you yet."));
+    if (setup) {
+      const box = h("div", "pf-setup");
+      for (const [k, label] of [["subs", "Subs"], ["amps", "Amps"], ["vehicle", "Vehicle"], ["db", "dB"]]) if (setup[k] != null) { const r = h("div", "pf-srow"); r.append(h("small", "", label), h("b", "", k === "db" ? `${setup.db} dB` : setup[k])); box.append(r); }
+      head.append(box);
+    }
+  }
   // the buttons
   const btns = h("div", "pf-btns");
   if (self) {
     const pic = h("button", "btn small", "Change picture"); pic.onclick = async () => { await api.pickAvatar(); paint(); };
     const nm = h("button", "btn small", "Change username"); nm.onclick = () => api.editName();
-    const ab = h("button", "btn small", about ? "Edit about me" : "Add about me"); ab.onclick = () => { P.editing = true; paint(); };
+    const ab = h("button", "btn small", about || setup ? "Edit about me" : "Add about me"); ab.onclick = () => { P.editing = true; paint(); };
     btns.append(pic, nm, ab);
   } else if (P.phone) {
     // Follow (a private account: a request, until they let you in)

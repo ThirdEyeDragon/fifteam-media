@@ -410,7 +410,8 @@ function arrange(n, w, h, d, gap = 0.0254) {
  * facing each other across a middle chamber), shape ("rect"|"wedge"), w, h, d, dt (top depth, wedge), t, layers (the
  * baffle's layers of wood: the front, or a bandpass box's divider(s); older designs: dbl, a double front), brace (m³),
  * count, sub: { size, cutout, depth, disp, pe, xmax, shape ("sq": a square frame and cone, its cutout a square) }, port, port2: { kind ("slot"|"round"), w
- * (slot width), dia, n, auto, len (manual), fb (tuning wanted) }, split (the rear chamber(s)' share of the room
+ * (slot width), dia, n, auto, len (manual), fb (tuning wanted), at (ported: where it opens, "front" | "back" | "top" |
+ * "side"), pos ("left" | "middle" | "right": where on that panel; on the side, which side) }, split (the rear chamber(s)' share of the room
  * across; or wr, a rear room's own width) }.
  * Gives the inside, each chamber's gross and net volume (and what it lost), each port's area, length and tuning, where
  * everything sits (for the 3D view), the cut list and what's wrong with it.
@@ -469,28 +470,55 @@ export function layout(B, quick = false, lite = false) {
     for (const b of braces) lost[rooms[b.room].k].brace += Math.PI * brR * brR * (b.b - b.a);
   }
 
-  // the ports (as the sound sees them: one per chamber, its area the sum of its copies) and their copies in the rooms
+  // the ports (as the sound sees them: one per chamber, its area the sum of its copies) and their copies in the rooms.
+  // A ported box's port can open out of the front (along the left or right side, or up the middle), or (a rectangular
+  // box) out of the back, the top, or a side: each of those is laid out as if it were a front port, in a frame of its
+  // own (u across the panel it opens in, v along it, d into the box), then turned to where it is.
+  const portAt = (P) => {
+    let at = !bp && ["back", "top", "side"].includes(P.at) ? P.at : "front";
+    const pos = ["left", "middle", "right"].includes(P.pos) ? P.pos : "left";
+    if (at !== "front" && B.shape === "wedge") { warn.push("On a wedge the port opens out of the front (its back slopes): pick a rectangular box for a back, top or side port."); at = "front"; }
+    if (at === "front" && (bp || pos !== "middle")) return { at, pos, wall: bp ? null : pos };
+    if (at === "front") {
+      const F = { face: "front", u: [t, W - t], v: [y0, y1], d: [tf, zb], M: (u, v, d) => [u, v, d], wall: "center", dir: [0, 0, 1] };
+      return { at, pos, wall: "center", F };
+    }
+    const yi = [y0, y1], zIn = [tf, D - t];
+    const F = at === "back" ? { face: "back", u: [t, W - t], v: yi, d: [t, D - tf], M: (u, v, d) => [u, v, D - d] }
+      : at === "top" ? { face: "top", u: [t, W - t], v: zIn, d: [t, H - t], M: (u, v, d) => [u, H - d, v] }
+      : pos === "right" ? { face: "right", u: zIn, v: yi, d: [t, W - t], M: (u, v, d) => [W - d, v, u] }
+      : { face: "left", u: zIn, v: yi, d: [t, W - t], M: (u, v, d) => [d, v, u] };
+    // (out of a side: along the back, so the subs on the front keep the whole width)
+    F.wall = at === "side" ? "right" : pos === "middle" ? "center" : pos;
+    F.dir = [0, 1, 2].map((k) => F.M(0, 0, 1)[k] - F.M(0, 0, 0)[k]);
+    return { at, pos, wall: F.wall, F };
+  };
   const ports = topo.ports.map((tp) => {
     const P = (tp.key === "port2" ? B.port2 : B.port) || {};
     const inner = tp.b >= 0;                                                   // (series: rear chamber into the front one)
-    const inst = rooms.filter((r) => r.k === tp.a).map((r) => ({ room: r, wall: bp ? r.wall : "left" }));
-    const jOk = !bp;                                                           // (a J's third leg would run along a divider: no)
+    const where = portAt(P), F = where.F || null;
+    const inst = rooms.filter((r) => r.k === tp.a).map((r) => ({ room: r, wall: bp ? r.wall : where.wall }));
+    const jOk = !bp && !F;                                                     // (a J's third leg would run along a divider: no)
     let kind = P.kind === "round" ? "round" : "slot", n = 1, sw = 0, dia = 0, S1;
-    const top = kind === "slot" && !inner && inst[0].wall === "top", center = kind === "slot" && !inner && inst[0].wall === "center";
-    const span = kind === "slot" ? (top ? inst[0].room.x[1] - inst[0].room.x[0] : Hi) : 0;
+    const top = kind === "slot" && !inner && !F && inst[0].wall === "top", center = kind === "slot" && !inner && inst[0].wall === "center";
+    const span = kind === "slot" ? (F ? F.v[1] - F.v[0] : top ? inst[0].room.x[1] - inst[0].room.x[0] : Hi) : 0;
     if (kind === "slot") { sw = Math.max(0.005, P.w || 0.05); S1 = sw * span; }
     else { n = Math.max(1, Math.min(8, P.n | 0 || 1)); dia = Math.max(0.02, P.dia || 0.1); S1 = Math.PI * (dia / 2) ** 2; }
     const copies = inst.length, S = S1 * (kind === "round" ? n : 1) * copies;
-    const through = inner ? td : tf;                                           // the wood it starts in (front, or the divider)
+    const through = F ? F.d[0] : inner ? td : tf;                              // the wood it starts in (front, or the divider)
     const [xa, xb] = inst[0].room.x;
-    return { key: tp.key, k: tp.a, inst, copies, xa, xb, inner, top, center, kind, n, sw, dia, span, S, S1, through, jOk, auto: P.auto !== false, manual: Math.max(0, P.len || 0), fbWant: P.fb || 35 };
+    // (the room it has: straight in, and across)
+    const dl = F ? F.d[1] - F.d[0] : Dmin, ul = F ? F.u[1] - F.u[0] : xb - xa, vs = F ? F.v[1] - F.v[0] : Hi;
+    return { key: tp.key, k: tp.a, inst, copies, xa, xb, inner, top, center, kind, n, sw, dia, span, S, S1, through, jOk, auto: P.auto !== false, manual: Math.max(0, P.len || 0), fbWant: P.fb || 35, face: F ? F.face : inner ? "divider" : "front", at: where.at, pos: where.pos, F, dl, ul, vs };
   });
   // how many times a slot port bends at a length inside: straight, an L, or (along a side) a J
   const bendsOf = (p, lin) => {
-    if (p.kind !== "slot" || p.center) return 0;
+    if (p.kind !== "slot" || (p.center && !p.F)) return 0;
     if (p.inner) return lin > p.xb - p.xa - p.sw ? 1 : 0;
+    // (out of the back, the top, or up the middle: straight, or folded back on itself, a U; out of a side: an L)
+    if (p.F) return lin <= p.dl - p.sw ? 0 : p.F.face === "left" || p.F.face === "right" ? 1 : 2;
     if (p.top) return lin > Dmin - p.sw ? 1 : 0;
-    return lin <= Dmin - p.sw ? 0 : p.jOk && lin > Dmin + (p.xb - p.xa) - 2 * p.sw ? 2 : 1;
+    return lin <= p.dl - p.sw ? 0 : p.jOk && lin > p.dl + p.ul - 2 * p.sw ? 2 : 1;
   };
   // (rounded bends: a 45° strip in each bend's outer corner, so the air never turns a square 90°; it takes the
   // diagonal, about 0.29 of the slot's width shorter a bend than the centre line)
@@ -551,9 +579,98 @@ export function layout(B, quick = false, lite = false) {
   // a bend's 45° strip: a triangle (three corners at one end) and how far it runs
   const fillet = (a, b, c, ext, p) => { if (round) { parts.push({ kind: "prism", group: "inner", name: "fillet", p: [a, b, c], ext }); p.fillets = (p.fillets || 0) + 1; } };
 
+  // openings cut in the back, top or sides (by a port opening there): { face, lo, hi } (corners, in place)
+  const faceHoles = [];
+  /** A port opening out of the back, the top or a side: laid out in its frame, then put where it goes. */
+  const framed = (p, room) => {
+    const F = p.F, w = p.sw, lin = p.lin, [u0, u1] = F.u, [v0, v1] = F.v, [d0, d1] = F.d, Dl = d1 - d0, Vs = v1 - v0;
+    const at = (u, v, d) => F.M(u, v, d);
+    // (up the middle: between the subs, half of them each side; with an odd number, the extra one on the left)
+    const UC = (strip) => u0 + ((u1 - u0 - strip) * Math.ceil(N / 2)) / N + strip / 2;
+    const corners = (ua, va, da, ub, vb, db) => { const a = at(ua, va, da), b = at(ub, vb, db); return boxC(Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.min(a[2], b[2]), Math.max(a[0], b[0]), Math.max(a[1], b[1]), Math.max(a[2], b[2])); };
+    const lbox = (group, nm, ...c) => hex(group, corners(...c), { name: nm });
+    const hole = (ua, ub) => {
+      const a = at(ua, v0, 0), b = at(ub, v1, d0), lo = [0, 1, 2].map((k) => Math.min(a[k], b[k])), hi = [0, 1, 2].map((k) => Math.max(a[k], b[k]));
+      if (F.face === "front") openings.push({ x: [lo[0], hi[0]], y: [lo[1], hi[1]] }); else faceHoles.push({ face: F.face, lo, hi });
+    };
+    // (the subs on the front keep clear of it: a port along the left or right comes back that far; up the middle, they
+    // go either side)
+    const keepOff = (side, wd, x) => { if (F.face === "back" || F.face === "top" || F.face === "front") used.set(room, { side, w: wd, at: x }); };
+    if (p.kind === "round") {
+      const r = p.dia / 2, m = 0.015, rows = Math.max(1, Math.floor((Vs - m) / (p.dia + m))), cols = Math.ceil(p.n / rows);
+      for (let i = 0; i < p.n; i++) {
+        const c = Math.floor(i / rows), rr = i % rows, inCol = Math.min(rows, p.n - c * rows);
+        const v = (v0 + v1) / 2 + (rr - (inCol - 1) / 2) * (p.dia + m);
+        const u = F.wall === "right" ? u1 - r - m - c * (p.dia + m) : F.wall === "center" ? UC(cols * (p.dia + m) + m) + (c - (cols - 1) / 2) * (p.dia + m) : u0 + r + m + c * (p.dia + m);
+        p.tubes.push({ at: at(u, v, 0), dir: F.dir, len: p.len, r, through: d0 });
+      }
+      const wd = cols * (p.dia + m) + m;
+      if (F.wall === "center") keepOff("center", wd, UC(wd)); else keepOff(F.wall, wd);
+      p.bend = 0;
+      return;
+    }
+    const mid = F.wall === "center", fold = F.face !== "left" && F.face !== "right";
+    if (mid && lin <= Dl - w) {
+      // up the middle of the panel: straight in, a wall each side
+      const uc = UC(2 * w + 3 * t), ua = uc - w / 2, ub = uc + w / 2, len = lin;
+      hole(ua, ub);
+      lbox("inner", "port", ua - t, v0, d0, ua, v1, d0 + len);
+      lbox("inner", "port", ub, v0, d0, ub + t, v1, d0 + len);
+      lbox("air", "air", ua, v0, 0, ub, v1, d0 + len);
+      p.panels.push({ name: `${cap(portName(B, p))} wall`, a: Vs, b: len }, { name: `${cap(portName(B, p))} wall`, a: Vs, b: len });
+      p.bend = 0;
+      keepOff("center", w + 2 * t, uc);
+      return;
+    }
+    // along a wall of the box (or, folded, beside the middle): straight in; longer, folded back on itself; out of a side,
+    // across the far side
+    const low = mid || F.wall !== "right", s = low ? 1 : -1;
+    const uw0 = mid ? UC(2 * w + 3 * t) - w - t / 2 : low ? u0 : u1, uw = uw0 + s * w;
+    hole(Math.min(uw0, uw), Math.max(uw0, uw));
+    p.bend = lin > Dl - w ? (fold ? 2 : 1) : 0;
+    if (p.bend === 2) {
+      // a U: in along the wall, across at the far end, and back out beside itself (all in a strip the subs keep off)
+      const uA2 = uw + s * t, uC2 = uA2 + s * w, uB2 = uC2 + s * t;
+      const e0 = d1 + Dl + t - lin, lim = d0 + w, over = lim - e0, dE = Math.max(e0, lim);
+      if (over > 0) warn.push(`The ${portName(B, p)} is ${fmtLenSI(over)} too long to fit, even folded back on itself: make the box ${F.face === "top" ? "taller" : "deeper"}, or the port narrower.`);
+      if (mid) lbox("inner", "port", uw0 - s * t, v0, d0, uw0, v1, d1);
+      lbox("inner", "port", uw, v0, d0, uA2, v1, d1 - w);
+      lbox("inner", "port", uC2, v0, dE, uB2, v1, d1);
+      lbox("air", "air", uw0, v0, 0, uw, v1, d1);
+      lbox("air", "air", uw, v0, d1 - w, uC2, v1, d1);
+      lbox("air", "air", uA2, v0, dE, uC2, v1, d1 - w);
+      const e0v = at(0, v0, 0), e1v = at(0, v1, 0), ext = [0, 1, 2].map((k) => e1v[k] - e0v[k]);
+      fillet(at(uw0, v0, d1 - w), at(uw0, v0, d1), at(uw, v0, d1), ext, p);
+      fillet(at(uC2, v0, d1 - w), at(uC2, v0, d1), at(uA2, v0, d1), ext, p);
+      const nm = cap(portName(B, p));
+      p.panels.push({ name: `${nm} wall (between)`, a: Vs, b: d1 - w - d0 }, { name: `${nm} wall (outer)`, a: Vs, b: d1 - dE });
+      if (mid) p.panels.push({ name: `${nm} wall (side)`, a: Vs, b: Dl });
+      if (mid) keepOff("center", 2 * w + 3 * t, UC(2 * w + 3 * t)); else keepOff(F.wall, 2 * w + 2 * t);
+      return;
+    }
+    if (!p.bend) {
+      lbox("inner", "port", uw, v0, d0, uw + s * t, v1, d0 + lin);
+      lbox("air", "air", uw0, v0, 0, uw, v1, d0 + lin);
+      p.panels.push({ name: `${cap(portName(B, p))} wall`, a: Vs, b: lin });
+    } else {
+      const ue = uw0 + s * (lin - Dl + w), lim = low ? u1 - w : u0 + w, over = low ? ue - lim : lim - ue, uE = over > 0 ? lim : ue;
+      if (over > 0) warn.push(`The ${portName(B, p)} is ${fmtLenSI(over)} too long to fit, even bent across the far side: make the box bigger, or the port narrower.`);
+      lbox("inner", "port", uw, v0, d0, uw + s * t, v1, d1 - w);
+      lbox("inner", "port", uw + s * t, v0, d1 - w - t, uE, v1, d1 - w);
+      lbox("air", "air", uw0, v0, 0, uw, v1, d1);
+      lbox("air", "air", uw, v0, d1 - w, uE, v1, d1);
+      const e0 = at(0, v0, 0), e1 = at(0, v1, 0);
+      fillet(at(uw0, v0, d1 - w), at(uw0, v0, d1), at(uw0 + s * w, v0, d1), [0, 1, 2].map((k) => e1[k] - e0[k]), p);
+      p.panels.push({ name: `${cap(portName(B, p))} wall (in)`, a: Vs, b: d1 - w - d0 }, { name: `${cap(portName(B, p))} wall (across)`, a: Vs, b: Math.abs(uE - (uw + s * t)) });
+    }
+    keepOff(F.wall, w + t);
+    // (out of a side and bent: its second leg runs along the far side, toward the front)
+    if (F.face === "left" || F.face === "right") { if (p.bend) used.set(room, { side: F.face === "left" ? "right" : "left", w: w + t }); }
+  };
   for (const p of ports) {
     p.panels = []; p.tubes = [];
     for (const { room, wall } of p.inst) {
+      if (p.F) { framed(p, room); continue; }
       const [xa, xb] = room.x;
       if (p.kind === "round") {
         // tubes: in a column by the room's wall (in the middle of a hallway), or low at the back of the divider (series)
@@ -563,11 +680,11 @@ export function layout(B, quick = false, lite = false) {
           const y = y0 + Hi / 2 + (rr - (inCol - 1) / 2) * (p.dia + m);
           if (p.inner) p.tubes.push({ at: [xb + td, y, zb - r - m - c * (p.dia + m)], dir: [-1, 0, 0], len: p.len, r, through: td });
           else {
-            const x = wall === "right" ? xb - r - m - c * (p.dia + m) : wall === "top" ? (xa + xb) / 2 + (c - (cols - 1) / 2) * (p.dia + m) : xa + r + m + c * (p.dia + m);
+            const x = wall === "right" ? xb - r - m - c * (p.dia + m) : wall === "top" || wall === "center" ? (xa + xb) / 2 + (c - (cols - 1) / 2) * (p.dia + m) : xa + r + m + c * (p.dia + m);
             p.tubes.push({ at: [x, y, 0], dir: [0, 0, 1], len: p.len, r, through: tf });
           }
         }
-        used.set(room, { side: wall, w: cols * (p.dia + m) + m });
+        used.set(room, { side: wall, w: cols * (p.dia + m) + m, at: (xa + xb) / 2 });
         continue;
       }
       const w = p.sw, lin = p.lin;
@@ -605,7 +722,7 @@ export function layout(B, quick = false, lite = false) {
         hex("air", boxC(x0, y0, 0, x1, y1, tf + len), { name: "air" });
         p.panels.push({ name: name(p), a: Hi, b: len }, { name: name(p), a: Hi, b: len });
         p.bend = 0;
-        used.set(room, { side: "center", w: w + 2 * t });
+        used.set(room, { side: "center", w: w + 2 * t, at: xc });
         continue;
       }
       if (wall === "top") {
@@ -672,10 +789,10 @@ export function layout(B, quick = false, lite = false) {
       used.set(room, { side: wall === "right" ? "right" : "left", w: w + t });
     }
     if (p.kind === "round") {
-      const room = Math.max(0, (p.inner ? p.xb - p.xa : Dmin) - p.dia);
+      const room = Math.max(0, (p.inner ? p.xb - p.xa : p.dl) - p.dia);
       if (p.lin > room) warn.push(`The ${portName(B, p)} is ${fmtLenSI(p.lin - room)} too long to fit straight: it needs a bend, a slot port, or a bigger box.`);
       const u = used.get(p.inst[0].room);
-      if (p.dia > Hi || (u && u.w > p.xb - p.xa)) warn.push(`The ${portName(B, p)} ${p.n > 1 ? "tubes don't" : "tube doesn't"} fit well on the panel: fewer or smaller tubes, or a bigger box.`);
+      if (p.dia > p.vs || (u && u.w > p.ul)) warn.push(`The ${portName(B, p)} ${p.n > 1 ? "tubes don't" : "tube doesn't"} fit well on the panel: fewer or smaller tubes, or a bigger box.`);
     }
   }
 
@@ -688,10 +805,19 @@ export function layout(B, quick = false, lite = false) {
     const lip = Math.max(0, Math.min(t, (sz - sub.cutout) / 2 - 0.002));
     let xs0 = t - lip, xs1 = W - t + lip;
     const u = used.get(rooms[0]);
+    if (u && u.side === "center") {
+      // (a port up the middle: half the subs each side of it)
+      const x0 = u.at - u.w / 2, x1 = u.at + u.w / 2, nl = Math.ceil(N / 2);
+      const gl = arrange(nl, x0 - xs0, Hi + 2 * lip, sz, gap), gr = N - nl ? arrange(N - nl, xs1 - x1, Hi + 2 * lip, sz, gap) : { fit: true, at: [] };
+      if (!gl.fit || !gr.fit) warn.push(`${N > 1 ? "The subs don't" : "The sub doesn't"} fit on the front either side of the port: make the box ${N > 1 ? "wider or taller" : "wider"}.`);
+      for (const [uu, v] of gl.at) subs.push(S([xs0 + uu, y0 - lip + v, 0], [0, 0, -1], tf));
+      for (const [uu, v] of gr.at) subs.push(S([x1 + uu, y0 - lip + v, 0], [0, 0, -1], tf));
+    } else {
     if (u) { if (u.side === "right") xs1 = W - t - u.w; else if (u.side === "both") { xs0 = t + u.w; xs1 = W - t - u.w; } else xs0 = t + u.w; }
     const g = arrange(N, xs1 - xs0, Hi + 2 * lip, sz, gap);
     if (!g.fit) warn.push(`${N > 1 ? "The subs don't" : "The sub doesn't"} fit on the front${ports.length ? " next to the port" : ""}: make the box ${N > 1 ? "wider or taller" : Wi < Hi ? "wider" : "taller"}.`);
     for (const [uu, v] of g.at) subs.push(S([xs0 + uu, y0 - lip + v, 0], [0, 0, -1], tf));
+    }
     if (sub.depth > Dmin - 0.01) warn.push(`The sub is deeper (${fmtLenSI(sub.depth)}) than the inside of the box: it won't fit.`);
   } else {
     const topSlot = ports.find((p) => p.top);
@@ -780,11 +906,32 @@ export function layout(B, quick = false, lite = false) {
     }
   };
   for (let i = 0; i < tf / t - 0.5; i++) front(i * t, (i + 1) * t);         // (the baffle's layers)
-  hex("wall", [[0, 0, zi(0)], [W, 0, zi(0)], [W, H, zi(H)], [0, H, zi(H)], [0, 0, zo(0)], [W, 0, zo(0)], [W, H, zo(H)], [0, H, zo(H)]], { name: "back" });
+  // (a panel with a port's opening in it: in pieces round the opening; only on a rectangular box)
+  const holed = (nm, lo, hi, axis) => {
+    const hs = faceHoles.filter((o) => o.face === nm);
+    if (!hs.length) return false;
+    const [ai, bi] = [0, 1, 2].filter((k) => k !== axis);
+    const cuts = (k) => [...new Set([lo[k], hi[k], ...hs.flatMap((o) => [o.lo[k], o.hi[k]]).filter((v) => v > lo[k] && v < hi[k])])].sort((a, b) => a - b);
+    const as = cuts(ai), bs = cuts(bi), inHole = (a, b) => hs.some((o) => a > o.lo[ai] && a < o.hi[ai] && b > o.lo[bi] && b < o.hi[bi]);
+    for (let j = 0; j < bs.length - 1; j++) {
+      let run = null;
+      for (let i = 0; i < as.length - 1; i++) {
+        const solid = !inHole((as[i] + as[i + 1]) / 2, (bs[j] + bs[j + 1]) / 2);
+        if (solid && run == null) run = as[i];
+        if ((!solid || i === as.length - 2) && run != null) {
+          const ae = solid ? as[i + 1] : as[i], l = [...lo], h2 = [...hi];
+          l[ai] = run; h2[ai] = ae; l[bi] = bs[j]; h2[bi] = bs[j + 1];
+          hex("wall", boxC(l[0], l[1], l[2], h2[0], h2[1], h2[2]), { name: nm }); run = null;
+        }
+      }
+    }
+    return true;
+  };
+  if (!holed("back", [0, 0, D - t], [W, H, D], 2)) hex("wall", [[0, 0, zi(0)], [W, 0, zi(0)], [W, H, zi(H)], [0, H, zi(H)], [0, 0, zo(0)], [W, 0, zo(0)], [W, H, zo(H)], [0, H, zo(H)]], { name: "back" });
   hex("wall", toBack(0, 0, W, y0, tf), { name: "bottom" });
-  hex("wall", toBack(0, y1, W, H, tf), { name: "top" });
-  hex("wall", toBack(0, y0, t, y1, tf), { name: "left" });
-  hex("wall", toBack(W - t, y0, W, y1, tf), { name: "right" });
+  if (!holed("top", [0, y1, tf], [W, H, D - t], 1)) hex("wall", toBack(0, y1, W, H, tf), { name: "top" });
+  if (!holed("left", [0, y0, tf], [t, y1, D - t], 0)) hex("wall", toBack(0, y0, t, y1, tf), { name: "left" });
+  if (!holed("right", [W - t, y0, tf], [W, y1, D - t], 0)) hex("wall", toBack(W - t, y0, W, y1, tf), { name: "right" });
   for (const dv of dividers) {
     const xd = dv.x;
     // (in layers: each its own piece, so the 3D view shows them)
@@ -812,6 +959,14 @@ export function layout(B, quick = false, lite = false) {
     Dt < D ? { name: "Sides", n: 2, a: Hi, b: zi(y0) - tf, b2: zi(y1) - tf, note: `a wedge: ${fmtLenSI(zi(y0) - tf)} at the bottom, ${fmtLenSI(zi(y1) - tf)} at the top` }
       : { name: "Sides", n: 2, a: Hi, b: Dmin },
   ];
+  // (a port opening out of the back, top or a side: its opening on that panel's line)
+  for (const p of ports) if (p.F && p.F.face !== "front") {
+    const o = faceHoles.find((q) => q.face === p.F.face), row = cut.find((c) => c.name === (p.F.face === "back" ? "Back" : p.F.face === "top" ? "Top" : "Sides"));
+    if (!o || !row) continue;
+    const dims = [0, 1, 2].map((k) => o.hi[k] - o.lo[k]).sort((a, b) => b - a);
+    const what = p.kind === "round" ? `${p.n > 1 ? p.n + " holes" : "a hole"} ${fmtLenSI(p.dia + 0.006)} across for the port tube${p.n > 1 ? "s" : ""}` : `the port's opening, ${fmtLenSI(dims[0])} × ${fmtLenSI(dims[1])}`;
+    row.note = [row.note, `${p.F.face === "left" || p.F.face === "right" ? `the ${p.F.face} one: ` : ""}cut ${what} in it`].filter(Boolean).join("; ");
+  }
   if (dividers.length) {
     const bn = layers > 1 ? `${layers} layers glued together for each, ${fmtLenSI(td)} thick: the baffle the subs mount on` : "the baffle the subs mount on";
     cut.push(Dt < D ? { name: "Divider (baffle)", n: dividers.length * layers, a: Hi, b: zi(y0) - tf, b2: Dmin, note: `a wedge, like the sides; ${bn}` } : { name: "Divider (baffle)", n: dividers.length * layers, a: Hi, b: Dmin, note: bn });
@@ -921,6 +1076,16 @@ export const misfits = (L) => L.warn.filter((w) => /fit|too long|deeper|too narr
  * limit). The search covers sizes stepping up from the least the subs need (tall enough for their cutouts, deep enough
  * for their magnets) and the sizes that fit one, two, three… rows of subs exactly. Whole inches. Returns the new B
  * (or null). */
+/** The width a ported box's port takes beside the subs on the front: along a side, a slot and its wall (folded, out
+ * of the back or top: twice that); up the middle, a folded slot and three walls; out of a side, none (it runs along
+ * the back). Round: its column of tubes. */
+function portRoom(B) {
+  const P = B.port || {}, t = B.t, w = P.w || 0.04, at = ["back", "top", "side"].includes(P.at) && B.shape !== "wedge" ? P.at : "front", mid = P.pos === "middle";
+  if (at === "side") return 0;
+  if (P.kind === "round") return (P.dia || 0.1) + 1.2 * IN;
+  if (mid) return 2 * w + 3 * t;
+  return at === "front" ? w + t : 2 * w + 2 * t;
+}
 export function shapeBox(B, solveFor, t1, t2, lim = {}) {
   const t = B.t, s = B.sub, bp = B.type === "bp4" || B.type === "bp6", hall = bp && B.style === "hall";
   const tf = bp ? t : baffleLayers(B) * t, td = bp ? baffleLayers(B) * t : t;
@@ -929,7 +1094,7 @@ export function shapeBox(B, solveFor, t1, t2, lim = {}) {
   const topSlot = 0;
   const lipF = bp ? 0 : Math.max(0, Math.min(t, (Math.max(0.05, s.size || s.cutout * 1.08) - s.cutout) / 2 - 0.002));   // (a front frame's lip over the walls)
   const min = bp ? { w: up((hall ? 2 : 1) * (s.depth + 1.5 * IN) + (hall ? 2 * t + 2 * td + 3 * IN : 2 * t + td + 4 * IN)), h: up(cell + 2 * t + topSlot), d: up(cell + tf + t) }
-    : { w: up(cell + 2 * t - 2 * lipF + (B.type === "ported" ? ((B.port || {}).kind === "round" ? ((B.port || {}).dia || 0.1) + 1.2 * IN : ((B.port || {}).w || 0.04) + t) : 0)), h: up(cell + 2 * t - 2 * lipF), d: up(s.depth + tf + t + IN) };
+    : { w: up(cell + 2 * t - 2 * lipF + (B.type === "ported" ? portRoom(B) : 0)), h: up(cell + 2 * t - 2 * lipF), d: up(s.depth + tf + t + IN) };
   const [fa, fb] = ["w", "h", "d"].filter((k) => k !== solveFor);
   const ratio = B.shape === "wedge" ? Math.min(1, B.dt / B.d) : 1;
   const ok = (k, v) => !(lim[k] > 0) || v <= lim[k] + 1e-6;

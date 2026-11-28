@@ -236,7 +236,7 @@ try {
   log("after 10 songs this hour:", lim);
   check(lim === '{"again":true,"next":false,"left":0}', "10 songs an hour: the same song again is fine, an eleventh isn't");
   await A.ev(`import('./js/premium.js').then(m => { m.openUnlock(); return 1; })`); await sleep(500);
-  const sj = JSON.parse(await A.ev(`(() => { const p = document.getElementById('sheet-panel'); const a = p.querySelector('.pm-pay'); return JSON.stringify({ text: p.textContent.replace(/ +/g, ' ').slice(0, 300), href: a && a.href }); })()`));
+  const sj = JSON.parse(await A.ev(`(() => { const p = document.getElementById('sheet-panel'); const a = p.querySelector('.pm-pay'); return JSON.stringify({ text: p.textContent.replace(/ +/g, ' ').slice(0, 3000), href: a && a.href }); })()`));
   log("the unlock sheet:", JSON.stringify(sj));
   check(/\$10/.test(sj.text) && /Alice/.test(sj.text) && sj.href === "https://www.paypal.com/paypalme/lnewman21s/10USD", "the unlock sheet: $10 once, PayPal, and her username for the note");
   await A.ev(`(() => { const a = document.querySelector('#sheet-panel .pm-pay'); a.addEventListener('click', (e) => e.preventDefault()); a.click(); return 1; })()`);
@@ -350,7 +350,7 @@ try {
   await A.ev(`import('./js/dms.js').then(m => m.openChat(${JSON.stringify(ben)})).then(() => 1)`);
   const gotPic = await A.until(`[...document.querySelectorAll('#sheet-panel .dm-bubble.them .dm-pic img')].some(i => i.naturalWidth > 0)`, 15000);
   const size = await A.ev(`(() => { const i = [...document.querySelectorAll('#sheet-panel .dm-bubble.them .dm-pic img')].pop(); return i.naturalWidth + 'x' + i.naturalHeight; })()`);
-  const bins = [...msgs.values()].flatMap((x) => (x.attachments || []).filter((a) => a.filename === "m.bin")).map((a) => files.get(new URL(a.url).pathname));
+  const bins = [...msgs.values()].flatMap((x) => (x.attachments || []).filter((a) => /^m(\.bin|-x\.mp4)$/.test(a.filename))).map((a) => files.get(new URL(a.url).pathname));
   const sealedOnServer = bins.length > 0 && bins.every((b) => b && !(b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff));
   log(`photo: on Ben's side after ${sentPic} ms, on Alice's after ${gotPic} ms, ${size} | sent sealed: ${sealedOnServer}`);
   check(sentPic >= 0 && gotPic >= 0 && size === "320x240" && sealedOnServer, "a photo sent in a message, sealed, and seen in the chat");

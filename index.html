@@ -213,7 +213,7 @@
         </div>
 
         <div class="card sec">
-          <div class="sec-head"><span class="sec-ico"><svg><use href="#i-spark"/></svg></span><div class="sec-t"><b>Effects</b><small>Slowed, reverb and the FifTeam intro</small></div></div>
+          <div class="sec-head"><span class="sec-ico"><svg><use href="#i-spark"/></svg></span><div class="sec-t"><b>Effects</b><small>Slowed, reverb and an intro (FifTeam's or your own)</small></div></div>
           <label class="switch"><span class="txt">Slowed</span><input type="checkbox" id="rb-slow"></label>
           <div class="stack" id="rb-slow-box" hidden>
             <div class="row between"><span class="label">Speed</span><span class="val" id="rb-speed-val">80<small>%</small></span></div>
@@ -267,7 +267,7 @@
             </div>
           </div>
           <div class="field"><label for="rb-name" class="status">Name</label><input class="input" id="rb-name" maxlength="120" autocomplete="off"></div>
-          <div class="seg" id="rb-format"><button class="on" data-k="wav16">WAV 16-bit</button><button data-k="wav24">WAV 24-bit</button><button data-k="mp3">MP3 320</button></div>
+          <div class="seg" id="rb-format"><button class="on" data-k="wav16">WAV 16</button><button data-k="wav24">WAV 24</button><button data-k="flac">FLAC</button><button data-k="mp3">MP3 320</button></div><small class="status fmt-note">WAV and FLAC are lossless: every bit of the sound, nothing thrown away. FLAC is about half the size.</small>
           <span class="status" id="rb-size"></span>
           <button class="btn primary block" id="rb-save"><svg><use href="#i-save"/></svg>Save to phone</button>
           <div class="row">
@@ -348,7 +348,7 @@
             </div>
           </div>
           <div class="field"><label for="tg-name" class="status">Name</label><input class="input" id="tg-name" maxlength="120" autocomplete="off"></div>
-          <div class="seg" id="tg-format"><button class="on" data-k="wav16">WAV 16-bit</button><button data-k="wav24">WAV 24-bit</button><button data-k="mp3">MP3 320</button></div>
+          <div class="seg" id="tg-format"><button class="on" data-k="wav16">WAV 16</button><button data-k="wav24">WAV 24</button><button data-k="flac">FLAC</button><button data-k="mp3">MP3 320</button></div><small class="status fmt-note">WAV and FLAC are lossless: every bit of the sound, nothing thrown away. FLAC is about half the size.</small>
           <button class="btn primary block" id="tg-save"><svg><use href="#i-save"/></svg>Save to phone</button>
           <div class="row">
             <button class="btn grow" id="tg-keep"><svg><use href="#i-plus"/></svg>Add to library</button>

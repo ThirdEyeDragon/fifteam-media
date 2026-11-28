@@ -26,7 +26,7 @@ function defaults() {
     vr6: 2.1 * FT3, fr6: 27, vf6: 0.6 * FT3, ff6: 59, lo6: 30, hi6: 80,
     shape: "rect", w: 24 * IN, h: 15 * IN, d: 16 * IN, dt: 11 * IN, t: 0.75 * IN, layers: 1, brace: 0,           // layers: the baffle (where the subs mount)
     fixed: false, solve: "w", split: 0.55,
-    port: { kind: "slot", w: 1.6 * IN, dia: 4 * IN, n: 1, auto: true, len: 0 },
+    port: { kind: "slot", w: 1.6 * IN, dia: 4 * IN, n: 1, auto: true, len: 0, at: "front", pos: "left" },
     port2: { kind: "slot", w: 1.5 * IN, dia: 3 * IN, n: 1, auto: true, len: 0 },
     cab: false, cabF: 50, ql: 10,
     finish: "mdf", paint: "#7a4bff", view: "solid", chart: "spl", pin: true,
@@ -599,7 +599,7 @@ function sheet() {
   const { L, sim } = res, lines = [`FifTeam Media sub box: ${describe()}`, ""];
   lines.push(`Outside: ${cutLen(L.W)} wide × ${cutLen(L.H)} tall × ${cutLen(L.D)} deep${L.Dt < L.D ? ` (${cutLen(L.Dt)} at the top)` : ""}, ${cutLen(st.t)} wood${st.layers > 1 ? `, the baffle ${st.layers} layers (${cutLen(st.layers * st.t)})${st.type.startsWith("bp") ? ": the divider the subs mount on" : ""}` : ""}`);
   L.net.forEach((v, k) => lines.push(`${L.net.length > 1 ? (k ? (L.hall ? "Middle chamber" : "Front chamber") : (L.hall ? "Rear chambers (both)" : "Rear chamber")) : "Box"}: ${fmt("vol", v)} net (${fmt("vol", L.gross[k])} inside)`));
-  for (const p of L.ports) lines.push(`${cap(M.portName(spec(), p))}: ${p.copies > 1 ? p.copies + "× " : ""}${p.kind === "slot" ? `slot ${cutLen(p.sw)} × ${cutLen(p.span)}` : `${p.n}× ${cutLen(p.dia)} round`}, ${cutLen(p.len)} long${p.bend ? " (bent)" : ""}, tuned to ${p.fb.toFixed(1)} Hz`);
+  for (const p of L.ports) lines.push(`${cap(M.portName(spec(), p))}: ${p.copies > 1 ? p.copies + "× " : ""}${p.kind === "slot" ? `slot ${cutLen(p.sw)} × ${cutLen(p.span)}` : `${p.n}× ${cutLen(p.dia)} round`}, ${cutLen(p.len)} long${p.bend ? " (bent)" : ""}, tuned to ${p.fb.toFixed(1)} Hz${st.type === "ported" && p.at ? `, opening out of the ${p.at === "side" ? p.pos + " side" : p.at}${p.at !== "side" ? (p.pos === "middle" ? ", in the middle" : `, ${p.pos}`) : ""}` : ""}`);
   lines.push("", "Cut list:");
   for (const c of L.cut) lines.push(`  ${c.n}× ${c.name}: ${cutLen(c.a)} × ${cutLen(c.b)}${c.b2 ? ` / ${cutLen(c.b2)}` : ""}${c.note ? ` (${c.note})` : ""}`);
   lines.push("", `Sub cutout ${cutLen(st.drv.cutout)}${st.drv.shape === "sq" ? " square" : " round"}. Power ${st.power} W. Peak cone travel ${(Math.max(...sim.x.filter((x, i) => sim.f[i] >= res.fmin && sim.f[i] <= 200)) * 1000).toFixed(1)} mm (Xmax ${(st.drv.xmax * 1000).toFixed(1)} mm).`);
@@ -649,7 +649,25 @@ function paintPorts() {
     el.hidden = !p;
     if (!p) continue;
     el.querySelector(".bx-pname").textContent = L.ports.length > 1 ? cap(M.portName(spec(), p)) : "The port";
-    el.querySelectorAll(".seg button").forEach((b) => b.classList.toggle("on", b.dataset.k === P.kind));
+    el.querySelectorAll(".bx-pkind button").forEach((b) => b.classList.toggle("on", b.dataset.k === P.kind));
+    const wh = el.querySelector(".bx-pwhere");
+    if (wh) {
+      wh.hidden = st.type !== "ported";
+      const at = p.at || "front", pos = p.pos || "left";
+      wh.querySelectorAll(".bx-pat button").forEach((b) => { b.classList.toggle("on", b.dataset.k === at); b.disabled = st.shape === "wedge" && b.dataset.k !== "front"; });
+      wh.querySelectorAll(".bx-ppos button").forEach((b) => {
+        b.classList.toggle("on", b.dataset.k === pos);
+        b.hidden = at === "side" && b.dataset.k === "middle";
+        b.textContent = at === "side" ? (b.dataset.k === "left" ? "Left side" : b.dataset.k === "right" ? "Right side" : "Middle") : cap(b.dataset.k);
+      });
+      const say = {
+        front: pos === "middle" ? "Out of the front, between the subs (half each side): straight back; long, folded back on itself." : `Out of the front, along the ${pos} side; long, bent across the back.`,
+        back: pos === "middle" ? "Out of the back, between the subs: straight in; long, folded back on itself, clear of the subs." : `Out of the back, along the ${pos} side; long, folded back on itself, clear of the subs.`,
+        top: pos === "middle" ? "Out of the top, between the subs: straight down; long, folded back up on itself." : `Out of the top, down the ${pos} side; long, folded back up on itself.`,
+        side: `Out of the ${pos} side, along the back; long, bent forward along the far side. The subs keep the whole front.`,
+      }[at];
+      wh.querySelector(".bx-pwhere-info").textContent = say;
+    }
     el.querySelector(".bx-pslot").hidden = P.kind !== "slot"; el.querySelector(".bx-pround").hidden = P.kind !== "round";
     el.querySelector(".bx-pauto").checked = P.auto;
     el.querySelector(".bx-pinfo").textContent = `${fmt("area", p.S)}${p.copies > 1 ? ` (${p.copies} ports)` : ""} · ${cutLen(p.len)} long (${cutLen(p.lin)} inside${p.bend ? ", bent" : ""}) · tuned to ${p.fb.toFixed(1)} Hz${P.kind === "slot" ? ` · ${cutLen(p.sw)} × ${cutLen(p.span)} slot${p.top ? " along the top" : ""}` : ""}`;
@@ -876,14 +894,36 @@ function buildScreen(root) {
   const ports = h("div", "stack"); ports.id = "bx-ports";
   for (const key of ["port", "port2"]) {
     const el = h("div", "stack-sm bx-pblock"); el.id = "bx-" + key;
-    const kind = seg(null, [["slot", "Slot"], ["round", "Round"]], st[key].kind);
+    const kind = seg(null, [["slot", "Slot"], ["round", "Round"]], st[key].kind); kind.classList.add("bx-pkind");
     kind.onclick = (e) => { const b = e.target.closest("button"); if (!b || b.dataset.k === st[key].kind) return; st[key].kind = b.dataset.k; st[key].autoRound = false; compute(); sizePorts(true); const moved = reshape(); if (M.misfits(res.L)) toast(b.dataset.k === "round" ? "A round port that long can't fit straight here: a slot port can bend" : "The port still doesn't fit: see the notes under How it plays", 4000); else if (moved) toast("Box re-shaped so the port fits"); paintAll(); };
     const slot = grid(2, field(key + ".w", "Slot width", "len")); slot.classList.add("bx-pslot");
     const round = grid(2, field(key + ".dia", "Diameter (inside)", "len"), field(key + ".n", "How many", "n", { min: 1, max: 8 })); round.classList.add("bx-pround");
     const auto = sw("Length from the tuning", "Off: type the length and see the tuning", st[key].auto, (on) => { st[key].auto = on; schedule(); });
     auto.querySelector("input").classList.add("bx-pauto");
     const len = grid(2, field(key + ".len", "Length (with the wood)", "len", { ro: () => st[key].auto }));
-    el.append(h("b", "bx-pname", ""), kind, slot, round, auto, len, h("small", "status bx-pinfo", ""));
+    // (a ported box: where the port opens, out of the front, back, top or a side, and where on it)
+    let where = null;
+    if (key === "port") {
+      where = h("div", "stack-sm bx-pwhere");
+      const at = seg(null, [["front", "Front"], ["back", "Back"], ["top", "Top"], ["side", "Side"]], st.port.at || "front"); at.classList.add("bx-pat");
+      const pos = seg(null, [["left", "Left"], ["middle", "Middle"], ["right", "Right"]], st.port.pos || "left"); pos.classList.add("bx-ppos");
+      const moved = (what) => {
+        compute(); sizePorts(true); const re = reshape();
+        if (M.misfits(res.L)) toast("The port doesn't fit there yet: see the notes under How it plays", 4000);
+        else if (re) toast(`Box re-shaped so the port fits ${what}`);
+        paintAll();
+      };
+      at.onclick = (e) => {
+        const b = e.target.closest("button"); if (!b || b.dataset.k === (st.port.at || "front")) return;
+        if (b.dataset.k !== "front" && st.shape === "wedge") { toast("A wedge's port opens out of the front: pick Rectangle for a back, top or side port", 3500); return; }
+        st.port.at = b.dataset.k;
+        if (b.dataset.k === "side" && st.port.pos === "middle") st.port.pos = "left";
+        moved(`out of the ${b.dataset.k}`);
+      };
+      pos.onclick = (e) => { const b = e.target.closest("button"); if (!b || b.dataset.k === (st.port.pos || "left")) return; st.port.pos = b.dataset.k; moved(b.dataset.k === "middle" ? "in the middle" : `on the ${b.dataset.k}`); };
+      where.append(h("span", "label", "Where it opens"), at, pos, h("small", "status bx-pwhere-info", ""));
+    }
+    el.append(h("b", "bx-pname", ""), kind, ...(where ? [where] : []), slot, round, auto, len, h("small", "status bx-pinfo", ""));
     ports.append(el);
   }
   const sizeBtn = h("button", "btn block", "Size the ports for clean air"); sizeBtn.type = "button"; sizeBtn.prepend(icon("i-spark"));

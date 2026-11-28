@@ -1,9 +1,12 @@
 // Turning audio into a file, and getting that file onto the phone or into another app.
 import { encodeWav, dbToLin } from "./dsp.js";
+import { encodeFlac } from "./flac.js";
 
 export const FORMATS = {
   wav16: { label: "WAV 16-bit", ext: "wav", type: "audio/wav", bytesPerSec: (sr) => sr * 4 },
   wav24: { label: "WAV 24-bit", ext: "wav", type: "audio/wav", bytesPerSec: (sr) => sr * 6 },
+  // (lossless too, about 60% of a WAV's size)
+  flac: { label: "FLAC", ext: "flac", type: "audio/flac", bytesPerSec: (sr) => sr * 2.4 },
   mp3: { label: "MP3 320k", ext: "mp3", type: "audio/mpeg", bytesPerSec: () => 40000 },
 };
 
@@ -94,6 +97,7 @@ export async function makeFile(chs, sr, name, format, ctx, onProgress, meta = {}
       } catch { return { file, peakDb: null }; }
     }
   }
+  if (format === "flac") return { file: new File([encodeFlac(chs, sr, tags)], safeName(name, "flac"), { type: "audio/flac" }), peakDb: null };
   const bits = format === "wav24" ? 24 : 16;
   const buf = await tagWav(encodeWav(chs, sr, bits), tags);
   return { file: new File([buf], safeName(name, "wav"), { type: "audio/wav" }), peakDb: null };

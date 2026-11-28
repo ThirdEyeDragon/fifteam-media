@@ -332,5 +332,26 @@ check(w20.length >= 6 && w20.every((o, i) => !i || o.ohms > w20[i - 1].ohms) && 
   const spl = M.presetPorted(d, 1, d.pe, "spl"), deep = M.presetPorted(d, 1, d.pe, "deep"), windy = M.presetPorted(d, 1, d.pe, "windy");
   check(spl.fb > deep.fb + 10 && windy.rule.lo >= 20 && windy.V > M.presetPorted(d, 1, d.pe, "loud").V, `each its own kind: SPL tuned high (${spl.fb} Hz), Deep low (${deep.fb} Hz), Windy a big box with a huge port (${windy.rule.lo.toFixed(0)}+ in² per ft³)`);
 }
+// ---------------------------------------------------------------------------------------------------- where the port opens
+{
+  // every place a ported box's port can open, slot and round, 1 to 4 subs: shaped, it fits and nothing collides; the
+  // opening is cut in the panel it opens out of; the tuning is the one asked for
+  const d12p = M.driver(M.PRESETS[12]), sub12 = { size: 12.5 * IN, cutout: 11.1 * IN, depth: 6.5 * IN, disp: 0.1 * FT3, pe: 800 };
+  let n = 0; const bad = [];
+  for (const kind of ["slot", "round"]) for (const [at, pos] of [["front", "left"], ["front", "middle"], ["front", "right"], ["back", "left"], ["back", "middle"], ["back", "right"], ["top", "left"], ["top", "middle"], ["top", "right"], ["side", "left"], ["side", "right"]]) for (const count of [1, 2, 4]) {
+    const B = { ...base, type: "ported", count, layers: 2, sub: sub12, port: { kind, w: 2 * IN, dia: 4 * IN, n: 2, auto: true, fb: 34, at, pos } };
+    const f = M.shapeBox(B, "w", M.ventedVolumeFor(d12p, count, 34)), L = f && M.layout(f); n++;
+    const p = L && L.ports[0], face = at === "side" ? pos : at;
+    // (the panel it opens out of has less wood than it would with no opening: the opening's cut in it)
+    const vol = (LL) => LL.parts.filter((q) => q.group === "wall" && q.name === face).reduce((s, q) => s + (Math.max(...q.c.map((c) => c[0])) - Math.min(...q.c.map((c) => c[0]))) * (Math.max(...q.c.map((c) => c[1])) - Math.min(...q.c.map((c) => c[1]))) * (Math.max(...q.c.map((c) => c[2])) - Math.min(...q.c.map((c) => c[2]))), 0);
+    const cutIn = L && (kind === "round" ? p.tubes.length === 2 && p.tubes.every((tb) => tb.through > 0) : vol(L) < vol(M.layout({ ...f, port: { ...f.port, at: face === "front" ? "back" : "front" } })) - 1e-6);
+    // (round tubes run straight: a long one can't fit in any box this size, wherever it opens; slots fold to fit)
+    const ok = L && (kind === "round" || !M.misfits(L)) && p.face === face && Math.abs(p.fb - 34) < 0.2 && cutIn;
+    if (!ok) bad.push(`${kind} ${at} ${pos} ${count}: ${L ? L.warn.join(" / ").slice(0, 120) : "no shape"}`);
+  }
+  check(!bad.length, `${n} ported boxes with the port out of the front, back, top or side (left, middle, right; slot and round; 1 to 4 subs): each fits, tuned right, cut through the right panel${bad.length ? " | " + bad.join(" | ") : ""}`);
+  const wedge = M.layout({ ...base, type: "ported", shape: "wedge", port: { kind: "slot", w: 2 * IN, auto: true, fb: 34, at: "back", pos: "left" } });
+  check(wedge.ports[0].face === "front" && /wedge/.test(wedge.warn.join()), "a wedge's port opens out of the front (said so)");
+}
 console.log(failed ? "FAIL" : "box: all ok");
 process.exit(failed ? 1 : 0);

@@ -16,6 +16,8 @@ import { DurableObject } from "cloudflare:workers";
 
 const API = "https://discord.com/api/v10";
 const PHONE = /^[a-z0-9]{6,16}$/, POST = /^\d{5,25}$/;
+// (the files a message can carry, sealed: a song and its cover, a picture or a video and its still)
+const SEALED = /^(song|cover|m|p)(\.bin|-x\.mp4)$/;
 export const STORES = { index: "feed.json", dm: "dm.json", meta: "meta.json", presence: "presence.json", mod: "mod.json", links: "links.json", market: "market.json", accounts: "accounts.json" };
 const LABELS = {
   index: "FifTeam Social feed", dm: "FifTeam messages", meta: "FifTeam votes, follows and about", presence: "FifTeam who's online",
@@ -53,7 +55,7 @@ const MERGE = {
   meta(m, t) {
     m = obj(m); t = obj(t);
     for (const key of ["votes", "follows", "dmok", "dmreq", "fok", "freq", "blocks"]) { const a = obj(m[key]), b = obj(t[key]); for (const k of Object.keys(b)) a[k] = union(a[k], b[k]); m[key] = a; }
-    for (const key of ["about", "prefs"]) m[key] = { ...obj(t[key]), ...obj(m[key]) };
+    for (const key of ["about", "prefs", "setup"]) m[key] = { ...obj(t[key]), ...obj(m[key]) };
     return m;
   },
   presence(m, t) { m = obj(m); t = obj(t); const on = obj(m.on); for (const [k, v] of Object.entries(obj(t.on))) if (!on[k] || (+v.at || 0) > (+on[k].at || 0)) on[k] = v; m.on = on; return m; },
@@ -68,6 +70,8 @@ function keepNew(k, prev, d) {
     const before = new Map(prev.posts.map((p) => [p && p.id, p]));
     for (const p of d.posts) { const q = p && before.get(p.id); if (!q) continue; for (const f of ["priv", "shares", "box"]) if (!(f in p) && f in q) { p[f] = q[f]; changed = true; } }
   }
+  // (someone's setup: an app from before it leaves it out entirely)
+  if (k === "meta" && prev && prev.setup && typeof prev.setup === "object" && Object.keys(prev.setup).length && !("setup" in d)) { d.setup = prev.setup; changed = true; }
   if (k === "meta" && prev && prev.prefs && typeof prev.prefs === "object") {
     d.prefs = obj(d.prefs);
     for (const [ph, q] of Object.entries(prev.prefs)) {
@@ -366,6 +370,19 @@ export class Hub extends DurableObject {
 
   // ---------------------------------------------------------------- files
   /** The current file links for these posts' (or pictures') messages: { id: [{ filename, url }] | null (gone) }. */
+  /** A sealed message file (a song, its cover, a picture or a video sent in a message), passed through: the file
+   * service won't let the app read a .bin file from another site (no cross-origin header for that type), so the app
+   * fetches it here. Only these files, only from the app's own messages, at most 12 MB; still sealed (only the phones
+   * in the chat can open it). */
+  async sealedFile(id, name, token) {
+    if (!POST.test(id || "") || !SEALED.test(name || "")) return { status: 400 };
+    const a = ((await this.files([id], token))[id] || []).find((x) => x.filename === name);
+    if (!a) return { status: 404 };
+    const r = await fetch(this.cdn(a.url));
+    if (!r.ok) return { status: r.status === 404 ? 404 : 502 };
+    if (+(r.headers.get("content-length") || 0) > 12 * 1024 * 1024) return { status: 413 };
+    return { status: 200, body: r.body };
+  }
   async files(ids, token) {
     ids = [...new Set(ids.filter((x) => POST.test(x)))].slice(0, 60);
     const s = await this.load("links"), d = this.data(s) || {}, links = obj(d.links), out = {}, soon = Date.now() + 15 * 60e3;
@@ -536,7 +553,7 @@ export class Hub extends DurableObject {
     if (first) {
       const feed = this.data(await this.load("index")) || {}, nm = (obj(feed.profiles)[phone] || {}).name || phone;
       const clean = String(nm).replace(/[\\*_~`|>#@<:\[\]()]/g, (c) => "\\" + c);
-      await this.tellPayments(`💸 **${clean}** wants Premium ($10: unlimited rebassing and downloads, 4th and 6th-order boxes). Check PayPal for a $10 payment with "${clean}" in the note, then use /premium ${clean}.`).catch(() => {});
+      await this.tellPayments(`💸 **${clean}** wants Premium ($10: unlimited rebassing and downloads, 4th and 6th-order boxes). Check PayPal and Cash App ($ThirdEyeDragon999) for a $10 payment with "${clean}" in the note, then use /premium ${clean}.`).catch(() => {});
     }
     return first;
   }

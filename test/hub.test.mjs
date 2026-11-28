@@ -248,6 +248,12 @@ try {
     const lk = (((await stores("meta")).meta.d.prefs || {})[ben] || {}).lk;
     console.log("older app's write:", w.status, "| post after:", JSON.stringify({ priv: after.priv, shares: after.shares }), "| likes setting after:", lk);
     check(after.priv === 1 && JSON.stringify(after.shares) === JSON.stringify([ben]) && after.box === "eyJ2IjoxLCJ0eXBlIjoicG9ydGVkIn0" && lk === 1, "an older app's write keeps a post private, its shares, its sub box design, and the likes setting");
+    // someone's setup (subs, amps, vehicle, dB): an app from before it leaves the whole thing out; it's kept
+    const m3 = (await stores("meta")).meta; m3.d.setup = { ...(m3.d.setup || {}), [ben]: { subs: "2x 15 Skar VXF", db: 148.6 } }; await put("meta", m3.v, m3.d);
+    const m4 = (await stores("meta")).meta, noSetup = { ...m4.d }; delete noSetup.setup; await put("meta", m4.v, noSetup);
+    const su = ((await stores("meta")).meta.d.setup || {})[ben];
+    console.log("setup after an older app's write:", JSON.stringify(su));
+    check(su && su.subs === "2x 15 Skar VXF" && su.db === 148.6, "an older app's write keeps everyone's setup (subs, amps, vehicle, dB)");
     await sleep(400);
     check(pushes.length === 0, "and putting them back notifies nobody"); }
   // a share: the post's owner hears about it
@@ -297,6 +303,15 @@ try {
   await putAs(alice, cur.v, { v: 1, msgs: cur.d.msgs.filter((m) => !m.g), del: cur.d.del });
   cur = (await stores("dm")).dm;
   check(!cur.d.msgs.some((m) => m.id === "groupmsg0002") && cur.d.groups.length === 1 && cur.d.msgs.some((m) => m.id === gm.id), "no account: its group message dropped; a write leaving the groups out (an older app): they're put back");
+  // a sealed file sent in a message (the file service won't let the app read a .bin from another site): passed through
+  // the server, as it is, with the header the app needs; nothing else is
+  const sealedId = "900000000000000777", sealedBytes = "sealed-song-bytes-" + "x".repeat(300);
+  msgs.set(sealedId, { id: sealedId, attachments: [attach(sealedId, "song.bin", sealedBytes), attach(sealedId, "notes.txt", "hello")] });
+  const sf = await api(`/v1/file?id=${sealedId}&name=song.bin`, { headers: { Origin: "https://thirdeyedragon.github.io" } });
+  const sfBody = await sf.text();
+  const sfOther = (await api(`/v1/file?id=${sealedId}&name=notes.txt`)).status, sfMissing = (await api(`/v1/file?id=${sealedId}&name=cover.bin`)).status;
+  console.log("sealed file through the server:", sf.status, sf.headers.get("access-control-allow-origin"), sfBody.length, "bytes | another kind of file:", sfOther, "| not there:", sfMissing);
+  check(sf.status === 200 && sf.headers.get("access-control-allow-origin") === "*" && sfBody === sealedBytes && sfOther === 400 && sfMissing === 404, "a song sent in a message (an older .bin) comes through the server as it is, readable by the app; only sealed message files");
   ws.close();
 } catch (e) { console.log("STOPPED:", e.stack); fails++; }
 finally {

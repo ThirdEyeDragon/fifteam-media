@@ -103,7 +103,7 @@ export async function nameGate() {
   return new Promise((done) => {
     const box = screen("gate-name");
     const card = h("form", "acct-card gate-card");
-    card.append(mark(), h("h2", "acct-title", "Pick your username"), h("p", "acct-sub", "It's how people see you in FifTeam Media: on your posts, comments and messages. You can change it later."));
+    card.append(mark(), h("h2", "acct-title", "What should we call you?"), h("p", "acct-sub", "Pick a username. It's how people see you in FifTeam Media: on your posts, comments and messages. You can change it later."));
     const inp = h("input", "input"); inp.maxLength = 24; inp.placeholder = "Username"; inp.setAttribute("aria-label", "Username"); inp.autocomplete = "off"; inp.autocapitalize = "off"; inp.required = true;
     const err = h("p", "acct-err", ""), go = h("button", "btn primary block", "Continue"); go.type = "submit";
     card.append(inp, err, go);

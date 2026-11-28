@@ -32,8 +32,8 @@ try { premium = new Set(JSON.parse(ls.get(LIST + "-premium") || "[]")); } catch 
 export const isPremium = (phone) => !!phone && premium.has(phone);
 let badges = {};
 try { badges = JSON.parse(ls.get(LIST + "-badges") || "{}") || {}; } catch {}
-const BADGES = ["founder", "dev", "member"];
-/** The tags the FifTeam team gave a phone (set with the bot): "founder", "dev", "member", in that order. */
+const BADGES = ["founder", "dev", "advertiser", "member"];
+/** The tags the FifTeam team gave a phone (set with the bot): "founder", "dev", "advertiser", "member", in that order. */
 export const badgesOf = (phone) => (phone && badges[phone]) || [];
 /** The phones whose profile pictures the moderators took down (not shown, and not sent again). */
 export const noPicPhones = () => nopic;

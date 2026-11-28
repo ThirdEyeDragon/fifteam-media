@@ -2,6 +2,7 @@
 //   - unlimited rebassing (free: 10 different songs an hour; the same song again, with other settings, doesn't count again)
 //   - unlimited song downloads (free: 5 an hour: a song added to the library from Social or a message, or saved as a file)
 //   - 4th and 6th-order bandpass boxes in Box (standard, series and hallway)
+//   - a custom intro: the user's own voice before their rebassed songs, slowed and pitched (myintro.js)
 // Paying is through PayPal; the FifTeam team unlocks the account (/premium) once the payment's in.
 import { toast, openSheet } from "./ui.js";
 import { isPremium } from "./ban.js";
@@ -9,7 +10,7 @@ import { hubPremiumAsk } from "./hub.js";
 
 export const LIMIT = 10, DL_LIMIT = 5, PRICE = 10;
 const HOUR = 3600e3, KEY = "fifteam-rebass-hour", DL_KEY = "fifteam-dl-hour", ASKED = "fifteam-premium-asked";
-const PAY = "https://www.paypal.com/paypalme/lnewman21s/10USD";
+const PAY = "https://www.paypal.com/paypalme/lnewman21s/10USD", CASH = "https://cash.app/$ThirdEyeDragon999/10", CASHTAG = "$ThirdEyeDragon999";
 const ls = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
 const me = () => ls.get("fifteam-social-me") || "";
 const myName = () => ls.get("fifteam-social-name") || "";
@@ -23,6 +24,7 @@ export const FEATURES = [
   ["i-lib", "Unlimited downloads", `Add and save as many songs as you want (free: ${DL_LIMIT} an hour)`],
   ["i-box", "4th-order boxes", "Bandpass boxes: standard and hallway, designed for your sub"],
   ["i-port", "6th-order boxes", "Standard, series and hallway 6th orders, the loudest builds"],
+  ["i-vol", "Custom intro", "Your own voice before your songs: record it, slow it, pitch it"],
 ];
 
 // ---------------------------------------------------------------------------------------------------- hourly counts
@@ -75,6 +77,7 @@ const WHY = {
   bp4: () => "4th-order boxes are a Premium feature.",
   bp6: () => "6th-order boxes are a Premium feature.",
   bandpass: () => "Bandpass builds are a Premium feature.",
+  intro: () => "A custom intro (your own voice before your songs) is a Premium feature.",
 };
 /** FifTeam Premium: why it opened (a locked feature, or a limit reached), what it gives, and how to get it. */
 export function openPremium(why = "") {
@@ -94,19 +97,21 @@ export function openPremium(why = "") {
     p.append(card);
     const name = myName() || "your username";
     const steps = h("ol", "pm-steps");
-    const s1 = h("li", "", `Tap Pay with PayPal and send $${PRICE}.`);
-    const s2 = h("li", ""); s2.append("In the note, put your username: ");
+    const s1 = h("li", "", `Pay $${PRICE} with PayPal or Cash App (${CASHTAG}).`);
+    const s2 = h("li", ""); s2.append("In the note (Cash App: \"For\"), put your username: ");
     const nm = h("b", "pm-name", name); s2.append(nm);
     const cp = h("button", "btn small pm-copy", "Copy"); cp.onclick = () => { navigator.clipboard && navigator.clipboard.writeText(name).then(() => toast("Copied", 1200), () => {}); };
     s2.append(" ", cp);
     const s3 = h("li", "", "It unlocks by itself once the payment's confirmed (usually within a day). You'll see a note here when it does.");
     steps.append(s1, s2, s3);
+    const asked = () => { ls.set(ASKED, String(Date.now())); hubPremiumAsk().catch(() => {}); setTimeout(() => { const w = document.querySelector("#sheet-panel .pm-wait"); if (w) w.hidden = false; }, 800); };
     const pay = h("a", "btn primary block pm-pay", `Get Premium: $${PRICE} with PayPal`);
-    pay.href = PAY; pay.target = "_blank"; pay.rel = "noopener";
-    pay.onclick = () => { ls.set(ASKED, String(Date.now())); hubPremiumAsk().catch(() => {}); setTimeout(() => { const w = document.querySelector("#sheet-panel .pm-wait"); if (w) w.hidden = false; }, 800); };
+    pay.href = PAY; pay.target = "_blank"; pay.rel = "noopener"; pay.onclick = asked;
+    const cash = h("a", "btn block pm-pay pm-cash", `Or $${PRICE} with Cash App (${CASHTAG})`);
+    cash.href = CASH; cash.target = "_blank"; cash.rel = "noopener"; cash.onclick = asked;
     const wait = h("p", "status pm-wait", "Thanks! We'll unlock it as soon as the payment's in.");
     wait.hidden = !ls.get(ASKED);
-    p.append(pay, steps, wait);
+    p.append(pay, cash, steps, wait);
   });
 }
 function featureList(h, ico) {

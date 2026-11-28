@@ -131,9 +131,9 @@ function build(L, mode, finish, paint, asm = null) {
   // a flat face with holes (round, or square for a square sub): cut into thin strips, each strip the wood between the
   // holes (as trapezoids)
   const holedFace = (pts, hs, a, col) => {
-    const ui = a === 0 ? 2 : 0, P2 = pts.map((q) => [q[ui], q[1]]), fixed = pts[0][a];
-    const to3 = (u, v) => { const o = [0, 0, 0]; o[a] = fixed; o[ui] = u; o[1] = v; return o; };
-    const hs2 = hs.map((h) => { const w = W(h.at); return { u: w[ui], v: w[1], r: h.r, sq: h.sq }; });
+    const ui = a === 0 ? 2 : 0, vi = a === 1 ? 2 : 1, P2 = pts.map((q) => [q[ui], q[vi]]), fixed = pts[0][a];
+    const to3 = (u, v) => { const o = [0, 0, 0]; o[a] = fixed; o[ui] = u; o[vi] = v; return o; };
+    const hs2 = hs.map((h) => { const w = W(h.at); return { u: w[ui], v: w[vi], r: h.r, sq: h.sq }; });
     const vmin = Math.min(...P2.map((q) => q[1])), vmax = Math.max(...P2.map((q) => q[1]));
     const cuts = new Set([vmin, vmax]);
     for (const h of hs2) for (let i = 0; i <= 18; i++) { const v = h.v - h.r + (2 * h.r * i) / 18; if (v > vmin && v < vmax) cuts.add(v); }
@@ -186,7 +186,7 @@ function build(L, mode, finish, paint, asm = null) {
     const ax = hs.length ? axisOf(hs[0].into) : -1;
     FACES.forEach((f, i) => {
       // (the faces across a hole's way get the hole: front and back faces for z, the left and right ones for x)
-      if ((ax === 2 && i < 2) || (ax === 0 && (i === 4 || i === 5))) holedFace(f.map((k) => c[k]), hs, ax, col);
+      if ((ax === 2 && i < 2) || (ax === 0 && (i === 4 || i === 5)) || (ax === 1 && (i === 2 || i === 3))) holedFace(f.map((k) => c[k]), hs, ax, col);
       else quad(c[f[0]], c[f[1]], c[f[2]], c[f[3]], col);
     });
     if (edge) for (const [a, b] of EDGES) lines.push(c[a], c[b], HI ? [0.85, 0.75, 1, 0.9] : edge);
@@ -253,16 +253,18 @@ function build(L, mode, finish, paint, asm = null) {
   }
   // "FifTeam Media" engraved in the right side (the side the view first looks at), on every box: cut into the wood's
   // face, not a part of the box (not in its volume or the cut list), and nothing turns it off
-  place("right");
-  const E = shown("right") ? engraveMask() : null;
+  // (a port opening out of the right side: the words go on the left one, reading the right way from there)
+  const onLeft = L.ports.some((p) => p.face === "right"), side = onLeft ? "left" : "right";
+  place(side);
+  const E = shown(side) ? engraveMask() : null;
   if (E) {
     const span = Math.min(L.D, L.Dt), th = Math.min(L.H * 0.12, (span * 0.76) / E.ar), px = th / E.h;
-    const z0 = (span - E.w * px) / 2, yTop = L.H / 2 + th / 2, x = L.W + 0.0004;
+    const z0 = (span - E.w * px) / 2, yTop = L.H / 2 + th / 2, x = onLeft ? -0.0004 : L.W + 0.0004;
     // (the cut: darker than the wood; on a dark finish, lighter, like bare wood showing)
     const lum = 0.3 * F.wall[0] + 0.59 * F.wall[1] + 0.11 * F.wall[2];
     const col = [...F.wall.map((v) => (lum < 0.25 ? Math.min(1, v * 0.5 + 0.4) : v * 0.45)), 1];
     for (const [r, a, b] of E.runs) {
-      const y1 = yTop - r * px, y0 = y1 - px, za = z0 + a * px, zb = z0 + b * px;
+      const y1 = yTop - r * px, y0 = y1 - px, za = onLeft ? span - z0 - a * px : z0 + a * px, zb = onLeft ? span - z0 - b * px : z0 + b * px;
       quad(W([x, y0, za]), W([x, y0, zb]), W([x, y1, zb]), W([x, y1, za]), col);
     }
   }

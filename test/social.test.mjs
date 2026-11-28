@@ -283,11 +283,17 @@ try {
   for (let i = 0; i < 40 && !eveComments().length; i++) await sleep(200);
   const firstId = (eveComments()[0] || {}).id;
   await sleep(300);
+  await ev(`document.querySelectorAll('#sheet-panel .cs-c').forEach((c) => (c.__keep = 1)), 1`);
   await ev(`[...document.querySelectorAll('#sheet-panel .cs-c')].find(c => c.textContent.includes('Hard!')).querySelector('.cs-act').click(), 1`);   // Reply
   console.log("replying:", await ev(`document.querySelector('#sheet-panel .cs-to').textContent`));
   await say("Agreed");
   for (let i = 0; i < 40 && eveComments().length < 2; i++) await sleep(200);
   await sleep(300);
+  {
+    const kept = await ev(`JSON.stringify([...document.querySelectorAll('#sheet-panel .cs-c')].map((c) => [c.textContent.includes('Agreed'), !!c.__keep]))`);
+    console.log("comment rows after a new one (new, kept):", kept);
+    check(JSON.parse(kept).length === 2 && JSON.parse(kept).every(([n, k]) => n !== k), "a new comment: the rows already there stay as they are (no flash), the new one added");
+  }
   await ev(`[...document.querySelectorAll('#sheet-panel .cs-c')].find(c => c.textContent.includes('Hard!')).querySelector('.cs-like').click(), 1`);
   for (let i = 0; i < 40 && !(eveComments().find((c) => c.id === firstId) || {}).likes?.length; i++) await sleep(200);
   await sleep(400);
@@ -342,8 +348,15 @@ try {
   await ev(`[...document.querySelectorAll('#sheet-panel .item')].find(i => i.textContent.includes('Test Rebass')).click(), 1`); await sleep(500);
   await shot("d2_new_post");
   console.log("new post before sending:", await ev(`document.querySelector('#sheet-panel textarea').value + ' | picture ' + !!document.querySelector('#sheet-panel .so-pthumb') + ' | song ' + (document.querySelector('#sheet-panel .so-song b') || {}).textContent`));
+  await ev(`document.querySelectorAll('#so-body .so-post').forEach((c) => (c.__keep = 1)), 1`);
   await ev(`[...document.querySelectorAll('#sheet-panel .btn')].find(b => b.textContent === 'Post').click(), 1`);
   await until(`[...document.querySelectorAll('#so-body .so-post')].some(p => p.textContent.includes('Fresh one'))`, 30000, "the post in the feed");
+  await sleep(1500);
+  {
+    const kept = await ev(`JSON.stringify([...document.querySelectorAll('#so-body .so-post')].map((c) => [c.textContent.includes('Fresh one'), !!c.__keep]))`);
+    console.log("cards after a new post (new, kept):", kept);
+    check(JSON.parse(kept).length >= 3 && JSON.parse(kept).every(([n, k]) => n !== k), "a new post: the cards already there stay as they are (no flash or reload), the new one added on top");
+  }
   const p0 = posted.find((x) => x.payload.content);
   console.log("sent to Discord:", JSON.stringify({ content: p0.payload.content, username: p0.payload.username, pings: p0.payload.allowed_mentions, files: p0.files.map(([n, b]) => `${n} ${b.length} bytes ${n.endsWith(".mp4") ? b.subarray(0, 3).toString("latin1").replace(/[^\x20-\x7e]/g, "?") : ""}`) }));
   check(p0.payload.allowed_mentions && p0.payload.allowed_mentions.parse.length === 0, "nobody pinged");
@@ -663,8 +676,8 @@ try {
     const nB2 = dmNow().length;
     await ev(`[...document.querySelectorAll('#sheet-panel .dm-row')].find(r => r.textContent.includes('Ben')).querySelector('button').click(), 1`);
     for (let i = 0; i < 60 && dmNow().length <= nB2; i++) await sleep(250);
-    const songMsgId = [...msgs.keys()].slice(msgCount).find((k) => (msgs.get(k).attachments || []).some((a) => a.filename === "song.bin"));
-    const sealedBytes = songMsgId && cdn.get(msgs.get(songMsgId).attachments.find((a) => a.filename === "song.bin").url.split("?")[0]).bytes;
+    const songMsgId = [...msgs.keys()].slice(msgCount).find((k) => (msgs.get(k).attachments || []).some((a) => /^song(\.bin|-x\.mp4)$/.test(a.filename)));
+    const sealedBytes = songMsgId && cdn.get(msgs.get(songMsgId).attachments.find((a) => /^song(\.bin|-x\.mp4)$/.test(a.filename)).url.split("?")[0]).bytes;
     console.log("the song's file:", songMsgId ? `${sealedBytes.length} bytes, sealed: ${!sealedBytes.includes(Buffer.from("ID3"))}` : "none");
     check(!!songMsgId && !sealedBytes.includes(songBytes.subarray(0, 200)) && dmNow().length === nB2 + 1, "a rebassed song sent sealed");
     await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);

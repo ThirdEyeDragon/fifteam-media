@@ -596,7 +596,7 @@ await ev(`localStorage.removeItem('fifteam-test-gate'), localStorage.removeItem(
 await cdp("Page.reload", {}); await sleep(5000);
 const nameGate = await ev(`(() => { const g = document.getElementById('gate-name'); return g ? (g.querySelector('.acct-title') || {}).textContent + ' | app inert: ' + document.getElementById('app').inert : 'none'; })()`);
 console.log("no username:", nameGate);
-check(nameGate === "Pick your username | app inert: true", "signed in with no username: picking one comes before anything else");
+check(nameGate === "What should we call you? | app inert: true", "signed in with no username: picking one comes before anything else");
 await ev(`localStorage.removeItem('fifteam-e2e-noname'), localStorage.setItem('fifteam-account', ${JSON.stringify(keepAcct)}), localStorage.setItem('fifteam-social-me', 'e2etest001'), localStorage.setItem('fifteam-social-name', 'Tester'), 1`);
 console.log("errors:", errors.length ? errors.join("\n  ") : "none");
 console.log(fails ? `FAIL (${fails})` : "checks: all ok");

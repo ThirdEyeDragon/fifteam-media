@@ -4,6 +4,7 @@
 //   /v1/stores       the app's data, any number of stores in one request (hub.mjs keeps them)
 //   /v1/store/<k>    a change to one store (with the version it was made on)
 //   /v1/files        the current links to posts' files, for many posts at once
+//   /v1/file         one sealed message file (a song, cover, picture or video sent in a message), passed through
 //   /v1/live         a live connection: the app hears at once when something changes
 //   /v1/push         a phone signing up for notifications (with proof of its account), /v1/push/off to stop
 //   /v1/premium      "Get Premium" tapped: the owner is told (in #payments)
@@ -94,6 +95,11 @@ async function app(req, env, url) {
     if (m[1] === "dm" && req.headers.get("X-FT-Auth")) { try { who = await phoneOf(env, req.headers.get("X-FT-Auth")); } catch {} }
     const r = await hub.write(m[1], v == null ? null : +v, await req.text(), "phone", who);
     return json(r.status === 200 ? { v: r.v, ...(r.fixed ? { fixed: true } : {}) } : r.status === 409 ? { conflict: true, v: r.v } : { error: r.status }, r.status, true);
+  }
+  if (path === "/v1/file" && req.method === "GET") {
+    const r = await hub.sealedFile(String(url.searchParams.get("id") || ""), String(url.searchParams.get("name") || ""), env.BOT_TOKEN || "");
+    if (r.status !== 200) return json({ error: r.status }, r.status, true);
+    return new Response(r.body, { status: 200, headers: { ...CORS, "Content-Type": "application/octet-stream", "Cache-Control": "private, max-age=3600" } });
   }
   if (path === "/v1/files" && req.method === "POST") {
     const { ids } = await req.json().catch(() => ({}));
