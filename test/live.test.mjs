@@ -127,7 +127,7 @@ const hubStore = async (k) => (await (await fetch(`${WK}/v1/stores?k=${k}`)).jso
 /** A phone, signed in as `ph` with username `name`, everything it asks the outside world for answered by the stand-ins. */
 async function phone(ph, name) {
   // (a pretend camera and microphone, for going live)
-  const b = await browser({ profile: mkdtempSync(join(tmpdir(), "ft-lv-")), flags: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"] });
+  const b = await browser({ profile: mkdtempSync(join(tmpdir(), "ft-lv-")), flags: ["--use-fake-device-for-media-stream=device-count=2", "--use-fake-ui-for-media-stream"] });
   const CORS = [{ name: "Access-Control-Allow-Origin", value: "*" }, { name: "Access-Control-Allow-Headers", value: "Content-Type" }, { name: "Access-Control-Allow-Methods", value: "GET, POST, PATCH, DELETE, OPTIONS" }];
   b.on(async (m) => {
     if (m.method !== "Fetch.requestPaused") return;
@@ -411,6 +411,17 @@ try {
   check(q1 - q0 > 4.8, "it keeps playing without stalling (one piece straight after another)");
   const viewers = await A.until(`document.querySelector('.lv-eye').textContent === '1'`, 6000);
   check(viewers >= 0, "Alice sees 1 watching");
+  // the camera: not cropped (a normal 16:9 picture, turned upright by the phone), and flipping while live
+  const camSet = await A.ev(`JSON.stringify(document.querySelector('.lv .lv-v.on').srcObject.getVideoTracks()[0].getSettings())`);
+  const cam0 = await A.ev(`document.querySelector('.lv .lv-v.on').srcObject.getVideoTracks()[0].label`);
+  await A.ev(`document.querySelector('.lv-tools .lv-tool').click(), 1`);
+  const flipped = await A.until(`(() => { const v = document.querySelector('.lv .lv-v.on'), t = v.srcObject.getVideoTracks()[0]; return t.readyState === 'live' && t.label !== ${JSON.stringify(cam0)} && !v.classList.contains('mirror') && v.videoWidth > 0; })()`, 8000);
+  const cam1 = await A.ev(`document.querySelector('.lv .lv-v.on').srcObject.getVideoTracks()[0].label`);
+  const f0 = await B.ev(`document.querySelector(".lv .lv-v.on").currentTime`); await sleep(5000);
+  const f1 = await B.ev(`document.querySelector(".lv .lv-v.on").currentTime`);
+  log(`camera: ${camSet} | flipped from ${cam0} to ${cam1} after ${flipped} ms; Ben's video went on ${(f1 - f0).toFixed(2)} s in 5 s`);
+  check(JSON.parse(camSet).width >= 1280, "the camera gives a full 16:9 picture (not a cropped, zoomed one)");
+  check(flipped >= 0 && f1 - f0 > 3.5, "flipping cameras while live: the other camera opens, and the stream carries on for the viewer");
   // chat both ways
   await B.ev(`(() => { document.querySelector('.lv-in').value = 'this hits hard'; document.querySelector('.lv-bar').requestSubmit(); return 1; })()`);
   const said = await A.until(`[...document.querySelectorAll('.lv-msg')].some(m => m.textContent === 'Ben this hits hard')`, 6000);

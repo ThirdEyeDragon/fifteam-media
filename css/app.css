@@ -1386,6 +1386,7 @@ input.bx-countv { width: 56px; height: 40px; padding: 0 6px; text-align: center;
 .lv-v { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; background: #000; }
 .lv-v.on { opacity: 1; }
 .lv-v.mirror { transform: scaleX(-1); }
+.lv-v.fit { object-fit: contain; }
 .lv-shade { position: absolute; inset: 0; pointer-events: none; background: linear-gradient(to bottom, rgba(0, 0, 0, 0.55), transparent 18%, transparent 52%, rgba(0, 0, 0, 0.7)); }
 .lv-top { position: absolute; left: 0; right: 0; top: 0; padding: calc(env(safe-area-inset-top, 0px) + 12px) 12px 0; display: flex; align-items: flex-start; gap: 8px; }
 .lv-who { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; padding: 3px 10px 3px 3px; border-radius: 999px; background: rgba(0, 0, 0, 0.35); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); max-width: 60%; }

@@ -70,6 +70,10 @@ function screen(s, mine) {
   const vA = h("video", "lv-v on"), vB = h("video", "lv-v");
   for (const v of [vA, vB]) { v.playsInline = true; v.setAttribute("playsinline", ""); v.setAttribute("webkit-playsinline", ""); v.autoplay = false; v.preload = "auto"; }
   if (mine) { vA.muted = true; vA.classList.add("mirror"); }
+  // (filled edge to edge when the picture is about the screen's shape; otherwise shown whole, not cropped and zoomed)
+  const fitOf = (v) => { const r = v.videoWidth / v.videoHeight, sc = innerWidth / innerHeight; v.classList.toggle("fit", !!r && (r / sc > 1.3 || sc / r > 1.3)); };
+  for (const v of [vA, vB]) { v.addEventListener("loadedmetadata", () => fitOf(v)); v.addEventListener("resize", () => fitOf(v)); }
+  addEventListener("resize", () => { fitOf(vA); fitOf(vB); });
   stage.append(vA, vB);
   const shade = h("div", "lv-shade");
   const top = h("div", "lv-top");
@@ -342,11 +346,28 @@ export async function goLive() {
   const v = { id: "", by: s.by, mine: true, likes: 0 };
   L.view = v;
   let facing = "user", media = null, mic = true;
+  // (a normal 16:9 picture in the camera's own terms: the phone turns it upright. Asking for a tall one made phones crop
+  // into the sensor, which looked very zoomed in)
+  const VIDEO = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30, max: 30 } };
+  const widest = (t) => { try { const c = t.getCapabilities ? t.getCapabilities() : {}; if (c.zoom && c.zoom.min != null) t.applyConstraints({ advanced: [{ zoom: c.zoom.min }] }).catch(() => {}); } catch {} };
   const getCam = async () => navigator.mediaDevices.getUserMedia({
-    video: { facingMode: facing, width: { ideal: 720 }, height: { ideal: 1280 }, frameRate: { ideal: 30, max: 30 } },
+    video: { ...VIDEO, facingMode: facing },
     audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
   });
-  try { media = await getCam(); }
+  /** The camera facing `want` ("user": the front, "environment": the back): by its facing if the phone says, otherwise
+   * the other camera on its list. */
+  const camFacing = async (want) => {
+    try { return await navigator.mediaDevices.getUserMedia({ video: { ...VIDEO, facingMode: { exact: want } } }); }
+    catch {
+      const cams = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput");
+      const now = (media && media.getVideoTracks()[0] && media.getVideoTracks()[0].getSettings().deviceId) || "";
+      const pick = cams.find((d) => (want === "environment" ? /back|rear|environment|world/i : /front|user|face/i).test(d.label) && d.deviceId !== now)
+        || cams.find((d) => d.deviceId && d.deviceId !== now);
+      if (!pick) throw new Error("one camera");
+      return navigator.mediaDevices.getUserMedia({ video: { ...VIDEO, deviceId: { exact: pick.deviceId } } });
+    }
+  };
+  try { media = await getCam(); widest(media.getVideoTracks()[0]); }
   catch { toast("Couldn't use the camera and microphone. Allow them in your phone's settings for this app.", 4500); L.view = null; ui.root.remove(); return; }
   ui.vA.srcObject = media; ui.vA.muted = true; ui.vA.play().catch(() => {});
   ui.wait.hidden = true;
@@ -362,15 +383,31 @@ export async function goLive() {
   const mute = h("button", "lv-tool"); mute.type = "button"; mute.setAttribute("aria-label", "Microphone off"); mute.append(ico("i-mic"));
   tools.append(flip, mute);
   ui.root.append(pre, tools);
+  let flipping = false;
+  const useTrack = (t) => {
+    widest(t);
+    media = new MediaStream([t, ...media.getAudioTracks()]);
+    ui.vA.srcObject = media; ui.vA.play().catch(() => {});
+    ui.vA.classList.toggle("mirror", facing === "user");
+  };
   flip.onclick = async () => {
-    facing = facing === "user" ? "environment" : "user";
-    try {
-      const n = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facing, width: { ideal: 720 }, height: { ideal: 1280 }, frameRate: { ideal: 30, max: 30 } } });
-      const old = media.getVideoTracks()[0], nv = n.getVideoTracks()[0];
-      media = new MediaStream([nv, ...media.getAudioTracks()]);
-      ui.vA.srcObject = media; ui.vA.classList.toggle("mirror", facing === "user");
-      setTimeout(() => old && old.stop(), SEG_MS + 800);            // (the piece being recorded finishes with it)
-    } catch { facing = facing === "user" ? "environment" : "user"; toast("Couldn't switch cameras."); }
+    if (flipping) return;
+    flipping = true; flip.disabled = true;
+    const want = facing === "user" ? "environment" : "user", wasLive = !!(v.id && alive && rec);
+    // (the piece being recorded: finished and sent as it is; the next starts with the other camera)
+    clearTimeout(tick);
+    const was = rec; rec = null;
+    if (was && was.state !== "inactive") { try { was.stop(); } catch {} }
+    await new Promise((r) => setTimeout(r, 60));
+    for (const t of media.getVideoTracks()) t.stop();
+    try { const n = await camFacing(want); facing = want; useTrack(n.getVideoTracks()[0]); }
+    catch {
+      // (the other one wouldn't open: the one before, again)
+      try { const n = await camFacing(facing).catch(() => navigator.mediaDevices.getUserMedia({ video: { ...VIDEO, facingMode: facing } })); useTrack(n.getVideoTracks()[0]); } catch {}
+      toast(want === "environment" ? "Couldn't open the back camera." : "Couldn't open the front camera.", 2500);
+    }
+    if (wasLive && alive) piece();
+    flipping = false; flip.disabled = false;
   };
   mute.onclick = () => { mic = !mic; for (const t of media.getAudioTracks()) t.enabled = mic; mute.classList.toggle("off", !mic); mute.setAttribute("aria-label", mic ? "Microphone off" : "Microphone on"); toast(mic ? "Microphone on" : "Microphone off", 1200); };
   let rec = null, key = "", n = 0, sending = Promise.resolve(), backlog = 0, alive = true, tick = 0, clockT = 0;
