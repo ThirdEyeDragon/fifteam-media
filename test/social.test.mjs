@@ -329,6 +329,19 @@ try {
   console.log("overwritten by another phone:", lost, "| put back:", eveComments().some((c) => c.text === "Second thought"));
   check(lost && eveComments().some((c) => c.text === "Second thought") && eveComments().some((c) => c.text === "Nice one"), "a comment written over by another phone comes back");
   clobber = null;
+  // @names in a comment: suggested while typing "@", then a highlighted link to their page
+  await ev(`(() => { const i = document.querySelector('#sheet-panel .cs-form input'); i.focus(); i.value = 'nice one @Ev'; i.setSelectionRange(12, 12); i.dispatchEvent(new Event('input')); return 1; })()`); await sleep(300);
+  const sug = await ev(`[...document.querySelectorAll('.mn-box .mn-row')].map((r) => r.textContent).join(' | ')`);
+  await ev(`(() => { const r = document.querySelector('.mn-box .mn-row'); r && r.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true })); return 1; })()`); await sleep(200);
+  const typed = await ev(`document.querySelector('#sheet-panel .cs-form input').value`);
+  await ev(`(() => { const f = document.querySelector('#sheet-panel .cs-form'); f.querySelector('input').value += 'keep it up'; f.requestSubmit(); return 1; })()`);
+  for (let i = 0; i < 40 && !eveComments().some((c) => /@Eve/.test(c.text)); i++) await sleep(200);
+  await sleep(500);
+  const link = await ev(`(() => { const m = [...document.querySelectorAll('#sheet-panel .cs-c .mention')].find((x) => x.textContent === '@Eve'); return m ? m.textContent : ''; })()`);
+  await ev(`[...document.querySelectorAll('#sheet-panel .cs-c .mention')].find((x) => x.textContent === '@Eve').click(), 1`); await sleep(1200);
+  const pfOpened = await ev(`(document.querySelector('#sheet-panel .pf-name') || {}).textContent || ''`);
+  console.log("@ in a comment:", JSON.stringify({ sug, typed, link, opened: pfOpened }));
+  check(/Eve/.test(sug) && typed === "nice one @Eve " && link === "@Eve" && /Eve/.test(pfOpened), "@names in comments: suggested while typing, highlighted, and tapped open their page");
   await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
   console.log("count on the post:", await ev(`${eveCard}.querySelector('.so-scom').textContent`));
 

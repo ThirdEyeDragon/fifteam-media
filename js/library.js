@@ -218,7 +218,7 @@ function render() {
     $("lib-add-2").hidden = $("lib-add-dir").hidden = kind !== "song" || !!q;
   }
   const n = tracks.filter((t) => (t.kind || "song") === "song").length;
-  store.storageUse().then((u) => { $("lib-foot").textContent = (n || u ? `${n} song${n === 1 ? "" : "s"} · ${sizeText(u)} kept on this device · ` : "") + "FifTeam Media 2.31"; });
+  store.storageUse().then((u) => { $("lib-foot").textContent = (n || u ? `${n} song${n === 1 ? "" : "s"} · ${sizeText(u)} kept on this device · ` : "") + "FifTeam Media 2.32"; });
 }
 
 function menu(t) {
@@ -255,10 +255,45 @@ function playIn(t) {
   player.playFrom(ids, t.id);
 }
 
+/** Adding music: several songs at once from Files or Downloads (any file can be picked there, so the phone opens its
+ * file browser, where several can be chosen; anything that isn't audio is left out), the phone's music picker (one
+ * at a time on many phones), or a whole folder. */
+let manyIn = null;
+function pickMany() {
+  if (!manyIn) {
+    manyIn = document.createElement("input"); manyIn.type = "file"; manyIn.multiple = true; manyIn.hidden = true; manyIn.id = "many-in";
+    manyIn.onchange = () => { const f = [...(manyIn.files || [])]; if (f.length) importFiles(f); };
+    document.body.append(manyIn);
+  }
+  manyIn.value = ""; manyIn.click();
+}
+function openAdd() {
+  const ios = isIOS();
+  openSheet((p) => {
+    p.classList.add("lib-addpanel");
+    const h = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+    p.append(h("h3", "", "Add music"), h("p", "status", "Add as many songs as you like at once."));
+    const many = h("button", "btn primary block lib-many", "Choose songs (as many as you like)");
+    many.onclick = () => { pickMany(); closeSheet(); };
+    const how = h("ol", "lib-how");
+    for (const t of ios
+      ? ["Tap Choose songs, then Choose Files (Browse).", "Go to Downloads (or wherever your songs are).", "Tap Select at the top right, tap every song you want, then Open."]
+      : ["Tap Choose songs, then Files (or Downloads).", "Press and hold one song, then tap all the others you want.", "Tap Select (or Open) at the top."]) how.append(h("li", "", t));
+    const one = h("button", "btn block", "From the music picker");
+    one.onclick = () => { const f = $("file-in"); f.value = ""; f.click(); closeSheet(); };
+    p.append(many, how, one);
+    if ("webkitdirectory" in document.createElement("input") && !ios) {
+      const dir = h("button", "btn block", "A whole folder");
+      dir.onclick = () => { const d = $("dir-in"); d.value = ""; d.click(); closeSheet(); };
+      p.append(dir);
+    }
+    p.append(h("small", "status", "Songs already in your library are skipped. Anything that isn't a song is left out."));
+  });
+}
+
 export function initLibrary() {
   const fileIn = $("file-in"), dirIn = $("dir-in");
-  const pick = () => { fileIn.value = ""; fileIn.click(); };
-  $("lib-add").onclick = pick; $("lib-add-2").onclick = pick;
+  $("lib-add").onclick = openAdd; $("lib-add-2").onclick = openAdd;
   $("lib-code").onclick = () => openCode();
   $("lib-add-dir").onclick = () => { dirIn.value = ""; dirIn.click(); };
   fileIn.onchange = () => importFiles(fileIn.files);

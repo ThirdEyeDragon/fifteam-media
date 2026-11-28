@@ -390,16 +390,40 @@ try {
   const canGo = await A.until(`(location.hash !== '#social' && (location.hash = '#social'), ${goBtn})`, 10000);
   log(`/allow streaming Alice: her Go live button after ${canGo} ms | bot: ${replies.map((r) => { try { return JSON.parse(r).content; } catch { return r; } }).join(" ")}`);
   check(canGo >= 0 && !(await B.ev(goBtn)), "/allow streaming: a Go live button for her (not for Ben)");
+  const carl = "carlphone1";
+  const carlSub = { ...aliceSub, endpoint: `${ST}/push/carl` };
+  const cs = await fetch(`${WK}/v1/push`, { method: "POST", body: JSON.stringify({ tk: idToken(carl), sub: carlSub, prefs: { msg: false, act: false } }) });
+  check(cs.status === 200, "(a third phone signs up for notifications, every kind off)");
+  pushes.length = 0;
   await A.ev(`(window.confirm = () => true, document.querySelector('#so-body .so-golive').click(), 1)`);
   const cam = await A.until(`(() => { const v = document.querySelector('.lv .lv-v.on'); return !!v && v.videoWidth > 0 && !!document.querySelector('.lv-pre'); })()`, 10000);
   check(cam >= 0, "Go live: the camera shows, with a title to type and Go live");
   await A.ev(`(() => { document.querySelector('.lv-tin').value = 'Late night bass'; document.querySelector('.lv-pre').requestSubmit(); return 1; })()`);
   const onAir = await A.until(`document.querySelector('.lv-badge').textContent === 'LIVE'`, 8000);
-  const inRow = await B.until(`[...document.querySelectorAll('#so-body .so-lv')].some(b => b.textContent.includes('Alice'))`, 10000);
-  log(`live: Alice on air after ${onAir} ms; in Ben's Live row after ${inRow} ms`);
-  check(onAir >= 0 && inRow >= 0, "she's live: a LIVE circle at the top of Ben's feed");
+  const inRow = await B.until(`[...document.querySelectorAll('#so-body .lv-prev')].some(b => b.textContent.includes('Alice'))`, 10000);
+  log(`live: Alice on air after ${onAir} ms; her preview in Ben's feed after ${inRow} ms`);
+  check(onAir >= 0 && inRow >= 0, "she's live: her stream's preview at the top of Ben's feed");
+  // everyone's told: Ben (app open) a banner; Carl (app closed, every notification switched off) a notification anyway
+  const banner = await B.until(`!!document.getElementById('lv-banner') && /Alice is live/.test(document.getElementById('lv-banner').textContent)`, 8000);
+  for (let i = 0; i < 60 && !pushes.some((x) => x.to === "carl"); i++) await sleep(150);
+  const carlNote = pushes.filter((x) => x.to === "carl").map((x) => openPush(x.body))[0];
+  log(`told: Ben's banner after ${banner} ms | Carl's notification:`, JSON.stringify(carlNote));
+  check(banner >= 0, "going live: a banner on Ben's open app, tapped to watch");
+  check(!!carlNote && /Alice is live/.test(carlNote.title) && carlNote.data.live === alice, "going live: everyone gets a notification, whatever their settings");
+  await B.ev(`(document.getElementById('lv-banner') && document.getElementById('lv-banner').remove(), 1)`);
+  // the preview plays in the feed (muted), and LIVE sits at the top of the app on every screen
+  const prevPlays = await B.until(`(() => { const c = document.querySelector('#so-body .lv-prev'); const v = c && c.querySelector('.lv-pv.on'); return !!c && c.classList.contains('playing') && !!v && v.currentTime > 0.3 && v.muted; })()`, 15000);
+  const chip = await B.ev(`(document.getElementById('lv-chip') || {}).textContent || ''`);
+  await B.ev(`(location.hash = '#library', 1)`); await sleep(500);
+  const chipElsewhere = await B.ev(`!!document.getElementById('lv-chip') && document.getElementById('lv-chip').offsetWidth > 0`);
+  const prevStopped = await B.until(`!document.querySelector('#so-body .lv-prev').classList.contains('playing')`, 4000);
+  await B.ev(`(location.hash = '#social', 1)`); await sleep(500);
+  log(`preview playing after ${prevPlays} ms | top bar: "${chip}" (on Library too: ${chipElsewhere}) | preview stops off screen: ${prevStopped >= 0}`);
+  check(prevPlays >= 0, "the preview at the top of the feed plays the stream (muted)");
+  check(/LIVE/.test(chip) && /Alice/.test(chip) && chipElsewhere, "a LIVE button with her name at the top of the app, on every screen");
+  check(prevStopped >= 0, "the preview stops when it's not on screen (no data used)");
   const t1 = Date.now();
-  await B.ev(`[...document.querySelectorAll('#so-body .so-lv')].find(b => b.textContent.includes('Alice')).click(), 1`);
+  await B.ev(`[...document.querySelectorAll('#so-body .lv-prev')].find(b => b.textContent.includes('Alice')).click(), 1`);
   const playing = await B.until(`(() => { const v = document.querySelector('.lv .lv-v.on'); return !!v && !v.paused && v.currentTime > 0.3 && v.videoWidth > 0; })()`, 15000);
   log(`Ben taps it: playing after ${playing < 0 ? "never" : Date.now() - t1 + " ms"} | how: ${await B.ev(`(() => { const v = document.querySelector('.lv .lv-v.on'); return v ? (v.src.startsWith('blob:') ? 'blob ' : '') + v.videoWidth + 'x' + v.videoHeight : 'none'; })()`)}`);
   check(playing >= 0, "Ben watches her stream: the video plays");
@@ -409,8 +433,12 @@ try {
   const lag = await B.ev(`(() => { const v = document.querySelector('.lv .lv-v.on'); try { return v.buffered.end(v.buffered.length - 1) - v.currentTime; } catch { return -1; } })()`);
   log(`six seconds on: played ${(q1 - q0).toFixed(2)} s more; ${lag.toFixed(2)} s buffered ahead`);
   check(q1 - q0 > 4.8, "it keeps playing without stalling (one piece straight after another)");
-  const viewers = await A.until(`document.querySelector('.lv-eye').textContent === '1'`, 6000);
+  const fetched = await B.ev(`performance.getEntriesByType('resource').filter((e) => e.name.includes('/v1/stream/seg')).length`);
+  log("pieces Ben fetched one request each:", fetched);
+  check(fetched === 0, "the pieces come down the live connection (no request for each one)");
+  const viewers = await A.until(`document.querySelector('.lv .lv-eye').textContent === '1'`, 6000);
   check(viewers >= 0, "Alice sees 1 watching");
+  if (viewers < 0) log("DEBUG viewers:", JSON.stringify(await (await fetch(WK + "/v1/streams")).json()), await A.ev(`document.querySelector('.lv-eye').textContent`), "| Ben:", await B.ev(`import('./js/hub.js').then(async (h) => { const l = await import('./js/live.js'); const v = document.querySelector('.lv .lv-v.on'); return JSON.stringify({ on: h.live.on, list: l.streamsNow().map((x) => x.id), paused: v && v.paused, t: v && v.currentTime, rs: v && v.readyState, src: v && v.src.slice(0, 30), err: v && v.error && v.error.message }); })`), "| B errors:", B.errors.join(" | ").slice(0, 500), "| A errors:", A.errors.join(" | ").slice(0, 300));
   // the camera: not cropped (a normal 16:9 picture, turned upright by the phone), and flipping while live
   const camSet = await A.ev(`JSON.stringify(document.querySelector('.lv .lv-v.on').srcObject.getVideoTracks()[0].getSettings())`);
   const cam0 = await A.ev(`document.querySelector('.lv .lv-v.on').srcObject.getVideoTracks()[0].label`);
@@ -422,6 +450,7 @@ try {
   log(`camera: ${camSet} | flipped from ${cam0} to ${cam1} after ${flipped} ms; Ben's video went on ${(f1 - f0).toFixed(2)} s in 5 s`);
   check(JSON.parse(camSet).width >= 1280, "the camera gives a full 16:9 picture (not a cropped, zoomed one)");
   check(flipped >= 0 && f1 - f0 > 3.5, "flipping cameras while live: the other camera opens, and the stream carries on for the viewer");
+  if (!(f1 - f0 > 3.5)) log("DEBUG flip:", await B.ev(`(() => { const v = document.querySelector('.lv .lv-v.on'); let b = []; try { for (let i = 0; i < v.buffered.length; i++) b.push([v.buffered.start(i).toFixed(2), v.buffered.end(i).toFixed(2)]); } catch {} return JSON.stringify({ t: v.currentTime, paused: v.paused, rs: v.readyState, ns: v.networkState, err: v.error && (v.error.code + ' ' + v.error.message), b, w: v.videoWidth }); })()`), "| A:", A.errors.join(" | ").slice(0, 300), "| A toast:", await A.ev(`document.getElementById('toast').textContent`));
   // chat both ways
   await B.ev(`(() => { document.querySelector('.lv-in').value = 'this hits hard'; document.querySelector('.lv-bar').requestSubmit(); return 1; })()`);
   const said = await A.until(`[...document.querySelectorAll('.lv-msg')].some(m => m.textContent === 'Ben this hits hard')`, 6000);
@@ -429,11 +458,21 @@ try {
   const back2 = await B.until(`[...document.querySelectorAll('.lv-msg')].some(m => m.textContent === 'Alice thanks Ben!')`, 6000);
   log(`chat: Ben's message on Alice's screen after ${said} ms; hers on his after ${back2} ms`);
   check(said >= 0 && back2 >= 0, "chat: messages go both ways, at the bottom of the stream");
+  await B.ev(`(() => { const i = document.querySelector('.lv-in'); i.focus(); i.value = 'yo @Ali'; i.setSelectionRange(7, 7); i.dispatchEvent(new Event('input')); return 1; })()`); await sleep(300);
+  const sugg = await B.ev(`[...document.querySelectorAll('.mn-box .mn-row')].map((r) => r.textContent).join(' | ')`);
+  await B.ev(`(() => { const r = document.querySelector('.mn-box .mn-row'); r && r.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true })); return 1; })()`); await sleep(200);
+  const filled = await B.ev(`document.querySelector('.lv-in').value`);
+  await sleep(1100);
+  await B.ev(`(() => { const i = document.querySelector('.lv-in'); i.value += 'this is fire'; document.querySelector('.lv-bar').requestSubmit(); return 1; })()`);
+  const linked = await A.until(`[...document.querySelectorAll('.lv-msg .mention')].some((m) => m.textContent === '@Alice')`, 6000);
+  log(`@ in the chat: suggested "${sugg}" | picked: "${filled}" | a link on Alice's screen after ${linked} ms`);
+  check(/Alice/.test(sugg) && filled === "yo @Alice " && linked >= 0, "@names: suggested while typing, and highlighted (tappable) once sent");
+  if (linked < 0) log("DEBUG @:", await A.ev(`[...document.querySelectorAll('.lv-msg')].map((m) => m.innerHTML).slice(-3).join(' || ')`), "| Ben's:", await B.ev(`[...document.querySelectorAll('.lv-msg')].map((m) => m.innerHTML).slice(-3).join(' || ')`), "| Ben input:", await B.ev(`document.querySelector('.lv-in').value`), "| toast:", await B.ev(`document.getElementById('toast').textContent`));
   // likes: hearts and the count, on both
   await B.ev(`(() => { const l = document.querySelector('.lv-like'); l.click(); return 1; })()`); await sleep(250);
   await B.ev(`document.querySelector('.lv-like').click(), 1`);
-  const likes = await A.until(`document.querySelector('.lv-likes').textContent === '2' && document.querySelectorAll('.lv-fh').length > 0`, 6000);
-  log(`likes: on Alice's screen after ${likes} ms (${await A.ev(`document.querySelector('.lv-likes').textContent`)})`);
+  const likes = await A.until(`document.querySelector('.lv .lv-likes').textContent === '2' && document.querySelectorAll('.lv-fh').length > 0`, 6000);
+  log(`likes: on Alice's screen after ${likes} ms (${await A.ev(`document.querySelector('.lv .lv-likes').textContent`)})`);
   check(likes >= 0, "likes: hearts float up on her screen, the count goes up");
   // she takes a message down
   const mid = await A.ev(`[...document.querySelectorAll('.lv-msg')].find(m => m.textContent.includes('this hits hard')).dataset.id`);
@@ -443,7 +482,7 @@ try {
   check(gone >= 0, "the streamer can take a chat message down (gone for everyone)");
   // the other way of playing (iPhone: two players taking turns)
   await B.ev(`document.querySelector('.lv-x').click(), 1`); await sleep(500);
-  await B.ev(`(window.MediaSource = undefined, [...document.querySelectorAll('#so-body .so-lv')].find(b => b.textContent.includes('Alice')).click(), 1)`);
+  await B.ev(`(window.MediaSource = undefined, [...document.querySelectorAll('#so-body .lv-prev')].find(b => b.textContent.includes('Alice')).click(), 1)`);
   const turns = await B.until(`(() => { const v = document.querySelector('.lv .lv-v.on'); return !!v && !v.paused && v.currentTime > 0.3 && v.videoWidth > 0 && !v.src.includes('mediasource'); })()`, 15000);
   let switched = 0, lastOn = null;
   for (let i = 0; i < 40; i++) { const on = await B.ev(`document.querySelector('.lv .lv-v.on') === document.querySelectorAll('.lv .lv-v')[0] ? 'A' : 'B'`); if (lastOn && on !== lastOn) switched++; lastOn = on; await sleep(200); }
@@ -452,9 +491,9 @@ try {
   // she ends it: Ben is told, the circle goes
   await A.ev(`document.querySelector('.lv-x').click(), 1`);
   const ended = await B.until(`/has ended/.test(document.querySelector('.lv-wait').textContent)`, 8000);
-  const rowGone = await B.until(`(document.querySelector('.lv') && document.querySelector('.lv-wait button') && document.querySelector('.lv-wait button').click(), ![...document.querySelectorAll('#so-body .so-lv')].some(b => b.textContent.includes('Alice') && !b.classList.contains('so-golive')))`, 8000);
+  const rowGone = await B.until(`(document.querySelector('.lv') && document.querySelector('.lv-wait button') && document.querySelector('.lv-wait button').click(), !document.querySelector('#so-body .lv-prev') && !document.getElementById('lv-chip'))`, 8000);
   log(`ended: Ben told after ${ended} ms; the circle gone after ${rowGone} ms`);
-  check(ended >= 0 && rowGone >= 0, "she ends it: Ben sees it's ended, and the LIVE circle goes");
+  check(ended >= 0 && rowGone >= 0, "she ends it: Ben sees it's ended; the preview and the LIVE button go");
   // /streamers, then /allow streaming remove
   replies.length = 0;
   await signed(JSON.stringify({ type: 2, id: "11", token: "t11", application_id: "app1", data: { name: "streamers" }, member: { user: { id: "1", username: "owner" } } }));
@@ -463,7 +502,7 @@ try {
   await signed(JSON.stringify({ type: 2, id: "12", token: "t12", application_id: "app1", data: { name: "allow", options: [{ type: 1, name: "streaming", options: [{ name: "user", value: alice }, { name: "remove", value: true }] }] }, member: { user: { id: "1", username: "owner" } } }));
   const noGo = await A.until(`!document.querySelector('#so-body .so-golive')`, 10000);
   log("/streamers:", JSON.stringify(sl), "| removed: Go live gone after", noGo, "ms");
-  check(/alicephone/.test(sl) && /1 of 3 allowed/.test(sl) && noGo >= 0, "/streamers lists who may go live; /allow streaming remove takes it away");
+  check(/alicephone/.test(sl) && /1 of 1 allowed/.test(sl) && noGo >= 0, "/streamers lists who may go live; /allow streaming remove takes it away");
   // only allowed people: a phone that isn't can't start one on the server either
   const forged = await fetch(`${WK}/v1/stream/start`, { method: "POST", body: JSON.stringify({ tk: idToken(ben), title: "x" }) });
   check(forged.status === 403, "the server refuses a stream from anyone not allowed");

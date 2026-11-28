@@ -33,8 +33,14 @@ export function initLive(hooks) {
     if (m.t === "streams") { setList(m.list); return; }
     const v = L.view;
     if (v && m.s === v.id) v.on(m);
-    else if (v && m.t === "end" && v.id === m.s) v.on(m);
+    if (L.peek && m.s === L.peek.id && (m.t === "segb" || m.t === "seg")) L.peek.add(m);
   });
+  // someone went live (the app open): a banner at the top, tapped to watch
+  addEventListener("hub:note", (e) => { const n = e.detail || {}; if (n.kind === "live" && n.data && n.data.live) liveBanner(n); });
+  addEventListener("hub:open", () => { if (L.peek) liveSend({ t: "peek", s: L.peek.id }); });
+  addEventListener("hashchange", () => { paintChip(); peekCheck(); });
+  document.addEventListener("visibilitychange", () => peekCheck());
+  paintChip();
   // (the list now, without waiting for the live connection)
   const fetchList = () => hubStreams().then(setList, () => {});
   addEventListener("hub:open", fetchList);
@@ -50,10 +56,91 @@ function setList(list) {
   const changed = sig(clean) !== sig(L.list);
   L.list = clean;
   if (changed && L.h && L.h.changed) L.h.changed();
+  paintChip();
   // (watching a stream that's gone, but the same person is live again: that one)
   const v = L.view;
   if (v && !v.mine && !clean.some((s) => s.id === v.id)) { const again = clean.find((s) => s.by === v.by); if (again) v.switchTo(again); }
 }
+/** In the app's top bar on every screen while someone's live: a red LIVE button with their name; tapped, the stream. */
+function paintChip() {
+  const top = document.querySelector("header.top"); if (!top) return;
+  let chip = document.getElementById("lv-chip");
+  const s = L.list.find((x) => x.by !== (L.h && L.h.me())) || L.list[0];
+  if (!s) { if (chip) chip.remove(); top.classList.remove("has-live"); return; }
+  if (!chip) {
+    chip = h("button", "lv-chip"); chip.id = "lv-chip"; chip.type = "button";
+    chip.append(h("span", "lv-chipdot"), h("b", "", "LIVE"), h("span", "lv-chipname", ""));
+    const brand = top.querySelector(".brand"); brand.after(chip);
+  }
+  chip.querySelector(".lv-chipname").textContent = s.name;
+  chip.setAttribute("aria-label", `${s.name} is live: watch`);
+  chip.onclick = () => { const now = L.list.find((x) => x.id === s.id) || s; location.hash = "#social"; watch(now); };
+  top.classList.add("has-live");
+}
+/** "X is live" while the app's open: a banner that slides down; tapped, the stream. */
+function liveBanner(n) {
+  if (L.view) return;
+  document.getElementById("lv-banner")?.remove();
+  const b = h("button", "lv-banner"); b.id = "lv-banner"; b.type = "button";
+  const av = L.h ? L.h.avatar(n.data.live, String(n.title || "").replace(/ is live$/, ""), 40) : h("span");
+  const t = h("div", "lv-bt"); t.append(h("b", "", n.title || "Someone is live"), h("small", "", n.body || "Tap to watch now"));
+  b.append(h("span", "lv-badge", "LIVE"), av, t);
+  b.onclick = () => { b.remove(); openLiveOf(n.data.live); };
+  document.body.append(b);
+  requestAnimationFrame(() => b.classList.add("in"));
+  setTimeout(() => { b.classList.remove("in"); setTimeout(() => b.remove(), 400); }, 9000);
+  hubStreams().then(setList, () => {});
+}
+
+// ---------------------------------------------------------------------------------------------------- the preview
+/** The preview at the top of the feed: the stream itself, playing (muted) while it's on screen; tapped, the stream with
+ * sound, the chat and the likes. Only while it's on screen does the app take the pieces (and it doesn't count as
+ * watching). */
+export function previewCard(s) {
+  const card = h("button", "lv-prev"); card.type = "button"; card.setAttribute("aria-label", `${s.name} is live${s.title ? ": " + s.title : ""}. Watch`);
+  const vA = h("video", "lv-pv on"), vB = h("video", "lv-pv");
+  for (const v of [vA, vB]) { v.muted = true; v.playsInline = true; v.setAttribute("playsinline", ""); v.setAttribute("muted", ""); v.preload = "auto"; }
+  const top = h("div", "lv-ptop"); top.append(h("span", "lv-badge", "LIVE"));
+  const eye = h("span", "lv-eye"); eye.append(ico("i-eye"), h("span", "", fmtN(s.viewers || 0))); top.append(eye);
+  const foot = h("div", "lv-pfoot"), who = h("div", "lv-pwho");
+  const nm = h("div", "lv-nm"); nm.append(h("b", "", s.name), h("small", "lv-title", s.title || ""));
+  who.append(L.h.avatar(s.by, s.name, 34), nm);
+  const go = h("span", "lv-pgo", "Watch"); go.prepend(ico("i-play"));
+  foot.append(who, go);
+  const wait = h("div", "lv-pwait"); wait.append(h("span", "lv-spin"));
+  card.append(vA, vB, h("div", "lv-pshade"), wait, top, foot);
+  card.onclick = () => { const now = L.list.find((x) => x.id === s.id) || s; watch(now); };
+  const P = { id: s.id, on: false, pl: null, card, seen: false };
+  P.add = (m) => { if (P.pl) P.pl.add(m); };
+  P.start = () => {
+    if (P.on) return;
+    P.on = true;
+    P.pl = player({ vA, vB, root: card }, () => card.classList.add("playing"), () => {}, () => P.id, true);
+    L.peek = P;
+    liveSend({ t: "peek", s: P.id });
+  };
+  P.stop = () => {
+    if (!P.on) return;
+    P.on = false;
+    try { P.pl.stop(); } catch {}
+    for (const v of [vA, vB]) { try { v.pause(); v.removeAttribute("src"); v.load(); } catch {} }
+    card.classList.remove("playing");
+    if (L.peek === P) { L.peek = null; liveSend({ t: "peek", s: "" }); }
+  };
+  P.check = () => {
+    const want = card.isConnected && P.seen && document.visibilityState === "visible" && location.hash === "#social" && !L.view && L.list.some((x) => x.id === P.id);
+    if (want) P.start(); else P.stop();
+    if (!card.isConnected && P.io) { P.io.disconnect(); clearInterval(P.tick); if (L.cards) L.cards.delete(P); }
+  };
+  if ("IntersectionObserver" in window) { P.io = new IntersectionObserver((es) => { P.seen = es.some((x) => x.isIntersecting); P.check(); }, { threshold: 0.25 }); P.io.observe(card); }
+  else P.seen = true;
+  P.tick = setInterval(P.check, 2000);
+  (L.cards = L.cards || new Set()).add(P);
+  setTimeout(P.check, 50);
+  return card;
+}
+function peekCheck() { for (const P of L.cards || []) P.check(); }
+
 /** Someone's stream, from a notification: theirs if they're still live. */
 async function openLiveOf(phone) {
   location.hash = "#social";
@@ -115,7 +202,8 @@ function heart(ui, mine) {
 function chatLine(ui, c, mine, onRemove) {
   const row = h("div", "lv-msg"); row.dataset.id = c.id;
   const nm = h("b", "", c.name || "Someone");
-  row.append(nm, h("span", "", " " + c.text));
+  const words = h("span", ""); words.append(" ", L.h && L.h.rich ? L.h.rich(c.text, () => L.view && L.view.close()) : c.text);
+  row.append(nm, words);
   if (c.by && L.h.me() === c.by) row.classList.add("me");
   if (mine && onRemove) {
     let t = 0;
@@ -129,6 +217,7 @@ function chatLine(ui, c, mine, onRemove) {
 }
 /** The chat box and the like button, wired (shared by watching and streaming). */
 function wireTalk(ui, v) {
+  if (L.h && L.h.mentions) L.h.mentions(ui.inp, { above: true, z: 320 });
   ui.bar.onsubmit = (e) => {
     e.preventDefault();
     const text = ui.inp.value.replace(/\s+/g, " ").trim();
@@ -162,14 +251,14 @@ function onStreamMessage(v, ui, m) {
     for (const c of m.chat || []) chatLine(ui, c, v.mine, v.remove);
     ui.like.querySelector(".lv-likes").textContent = fmtN(m.likes || 0); v.likes = m.likes || 0;
     ui.eye.lastChild.textContent = fmtN(m.viewers || 0);
-    if (!v.mine) v.player.start(m.segs || []);
+    if (!v.mine) { const segs = m.segs || []; setTimeout(() => { if (L.view === v && !v.player.fed()) v.player.start(segs); }, 2500); }
   } else if (m.t === "chat") chatLine(ui, m.m, v.mine, v.remove);
   else if (m.t === "unsay") ui.chat.querySelector(`.lv-msg[data-id="${CSS.escape(m.id)}"]`)?.remove();
   else if (m.t === "like") {
     v.likes = m.n; ui.like.querySelector(".lv-likes").textContent = fmtN(m.n);
     if (m.by !== L.h.me()) { const now = Date.now(); if (now - (v.heartAt || 0) > 140) { v.heartAt = now; heart(ui, false); } }
   } else if (m.t === "viewers") ui.eye.lastChild.textContent = fmtN(m.n);
-  else if (m.t === "seg" && !v.mine) v.player.add(m);
+  else if ((m.t === "seg" || m.t === "segb") && !v.mine) v.player.add(m);
   else if (m.t === "end" && !v.mine) v.ended();
   else if (m.t === "end" && v.mine) { toast("Your stream has ended.", 3000); v.close(); }
 }
@@ -187,6 +276,7 @@ const keepAwake = async (on) => { try { if (on && "wakeLock" in navigator && !wa
 /** Watch someone's stream. */
 export function watch(s) {
   if (L.view) L.view.close(true);
+  setTimeout(peekCheck, 0);
   const ui = screen(s, false);
   const v = { id: s.id, by: s.by, mine: false, likes: s.likes };
   L.view = v;
@@ -211,6 +301,7 @@ export function watch(s) {
     if (L.view !== v) return;
     L.view = null;
     liveSend({ t: "unwatch" });
+    setTimeout(peekCheck, 300);
     removeEventListener("hub:open", onOpen);
     clearInterval(tick); v.player.stop(); keepAwake(false);
     ui.root.classList.remove("in"); setTimeout(() => ui.root.remove(), 220);
@@ -225,8 +316,9 @@ export function watch(s) {
 
 /** The player: pieces in order, joined into one video where it can (Media Source), otherwise two players taking turns.
  * onPlay: playing; onStall: waiting for the next piece. */
-function player(ui, onPlay, onStall) {
-  const P = { next: -1, busy: false, queue: [], stopped: false, mode: null };
+function player(ui, onPlay, onStall, idOf = () => (L.view ? L.view.id : ""), muted = false) {
+  const P = { next: -1, busy: false, queue: [], stopped: false, mode: null, muted, fed: false };
+  if (muted) for (const el of [ui.vA, ui.vB]) el.muted = true;
   const want = (n) => n > P.next;
   // fetch pieces in order (each one once), as they're announced
   async function pump() {
@@ -236,15 +328,14 @@ function player(ui, onPlay, onStall) {
       while (P.queue.length && !P.stopped) {
         const g = P.queue.shift();
         if (!want(g.n)) continue;
-        let blob = null;
-        try { blob = await hubStreamGet(currentId(), g.n); } catch {}
+        let blob = g.blob || null;
+        if (!blob) { try { blob = await hubStreamGet(idOf(), g.n); } catch {} }
         if (P.stopped) return;
         P.next = g.n;
-        if (blob && blob.size) await feed(blob, g.type || blob.type, g.dur);
+        if (blob && blob.size) { P.fed = true; await feed(blob, g.type || blob.type, g.dur); }
       }
     } finally { P.busy = false; }
   }
-  const currentId = () => (L.view ? L.view.id : "");
   // --- one video, the pieces joined (Media Source, "sequence": each piece straight after the last)
   let ms = null, sb = null, appendQ = [], mime = "";
   const MSE = window.MediaSource;
@@ -253,7 +344,7 @@ function player(ui, onPlay, onStall) {
     mime = type; ms = new MSE();
     ui.vA.src = URL.createObjectURL(ms);
     return new Promise((res) => ms.addEventListener("sourceopen", () => {
-      try { sb = ms.addSourceBuffer(type); sb.mode = "sequence"; sb.addEventListener("updateend", drain); } catch { sb = null; }
+      try { sb = ms.addSourceBuffer(type); sb.mode = "sequence"; sb.addEventListener("updateend", drain); sb.addEventListener("error", rebuild); } catch { sb = null; }
       res();
     }, { once: true }));
   }
@@ -264,8 +355,31 @@ function player(ui, onPlay, onStall) {
     try {
       if (b.length && v.currentTime - b.start(0) > 30) { sb.remove(b.start(0), v.currentTime - 10); return; }
     } catch {}
-    try { sb.appendBuffer(appendQ.shift()); } catch (e) { if (e.name === "QuotaExceededError") { appendQ.length = 0; } }
+    try { sb.appendBuffer(appendQ.shift()); } catch (e) { if (e.name === "QuotaExceededError") appendQ.length = 0; else rebuild(); }
   }
+  /** The joined video broke (a damaged piece): made again, from the next piece on. */
+  function rebuild() {
+    if (P.stopped) return;
+    try { if (ui.vA.src) URL.revokeObjectURL(ui.vA.src); } catch {}
+    ms = null; sb = null; appendQ = [];
+    try { ui.vA.removeAttribute("src"); ui.vA.load(); } catch {}
+    onStall();
+  }
+  // (every moment: broken, made again; stuck with video ahead of it (a gap), moved past it)
+  let lastT = -1, stuckAt = 0;
+  const guard = setInterval(() => {
+    if (P.stopped) { clearInterval(guard); return; }
+    if (P.mode !== "mse" || !ms) return;
+    const v = ui.vA;
+    if (v.error) { rebuild(); return; }
+    if (!sb) return;
+    let end = 0; try { const b = sb.buffered; if (b.length) end = b.end(b.length - 1); } catch { rebuild(); return; }
+    if (!v.paused && v.currentTime === lastT && end - v.currentTime > 0.5) {
+      if (!stuckAt) stuckAt = Date.now();
+      else if (Date.now() - stuckAt > 1800) { stuckAt = 0; try { v.currentTime = Math.max(0, end - 0.8); v.play().catch(() => {}); } catch {} }
+    } else stuckAt = 0;
+    lastT = v.currentTime;
+  }, 600);
   function chase() {
     const v = ui.vA; if (!sb) return;
     try {
@@ -316,11 +430,13 @@ function player(ui, onPlay, onStall) {
     } else turnFeed(URL.createObjectURL(blob));
   }
   ui.vA.addEventListener("waiting", () => { if (P.mode === "mse") onStall(); });
+  ui.vA.addEventListener("error", () => { if (P.mode === "mse" && ms) rebuild(); });
   ui.vA.addEventListener("playing", () => onPlay());
   return {
     /** Joining: start from the second-latest piece (a piece in hand while the next comes). */
     start(segs) { const list = segs.slice(-2); if (list.length) { P.next = Math.min(P.next, list[0].n - 1); for (const g of list) P.queue.push(g); pump(); } },
-    add(g) { if (want(g.n)) { P.queue.push(g); P.queue.sort((a, b) => a.n - b.n); pump(); } },
+    add(g) { if (want(g.n) && !P.queue.some((x) => x.n === g.n && x.blob)) { P.queue.push(g); P.queue.sort((a, b) => a.n - b.n || (b.blob ? 1 : 0) - (a.blob ? 1 : 0)); pump(); } },
+    fed: () => P.fed,
     reset() { P.next = -1; P.queue = []; },
     stop() {
       P.stopped = true;
@@ -397,8 +513,7 @@ export async function goLive() {
     // (the piece being recorded: finished and sent as it is; the next starts with the other camera)
     clearTimeout(tick);
     const was = rec; rec = null;
-    if (was && was.state !== "inactive") { try { was.stop(); } catch {} }
-    await new Promise((r) => setTimeout(r, 60));
+    if (was && was.state !== "inactive") await new Promise((r) => { was.addEventListener("stop", r, { once: true }); try { was.stop(); } catch { r(); } setTimeout(r, 1500); });
     for (const t of media.getVideoTracks()) t.stop();
     try { const n = await camFacing(want); facing = want; useTrack(n.getVideoTracks()[0]); }
     catch {

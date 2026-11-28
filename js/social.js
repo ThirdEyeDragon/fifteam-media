@@ -14,7 +14,7 @@ import { makeFile, sizeText } from "./export.js";
 import { myPublicKey, initDms, sendTo } from "./dms.js";
 import { openProfile } from "./profile.js";
 import { loadMeta, votesOf, setVote, meta, canSee, blocked, followersOf, aboutOf, setupOf } from "./meta.js";
-import { initLive, streamsNow, canGoLive, goLive, watch } from "./live.js";
+import { initLive, streamsNow, canGoLive, goLive, watch, previewCard } from "./live.js";
 import { bannedPhones, noPicPhones, checkBans, badgesOf, isPremium } from "./ban.js";
 import { activityChanged, initActivity, openActivity } from "./activity.js";
 import { hookFetch, holdFor } from "./limiter.js";
@@ -404,6 +404,9 @@ function renderInto(body) {
 /** Who's live: a circle each (their picture in a red ring, LIVE under it), tapped to watch; Go live first for those
  * who may. */
 function liveRow(streams) {
+  const box = h("div", "so-livebox");
+  // (the stream: a preview of it playing, tapped to watch; any others as circles)
+  if (streams.length) box.append(previewCard(streams[0]));
   const row = h("div", "so-liverow"); row.setAttribute("aria-label", "Live now");
   if (canGoLive() && !streams.some((x) => x.by === S.me)) {
     const b = h("button", "so-lv so-golive"); b.type = "button";
@@ -411,7 +414,7 @@ function liveRow(streams) {
     b.append(c, h("small", "", "Go live")); b.onclick = () => goLive();
     row.append(b);
   }
-  for (const x of streams) {
+  for (const x of streams.slice(1)) {
     const b = h("button", "so-lv"); b.type = "button"; b.setAttribute("aria-label", `${x.name} is live${x.title ? ": " + x.title : ""}`);
     const ring = h("span", "so-lvring"), av = avatarEl(58, "", x.name);
     showPicture(av, { by: x.by, user: x.name, id: "" });
@@ -420,10 +423,116 @@ function liveRow(streams) {
     b.onclick = () => watch(x);
     row.append(b);
   }
-  return row;
+  if (row.childElementCount) box.append(row);
+  return box;
 }
 // ---------------------------------------------------------------------------------------------------- finding people
 const fold = (t) => String(t || "").toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+/** Everyone with a username (from the profiles, and anyone who has posted or commented), not you, not banned or
+ * blocked: [{ key, ph (their phone; "" for older posts that only have a name), name, n (folded), extra, fans, su }]. */
+function peopleList() {
+  const people = new Map();
+  for (const [ph, pr] of Object.entries(S.profiles || {})) if (pr && pr.name) people.set(ph, pr.name);
+  // (older posts and comments may only have a name: found by it, their page opened by it)
+  const names = new Set([...people.values()].map(fold));
+  const add = (by, user) => { if (!user) return; if (by) { if (!people.has(by)) people.set(by, user); } else if (!names.has(fold(user))) { names.add(fold(user)); people.set("u:" + user, user); } };
+  for (const p of S.feed) { if (!hidden(p)) add(p.by, p.user); for (const c of p.comments || []) if (!hidden(c)) add(c.by, c.user); }
+  const myName = fold(S.name);
+  return [...people].filter(([ph, name]) => ph !== S.me && !(ph.startsWith("u:") && fold(name) === myName) && !bannedPhones().has(ph) && !blocked(S.me, ph)).map(([key, name]) => {
+    const ph = key.startsWith("u:") ? "" : key;
+    const su = (ph && setupOf(ph)) || {};
+    return { key, ph, name, n: fold(name), extra: ph ? fold([aboutOf(ph), su.subs, su.amps, su.vehicle].filter(Boolean).join(" ")) : "", fans: ph ? followersOf(ph).length : 0, su };
+  });
+}
+
+// ---------------------------------------------------------------------------------------------------- @names
+// "@Name" in a post, a comment or a live chat: the name highlighted, tapped for their page (when it's someone's
+// username: the longest one that fits, so "@Big Mike" isn't read as "@Big"). While typing "@", names are suggested.
+let nameIndex = { sig: "", list: [] };
+function knownNames() {
+  const sig = Object.keys(S.profiles || {}).length + "|" + S.feed.length + "|" + S.name;
+  if (nameIndex.sig !== sig) {
+    const list = peopleList().map((x) => ({ ph: x.ph, name: x.name, n: x.name.toLowerCase() }));
+    if (S.name && S.me) list.push({ ph: S.me, name: S.name, n: S.name.toLowerCase() });
+    nameIndex = { sig, list: list.sort((a, b) => b.n.length - a.n.length) };
+  }
+  return nameIndex.list;
+}
+/** Text with its @names as links (before: done first when one's tapped, like closing a live stream). */
+export function richText(text, before) {
+  const out = document.createDocumentFragment(), t = String(text || "");
+  if (!t.includes("@")) { out.append(t); return out; }
+  const names = knownNames(), low = t.toLowerCase();
+  let i = 0, from = 0;
+  while ((i = t.indexOf("@", i)) >= 0) {
+    const okBefore = i === 0 || /[\s([{"'.,!?]/.test(t[i - 1]);
+    const hit = okBefore ? names.find((x) => low.startsWith(x.n, i + 1) && !/[\p{L}\p{N}_]/u.test(t[i + 1 + x.n.length] || "")) : null;
+    if (!hit) { i++; continue; }
+    if (i > from) out.append(t.slice(from, i));
+    const a = h("button", "mention", "@" + t.substr(i + 1, hit.n.length)); a.type = "button";
+    a.onclick = (e) => { e.stopPropagation(); e.preventDefault(); if (before) before(); setTimeout(() => openProfile({ by: hit.ph, user: hit.name }), before ? 250 : 0); };
+    out.append(a);
+    i = from = i + 1 + hit.n.length;
+  }
+  if (from < t.length) out.append(t.slice(from));
+  return out;
+}
+/** Names suggested while typing "@" in a box (a list just above it, or below; tapped, the name goes in). */
+export function mentionBox(inp, { above = true, z = 140 } = {}) {
+  if (!inp || inp._mention) return;
+  inp._mention = true;
+  let box = null, items = [], sel = 0, start = -1;
+  const close = () => { if (box) { box.remove(); box = null; } };
+  const place = () => {
+    if (!box) return;
+    const r = inp.getBoundingClientRect();
+    box.style.left = Math.max(8, r.left) + "px"; box.style.width = Math.min(r.width, innerWidth - 16) + "px";
+    if (above) { box.style.bottom = (innerHeight - r.top + 6) + "px"; box.style.top = ""; } else { box.style.top = (r.bottom + 6) + "px"; box.style.bottom = ""; }
+  };
+  const pick = (x) => {
+    const pos = inp.selectionStart == null ? inp.value.length : inp.selectionStart, v = inp.value;
+    inp.value = v.slice(0, start) + "@" + x.name + " " + v.slice(pos);
+    const c = start + x.name.length + 2;
+    try { inp.setSelectionRange(c, c); } catch {}
+    close(); inp.focus();
+    inp.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  const paint = () => {
+    if (!box) { box = h("div", "mn-box"); box.style.zIndex = String(z); box.setAttribute("role", "listbox"); document.body.append(box); }
+    box.replaceChildren();
+    items.forEach((x, k) => {
+      const r = h("button", "mn-row" + (k === sel ? " on" : "")); r.type = "button"; r.setAttribute("role", "option");
+      const av = avatarEl(28, "", x.name); if (x.ph) showPicture(av, { by: x.ph, user: x.name, id: "" });
+      r.append(av, nameLine(x.name, x.ph));
+      r.addEventListener("pointerdown", (e) => { e.preventDefault(); pick(x); });
+      box.append(r);
+    });
+    place();
+  };
+  const update = () => {
+    const pos = inp.selectionStart == null ? inp.value.length : inp.selectionStart, before = inp.value.slice(0, pos);
+    const m = /(^|[\s(])@([^@\n]{0,24})$/.exec(before);
+    if (!m || /\s$/.test(m[2]) || /\s\S+\s/.test(m[2])) { close(); return; }
+    start = pos - m[2].length - 1;
+    const q = fold(m[2]);
+    const seen = new Set();
+    items = peopleList().filter((x) => !q || x.n.startsWith(q) || x.n.includes(q))
+      .sort((a, b) => (b.n.startsWith(q) - a.n.startsWith(q)) || b.fans - a.fans || a.n.localeCompare(b.n))
+      .filter((x) => { const k = x.n; if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 6);
+    if (!items.length || (items.length === 1 && items[0].n === q && /\s$/.test(before))) { close(); return; }
+    sel = 0; paint();
+  };
+  inp.addEventListener("input", update);
+  inp.addEventListener("click", update);
+  inp.addEventListener("blur", () => setTimeout(close, 180));
+  inp.addEventListener("keydown", (e) => {
+    if (!box) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); sel = (sel + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length; paint(); }
+    else if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); e.stopPropagation(); pick(items[sel]); }
+    else if (e.key === "Escape") close();
+  });
+  addEventListener("resize", place);
+}
 /** Search for people by username (and what's in their about me and setup): tapped, their page. With nothing typed, the
  * people who are live and the most followed. */
 async function openSearch() {
@@ -436,19 +545,7 @@ async function openSearch() {
     box.append(icon("i-search"), inp);
     const list = h("div", "so-flist");
     panel.append(box, list);
-    // everyone with a username (from the profiles, and anyone who has posted or commented), not banned or blocked
-    const people = new Map();
-    for (const [ph, pr] of Object.entries(S.profiles || {})) if (pr && pr.name) people.set(ph, pr.name);
-    // (older posts and comments may only have a name: found by it, their page opened by it)
-    const names = new Set([...people.values()].map(fold));
-    const add = (by, user) => { if (!user) return; if (by) { if (!people.has(by)) people.set(by, user); } else if (!names.has(fold(user))) { names.add(fold(user)); people.set("u:" + user, user); } };
-    for (const p of S.feed) { if (!hidden(p)) add(p.by, p.user); for (const c of p.comments || []) if (!hidden(c)) add(c.by, c.user); }
-    const myName = fold(S.name);
-    const all = [...people].filter(([ph, name]) => ph !== S.me && !(ph.startsWith("u:") && fold(name) === myName) && !bannedPhones().has(ph) && !blocked(S.me, ph)).map(([key, name]) => {
-      const ph = key.startsWith("u:") ? "" : key;
-      const su = (ph && setupOf(ph)) || {};
-      return { key, ph, name, n: fold(name), extra: ph ? fold([aboutOf(ph), su.subs, su.amps, su.vehicle].filter(Boolean).join(" ")) : "", fans: ph ? followersOf(ph).length : 0, su };
-    });
+    const all = peopleList();
     const liveBy = new Set(streamsNow().map((x) => x.by));
     const row = (x) => {
       const r = h("button", "so-frow"); r.type = "button";
@@ -708,7 +805,7 @@ function postCard(p) {
   { const d = h("button", "so-more"); d.setAttribute("aria-label", "More"); d.append(icon("i-more")); d.onclick = () => (S.mine.has(p.id) || mineAs(p) ? postMenu(p) : otherMenu(p)); head.append(d); }
   card.append(head);
   if (p.music) { card.append(musicRow(p)); clipWatch(card, p); }
-  if (p.text) card.append(h("p", "so-text", p.text));
+  if (p.text) { const tx = h("p", "so-text"); tx.append(richText(p.text)); card.append(tx); }
   let img = null, song = null, vid = null;
   let col = null;
   if (p.media.length) { col = collage(p); card.append(col); }
@@ -979,6 +1076,7 @@ function editPost(p) {
   openSheet((panel) => {
     panel.append(h("h3", "", "Edit post"));
     const t = h("textarea", "input so-compose"); t.rows = 4; t.maxLength = 500; t.value = p.text || ""; t.setAttribute("aria-label", "Your post");
+    setTimeout(() => mentionBox(t, { above: false, z: 140 }), 0);
     const err = h("p", "set-err"), go = h("button", "btn primary block", "Save");
     go.onclick = async () => {
       const text = t.value.trim().slice(0, 500);
@@ -1053,7 +1151,8 @@ function openComments(id) {
     const f = h("form", "cs-form");
     const to = h("div", "cs-to"); to.hidden = true;
     const inp = h("input", "input"); inp.maxLength = 300; inp.autocomplete = "off"; inp.setAttribute("aria-label", "Comment");
-    inp.placeholder = S.name ? "Add a comment" : "Pick a username to comment";
+    inp.placeholder = S.name ? "Add a comment (@ to mention someone)" : "Pick a username to comment";
+    setTimeout(() => mentionBox(inp, { above: true, z: 140 }), 0);
     const go = h("button", "btn small primary", "Send"); go.type = "submit";
     const row = h("div", "cs-row"); row.append(inp, go);
     f.append(to, row);
@@ -1117,7 +1216,8 @@ function commentRow(p, c, reply) {
   lk.onclick = () => likeComment(p.id, c.id);
   acts.append(rp, lk);
   if (c.by && c.by === S.me && !c.sending) { const x = h("button", "cs-act", "Delete"); x.onclick = () => uncomment(p.id, c.id); acts.append(x); }
-  body.append(top, h("p", "", c.text), acts);
+  const ctext = h("p", ""); ctext.append(richText(c.text, () => closeSheet()));
+  body.append(top, ctext, acts);
   row.append(av, body);
   return row;
 }
@@ -1488,7 +1588,8 @@ function composer(preset) {
   const pics = () => items.filter((x) => x.k === "i").length, vids = () => items.filter((x) => x.k === "v");
   openSheet((p) => {
     p.append(h("h3", "", "New post"));
-    const text = h("textarea", "input so-compose"); text.rows = 3; text.maxLength = 500; text.placeholder = "Say something"; text.setAttribute("aria-label", "Your post");
+    const text = h("textarea", "input so-compose"); text.rows = 3; text.maxLength = 500; text.placeholder = "Say something (@ to mention someone)"; text.setAttribute("aria-label", "Your post");
+    setTimeout(() => mentionBox(text, { above: false, z: 140 }), 0);
     text.value = preset.text || "";
     const again = (more) => composer({ items, song, music, text: text.value, priv: preset.priv, box: preset.box, ...more });
     const prev = h("div", "stack-sm");
@@ -1890,6 +1991,7 @@ export function initSocial() {
   initLive({
     me: () => S.me, name: () => S.name,
     avatar: (phone, name, size) => { const a = avatarEl(size, "", name); showPicture(a, { by: phone, user: name, id: "" }); return a; },
+    rich: (text, before) => richText(text, before), mentions: (inp, o) => mentionBox(inp, o),
     changed: () => { if (location.hash === "#social") render(); },
   });
   addEventListener("fifteam-streamers", () => { if (location.hash === "#social") render(); });

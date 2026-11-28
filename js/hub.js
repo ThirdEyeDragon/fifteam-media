@@ -108,6 +108,7 @@ export async function startLive() {
   let ws;
   try { ws = new WebSocket(b.replace(/^http/, "ws") + "/v1/live"); } catch { return; }
   live.ws = ws;
+  ws.binaryType = "arraybuffer";
   ws.onopen = async () => {
     live.on = true; tries = 0;
     dispatchEvent(new Event("hub:open"));
@@ -116,6 +117,15 @@ export async function startLive() {
     clearInterval(pinger); pinger = setInterval(() => { try { ws.send("ping"); } catch {} }, 25000);
   };
   ws.onmessage = (e) => {
+    // (a piece of a live stream: a little header, its length first, then the video)
+    if (e.data instanceof ArrayBuffer) {
+      try {
+        const n = new DataView(e.data).getUint32(0), head = JSON.parse(new TextDecoder().decode(new Uint8Array(e.data, 4, n)));
+        head.blob = new Blob([new Uint8Array(e.data, 4 + n)], { type: head.type || "video/webm" });
+        dispatchEvent(new CustomEvent("hub:stream", { detail: head }));
+      } catch {}
+      return;
+    }
     if (e.data === "pong") return;
     let m; try { m = JSON.parse(e.data); } catch { return; }
     if (m.t === "v" && m.k) { if (hubVersion(m.k) !== m.v) dispatchEvent(new CustomEvent("hub:" + m.k, { detail: { v: m.v, to: m.to || null } })); }

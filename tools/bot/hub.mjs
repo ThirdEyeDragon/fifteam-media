@@ -330,7 +330,11 @@ export class Hub extends DurableObject {
       s.dirty = false;
       try { await this.flush(k, s); } catch (e) { console.log("copying back", k, e.message); s.dirty = true; again = true; }
     }
-    if (again) this.ctx.storage.setAlarm(Date.now() + 10000);
+    // (a stream's notifications, a few dozen each time)
+    let more = false;
+    try { more = await this.pushSome(); } catch (e) { console.log("live notes:", e.message); }
+    if (again) this.ctx.storage.setAlarm(Date.now() + (more ? 1000 : 10000));
+    else if (more) this.ctx.storage.setAlarm(Date.now() + 1000);
   }
   async flush(k, s) {
     const c = await this.config();
@@ -440,7 +444,7 @@ export class Hub extends DurableObject {
       ws.send(JSON.stringify({ t: "ok", me: at.me ? "yes" : "no" }));
       if (this.streams.size) this.tellStreams(ws);
     } else if (m.t === "vis") { at.vis = !!m.vis; ws.serializeAttachment(at); }
-    else if (["watch", "unwatch", "say", "like", "unsay"].includes(m.t)) await this.streamMessage(ws, at, m);
+    else if (["watch", "unwatch", "say", "like", "unsay", "peek"].includes(m.t)) await this.streamMessage(ws, at, m);
   }
   webSocketClose(ws) {
     let w = ""; try { w = (ws.deserializeAttachment() || {}).watch || ""; } catch {}
@@ -682,8 +686,31 @@ export class Hub extends DurableObject {
     s.segs.push({ n, type, buf, dur: Math.max(200, Math.min(10000, +dur || 2000)), at: Date.now() });
     while (s.segs.length > 8) s.segs.shift();
     s.last = Date.now();
-    this.toWatchers(id, { t: "seg", s: id, n, type: type.slice(0, 60), dur: s.segs[s.segs.length - 1].dur });
+    this.sendSeg(s, s.segs[s.segs.length - 1]);
     return { status: 200 };
+  }
+  /** A piece of the video for everyone watching it (and every app showing its preview at the top), sent down the live
+   * connection itself: the bytes after a little header ({ t: "segb", s, n, type, dur }, its length first). Bigger than a
+   * message can be: just the news, and they fetch it. */
+  segFrame(s, g) {
+    if (g.frame === undefined) {
+      if (g.buf.byteLength > 900e3) g.frame = null;
+      else {
+        const head = new TextEncoder().encode(JSON.stringify({ t: "segb", s: s.id, n: g.n, type: g.type.slice(0, 60), dur: g.dur }));
+        const f = new Uint8Array(4 + head.length + g.buf.byteLength);
+        new DataView(f.buffer).setUint32(0, head.length); f.set(head, 4); f.set(new Uint8Array(g.buf), 4 + head.length);
+        g.frame = f.buffer;
+      }
+    }
+    return g.frame;
+  }
+  sendSeg(s, g, only) {
+    const frame = this.segFrame(s, g), note = JSON.stringify({ t: "seg", s: s.id, n: g.n, type: g.type.slice(0, 60), dur: g.dur });
+    for (const ws of only ? [only] : this.ctx.getWebSockets()) {
+      const a = ws.deserializeAttachment();
+      if (!a || (a.watch !== s.id && a.peek !== s.id)) continue;
+      try { ws.send(frame || note); } catch {}
+    }
   }
   streamGet(id, n) {
     const s = this.streams.get(id), g = s && s.segs.find((x) => x.n === n);
@@ -702,14 +729,37 @@ export class Hub extends DurableObject {
   }
   /** Their followers hear they've gone live (on screen: a note; otherwise a notification, if they get activity ones). */
   async liveNotes(phone, name) {
-    const meta = this.data(await this.load("meta")) || {}, mod = await this.streamMod(), banned = obj(mod.bans), blocks = obj(meta.blocks);
-    const notes = [];
-    for (const [who, list] of Object.entries(obj(meta.follows))) {
-      if (!PHONE.test(who) || who === phone || banned[who] || !arr(list).includes(phone)) continue;
-      if (arr(blocks[who]).includes(phone) || arr(blocks[phone]).includes(who)) continue;
-      notes.push({ to: who, kind: "act", title: name, body: "is live now: tap to watch", tag: `live-${phone}`, data: { live: phone } });
+    const mod = await this.streamMod(), banned = obj(mod.bans);
+    const note = { title: `${name} is live`, body: "Tap to watch now", tag: `live-${phone}`, data: { live: phone } };
+    // apps open on screen: a note at once (no notification on top)
+    const shown = new Set();
+    for (const ws of this.ctx.getWebSockets()) {
+      const a = ws.deserializeAttachment();
+      if (!a || !a.me || a.me === phone || banned[a.me] || !a.vis) continue;
+      try { ws.send(JSON.stringify({ t: "note", kind: "live", title: note.title, body: note.body, data: note.data })); shown.add(a.me); } catch {}
     }
-    await this.sendNotes(notes);
+    // everyone else with notifications set up, whatever their settings: queued, sent a few dozen at a time (alarm())
+    const q = [];
+    for (const [key, list] of await this.ctx.storage.list({ prefix: "sub:" })) {
+      const ph = key.slice(4);
+      if (ph === phone || banned[ph] || shown.has(ph)) continue;
+      for (const sub of arr(list)) q.push(sub);
+    }
+    if (!q.length) return;
+    await this.ctx.storage.put("pushq", { note, list: q });
+    await this.ctx.storage.setAlarm(Date.now() + 50);
+  }
+  /** Some of the queued notifications (each wakeup can only reach so many): true if there are more. */
+  async pushSome() {
+    const pq = await this.ctx.storage.get("pushq");
+    if (!pq || !arr(pq.list).length) return false;
+    const vapid = await this.vapid();
+    const take = pq.list.splice(0, 30), gone = [];
+    if (vapid) await Promise.all(take.map(async (sub) => { try { const st = await sendPush(sub, pq.note, vapid); if (st === 404 || st === 410) gone.push(sub.endpoint); } catch (e) { console.log("push failed:", e.message); } }));
+    for (const e of gone) await this.unsubscribe(e);
+    if (pq.list.length) { await this.ctx.storage.put("pushq", pq); return true; }
+    await this.ctx.storage.delete("pushq");
+    return false;
   }
   /** What a watcher says or does in a stream: chat (sanitised, at most one a second), likes (taps; at most 8 a second),
    * and (the streamer) taking a chat message down. */
@@ -721,7 +771,14 @@ export class Hub extends DurableObject {
       if (!s) { try { ws.send(JSON.stringify({ t: "end", s: String(m.s || "") })); } catch {} return; }
       const segs = s.segs.slice(-2).map((g) => ({ n: g.n, type: g.type.slice(0, 60), dur: g.dur }));
       try { ws.send(JSON.stringify({ t: "st", s: s.id, by: s.by, name: s.name, title: s.title, at: s.at, segs, chat: s.chat.slice(-40), likes: s.likes, viewers: this.viewers(s) })); } catch {}
+      for (const g of s.segs.slice(-2)) this.sendSeg(s, g, ws);       // (something to play at once)
       this.countChanged(s.id);
+      return;
+    }
+    // the preview at the top of the app: the pieces, without counting as watching
+    if (m.t === "peek") {
+      const a2 = ws.deserializeAttachment() || {}; a2.peek = s ? s.id : ""; ws.serializeAttachment(a2);
+      if (s && s.segs.length) this.sendSeg(s, s.segs[s.segs.length - 1], ws);
       return;
     }
     if (m.t === "unwatch") { const old = at.watch; at.watch = ""; ws.serializeAttachment(at); if (old) this.countChanged(old); return; }

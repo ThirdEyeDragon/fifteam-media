@@ -1443,3 +1443,40 @@ input.bx-countv { width: 56px; height: 40px; padding: 0 6px; text-align: center;
 .pm-label { display: flex; flex-direction: column; gap: 4px; }
 .pm-label span { font-size: 13px; font-weight: 700; color: var(--muted); }
 .pm-payname.bad { border-color: #ff5a78; box-shadow: 0 0 0 3px rgba(255, 90, 120, 0.2); }
+
+/* ---------------------------------------------------------------- the live preview, the LIVE button, the banner */
+.so-livebox { display: flex; flex-direction: column; gap: 10px; }
+.lv-prev { position: relative; display: block; width: 100%; aspect-ratio: 4 / 5; max-height: 54vh; border-radius: 20px; overflow: hidden; background: radial-gradient(circle at 50% 35%, #2a1a52, #0b0718 75%); color: #fff; text-align: left; box-shadow: 0 10px 30px rgba(255, 45, 85, 0.18), 0 0 0 1.5px rgba(255, 45, 85, 0.55); }
+.lv-pv { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity 0.35s; }
+.lv-prev.playing .lv-pv.on { opacity: 1; }
+.lv-pshade { position: absolute; inset: 0; background: linear-gradient(to bottom, rgba(0, 0, 0, 0.45), transparent 26%, transparent 60%, rgba(0, 0, 0, 0.75)); pointer-events: none; }
+.lv-pwait { position: absolute; inset: 0; display: grid; place-items: center; }
+.lv-prev.playing .lv-pwait { display: none; }
+.lv-ptop { position: absolute; left: 12px; right: 12px; top: 12px; display: flex; gap: 6px; align-items: center; }
+.lv-pfoot { position: absolute; left: 12px; right: 12px; bottom: 12px; display: flex; align-items: center; gap: 10px; }
+.lv-pwho { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+.lv-pgo { flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 9px 14px; border-radius: 999px; background: #ff2d55; font-weight: 800; font-size: 14px; box-shadow: 0 4px 16px rgba(255, 45, 85, 0.5); }
+.lv-pgo svg { width: 14px; height: 14px; }
+.top.has-live .brand > span:last-child { display: none; }
+.lv-chip { flex: 0 1 auto; display: inline-flex; align-items: center; gap: 6px; height: 36px; max-width: 46vw; padding: 0 12px 0 10px; border-radius: 18px; background: rgba(255, 45, 85, 0.16); border: 1.5px solid rgba(255, 45, 85, 0.75); color: #fff; font-size: 13px; margin-right: auto; margin-left: 8px; min-width: 0; animation: lv-in 0.3s ease-out; }
+.lv-chip b { font: 800 11.5px/1 var(--font-body); letter-spacing: 0.08em; color: #ff6a88; }
+.lv-chipname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; min-width: 0; }
+.lv-chipdot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: #ff2d55; box-shadow: 0 0 0 0 rgba(255, 45, 85, 0.7); animation: lv-ping 1.4s ease-out infinite; }
+@keyframes lv-ping { 70% { box-shadow: 0 0 0 7px rgba(255, 45, 85, 0); } 100% { box-shadow: 0 0 0 0 rgba(255, 45, 85, 0); } }
+.lv-banner { position: fixed; left: 12px; right: 12px; top: calc(env(safe-area-inset-top, 0px) + 10px); z-index: 180; display: flex; align-items: center; gap: 10px; padding: 10px 14px 10px 10px; border-radius: 18px; background: rgba(20, 10, 34, 0.92); border: 1.5px solid rgba(255, 45, 85, 0.7); color: #fff; text-align: left; box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); transform: translateY(-130%); transition: transform 0.35s cubic-bezier(.2, .9, .25, 1.1); }
+.lv-banner.in { transform: none; }
+.lv-bt { display: flex; flex-direction: column; min-width: 0; }
+.lv-bt b { font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lv-bt small { color: var(--muted); }
+
+/* ---------------------------------------------------------------- @names */
+.mention { display: inline; padding: 0 3px; margin: 0 -1px; border-radius: 6px; background: rgba(122, 75, 255, 0.18); color: #c9b6ff; font: inherit; font-weight: 700; line-height: inherit; cursor: pointer; }
+.mention:active { background: rgba(122, 75, 255, 0.35); }
+.lv-msg .mention { color: #ffd0dc; background: rgba(255, 45, 85, 0.22); }
+.mn-box { position: fixed; max-height: 260px; overflow-y: auto; padding: 6px; border-radius: 16px; background: rgba(18, 14, 44, 0.97); border: 1px solid var(--line); box-shadow: 0 14px 36px rgba(0, 0, 0, 0.5); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+.mn-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 8px; border-radius: 10px; color: var(--ink); font-weight: 600; text-align: left; }
+.mn-row.on, .mn-row:active { background: rgba(122, 75, 255, 0.2); }
+
+/* ---------------------------------------------------------------- adding music */
+.lib-addpanel .lib-many { height: 52px; font-size: 16px; }
+.lib-how { margin: 2px 0 6px 20px; padding: 0; display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 14px; }

@@ -65,7 +65,7 @@ export const COMMANDS = [
   { name: "premium", description: "Unlock Premium for someone who paid $10 (or take it away)", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }, { type: 5, name: "remove", description: "Take it away instead", required: false }] },
   { name: "premiums", description: "Who has Premium, and who has asked for it", type: 1 },
   { name: "allow", description: "Let someone do something in the app", type: 1, options: [
-    { type: 1, name: "streaming", description: "Let someone go live in Social (up to 3 people)", options: [
+    { type: 1, name: "streaming", description: "Let someone go live in Social (one person at a time)", options: [
       { type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true },
       { type: 5, name: "remove", description: "Take it away (ends their stream if they're live)", required: false }] }] },
   { name: "streamers", description: "Who may go live, and who's live now", type: 1 },
@@ -459,7 +459,7 @@ export function makeBot({ cfg, priv, notes, token = "", log = () => {}, stores =
   }
 
   // ---------------------------------------------------------------------------------------------------- live streaming
-  const MAX_STREAMERS = 3;
+  const MAX_STREAMERS = 1;
   async function cmdAllowStreaming(user, remove) {
     const w = await whoIs(user);
     if (!w.phones.length) return `No phone goes by **${clean(user)}**.`;
@@ -467,7 +467,7 @@ export function makeBot({ cfg, priv, notes, token = "", log = () => {}, stores =
     // (people, not phones: one person's phones count once)
     const people_ = new Set(Object.values(now).map((v) => String(v.name || "").toLowerCase()));
     const already = w.phones.some((p) => now[p]);
-    if (!remove && !already && people_.size >= MAX_STREAMERS) return `${MAX_STREAMERS} people can already go live: ${Object.values(now).map((v) => `**${clean(v.name)}**`).filter((x, i, a) => a.indexOf(x) === i).join(", ")}. Take one away first (/allow streaming user remove: True).`;
+    if (!remove && !already && people_.size >= MAX_STREAMERS) return `${MAX_STREAMERS === 1 ? "Only one person can go live, and that is" : MAX_STREAMERS + " people can already go live:"} ${Object.values(now).map((v) => `**${clean(v.name)}**`).filter((x, i, a) => a.indexOf(x) === i).join(", ")}. Take one away first (/allow streaming user remove: True).`;
     const at = Date.now();
     await changeMod((m) => { m.stream = obj(m.stream); for (const p of w.phones) { if (remove) delete m.stream[p]; else m.stream[p] = { at, name: (w.all[p] && w.all[p].name) || String(user).slice(0, 24) }; } }, () => true);
     if (remove && stores && stores.endStreamsOf) await stores.endStreamsOf(w.phones).catch(() => {});
