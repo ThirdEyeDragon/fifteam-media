@@ -64,6 +64,11 @@ export const COMMANDS = [
   { name: "delete-listing", description: "Take an Audio Market listing down", type: 1, options: [{ type: 3, name: "listing", description: "Start typing its title or the seller", required: true, autocomplete: true }] },
   { name: "premium", description: "Unlock Premium for someone who paid $10 (or take it away)", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }, { type: 5, name: "remove", description: "Take it away instead", required: false }] },
   { name: "premiums", description: "Who has Premium, and who has asked for it", type: 1 },
+  { name: "allow", description: "Let someone do something in the app", type: 1, options: [
+    { type: 1, name: "streaming", description: "Let someone go live in Social (up to 3 people)", options: [
+      { type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true },
+      { type: 5, name: "remove", description: "Take it away (ends their stream if they're live)", required: false }] }] },
+  { name: "streamers", description: "Who may go live, and who's live now", type: 1 },
   { name: "allow-picture", description: "Let a user have a profile picture again", type: 1, options: [{ type: 3, name: "user", description: "Their username or phone id", required: true, autocomplete: true }] },
 ].map((c) => ({ ...c, default_member_permissions: "4", dm_permission: false }));   // (4: Ban Members; admins only)
 
@@ -439,12 +444,42 @@ export function makeBot({ cfg, priv, notes, token = "", log = () => {}, stores =
   }
   async function cmdPremiums() {
     const d = (await readStore("mod", "mod.json")) || {}, paid = Object.entries(obj(d.premium)).sort((a, b) => b[1].at - a[1].at);
-    const asks = stores && stores.premiumAsks ? Object.entries(obj(await stores.premiumAsks().catch(() => ({})))).filter(([k]) => !obj(d.premium)[k]).sort((a, b) => b[1] - a[1]) : [];
+    // (an ask: when, and (newer apps) how they're paying, their name there, and their account's email)
+    const when = (x) => (x && typeof x === "object" ? +x.at || 0 : +x || 0);
+    const asks = stores && stores.premiumAsks ? Object.entries(obj(await stores.premiumAsks().catch(() => ({})))).filter(([k]) => !obj(d.premium)[k]).sort((a, b) => when(b[1]) - when(a[1])) : [];
     const all = asks.length ? await people() : {};
-    const lines = [`**Premium** · ${paid.length} paid${asks.length ? ` · ${asks.length} asked (check PayPal and Cash App for $10 with their name in the note)` : ""}`];
+    const lines = [`**Premium** · ${paid.length} paid${asks.length ? ` · ${asks.length} asked (check PayPal and Cash App for $10 from the name they gave)` : ""}`];
     for (const [k, v] of paid.slice(0, 25)) lines.push(`• **${clean(v.name)}** · since ${ago(v.at)} · \`${k}\``);
-    for (const [k, t] of asks.slice(0, 15)) lines.push(`• asked: **${clean((all[k] && all[k].name) || k)}** · ${ago(t)} · \`${k}\` (unlock with /premium)`);
+    for (const [k, x] of asks.slice(0, 15)) {
+      const how = x && typeof x === "object" && x.pay ? ` · ${x.method === "cash" ? "Cash App" : "PayPal"}: **${clean(x.pay, 60)}**${x.email ? ` · ${clean(x.email, 80)}` : ""}` : "";
+      lines.push(`• asked: **${clean((all[k] && all[k].name) || k)}**${how} · ${ago(when(x))} · \`${k}\` (unlock with /premium)`);
+    }
     if (!paid.length && !asks.length) lines.push("Nobody yet.");
+    return lines.join("\n");
+  }
+
+  // ---------------------------------------------------------------------------------------------------- live streaming
+  const MAX_STREAMERS = 3;
+  async function cmdAllowStreaming(user, remove) {
+    const w = await whoIs(user);
+    if (!w.phones.length) return `No phone goes by **${clean(user)}**.`;
+    const d = (await readStore("mod", "mod.json")) || {}, now = obj(d.stream);
+    // (people, not phones: one person's phones count once)
+    const people_ = new Set(Object.values(now).map((v) => String(v.name || "").toLowerCase()));
+    const already = w.phones.some((p) => now[p]);
+    if (!remove && !already && people_.size >= MAX_STREAMERS) return `${MAX_STREAMERS} people can already go live: ${Object.values(now).map((v) => `**${clean(v.name)}**`).filter((x, i, a) => a.indexOf(x) === i).join(", ")}. Take one away first (/allow streaming user remove: True).`;
+    const at = Date.now();
+    await changeMod((m) => { m.stream = obj(m.stream); for (const p of w.phones) { if (remove) delete m.stream[p]; else m.stream[p] = { at, name: (w.all[p] && w.all[p].name) || String(user).slice(0, 24) }; } }, () => true);
+    if (remove && stores && stores.endStreamsOf) await stores.endStreamsOf(w.phones).catch(() => {});
+    return remove ? `**${clean(w.name)}** can't go live any more${already ? " (their stream, if any, has ended)" : ""}.`
+      : `**${clean(w.name)}** can go live now: a **Go live** button shows in Social on their phone (the next time it checks: straight away if the app is open).`;
+  }
+  async function cmdStreamers() {
+    const d = (await readStore("mod", "mod.json")) || {}, list = Object.entries(obj(d.stream));
+    const live = stores && stores.streams ? await stores.streams().catch(() => []) : [];
+    const lines = [`**Streaming** · ${new Set(list.map(([, v]) => v.name)).size} of ${MAX_STREAMERS} allowed${live.length ? ` · ${live.length} live now` : ""}`];
+    for (const [k, v] of list) { const on = live.find((s) => s.by === k); lines.push(`• **${clean(v.name)}** · since ${ago(v.at)} · \`${k}\`${on ? ` · 🔴 live now (${on.viewers} watching, ${on.likes} likes)` : ""}`); }
+    if (!list.length) lines.push("Nobody yet. /allow streaming lets someone go live.");
     return lines.join("\n");
   }
 
@@ -515,7 +550,9 @@ export function makeBot({ cfg, priv, notes, token = "", log = () => {}, stores =
   // ---------------------------------------------------------------------------------------------------- answering
   /** A slash command's answer: text, or { text, file: { name, data } }. */
   async function run(it) {
-    const opt = (n) => ((it.data && it.data.options) || []).find((o) => o.name === n);
+    // (a subcommand, like /allow streaming: its own options)
+    const top = (it.data && it.data.options) || [], sub = top.length && top[0].type === 1 ? top[0] : null;
+    const opt = (n) => ((sub ? sub.options : top) || []).find((o) => o.name === n);
     const v = (n) => (opt(n) ? opt(n).value : undefined);
     const who = (it.member && it.member.user) || it.user || {};
     const name = it.data.name;
@@ -531,6 +568,7 @@ export function makeBot({ cfg, priv, notes, token = "", log = () => {}, stores =
         : name === "tag-member" ? await cmdTag("member", v("user"), v("remove")) : name === "tag-founder" ? await cmdTag("founder", v("user"), v("remove")) : name === "tag-developer" ? await cmdTag("dev", v("user"), v("remove"))
         : name === "tag-advertiser" ? await cmdTag("advertiser", v("user"), v("remove"))
         : name === "premium" ? await cmdPremium(v("user"), v("remove"), who.id) : name === "premiums" ? await cmdPremiums()
+        : name === "allow" && sub && sub.name === "streaming" ? await cmdAllowStreaming(v("user"), v("remove")) : name === "streamers" ? await cmdStreamers()
         : name === "purge" ? await cmdPurge(v("user")) : name === "clear-profile" ? await cmdClearProfile(v("user")) : name === "allow-picture" ? await cmdAllowPicture(v("user"))
         : "Unknown command";
     } catch (e) { log(`/${name} failed:`, e.message); return `Something went wrong: ${e.message}`; }
@@ -538,7 +576,7 @@ export function makeBot({ cfg, priv, notes, token = "", log = () => {}, stores =
   }
   /** Autocomplete: the choices for the option being typed. */
   async function choices(it) {
-    const f = ((it.data && it.data.options) || []).find((o) => o.focused);
+    const top = (it.data && it.data.options) || [], f = [...top, ...top.flatMap((o) => o.options || [])].find((o) => o.focused);
     try { return await suggest(it.data.name, f && f.value); } catch (e) { log("autocomplete:", e.message); return []; }
   }
   /** The answer, in place of "thinking…" (base: where Discord's interaction replies go). */

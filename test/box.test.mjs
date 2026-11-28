@@ -353,5 +353,22 @@ check(w20.length >= 6 && w20.every((o, i) => !i || o.ohms > w20[i - 1].ohms) && 
   const wedge = M.layout({ ...base, type: "ported", shape: "wedge", port: { kind: "slot", w: 2 * IN, auto: true, fb: 34, at: "back", pos: "left" } });
   check(wedge.ports[0].face === "front" && /wedge/.test(wedge.warn.join()), "a wedge's port opens out of the front (said so)");
 }
+// ---------------------------------------------------------------------------------------------------- where it goes
+{
+  // blow-thru (a truck): the baffle's outer layer a flange 1.5" bigger all round; the cab wall's holes in the cut list,
+  // one per sub (a little bigger than the cutout) and the port's opening, placed from the middle of the front
+  const sub12 = { size: 12.5 * IN, cutout: 11.1 * IN, depth: 6.5 * IN, disp: 0.1 * FT3, pe: 800 };
+  const B = { ...base, type: "ported", fit: "blow", count: 2, layers: 2, w: 40 * IN, h: 16 * IN, d: 20 * IN, sub: sub12, port: { kind: "slot", w: 2.5 * IN, auto: true, fb: 33 } };
+  const L = M.layout(B), plain = M.layout({ ...B, fit: "any" });
+  const fl = L.cut.find((c) => /flange layer/.test(c.name)), inner = L.cut.find((c) => /inside the flange/.test(c.name));
+  const holes = L.cut.find((c) => /Cab wall: a hole/.test(c.name)), port = L.cut.find((c) => /Cab wall: the port/.test(c.name));
+  const flangeParts = L.parts.filter((q) => q.name === "front").length - plain.parts.filter((q) => q.name === "front").length;
+  console.log("blow-thru:", JSON.stringify({ flange: fl && [(fl.a / IN).toFixed(1), (fl.b / IN).toFixed(1)], inner: inner && inner.n, holes: holes && [holes.n, (holes.a / IN).toFixed(2), holes.note], port: port && port.note, flangeParts }));
+  check(fl && Math.abs(fl.a - (L.W + 3 * IN)) < 1e-6 && Math.abs(fl.b - (L.H + 3 * IN)) < 1e-6 && inner && inner.n === 1 && flangeParts === 4, "blow-thru: the baffle's outer layer is a flange 1.5\" bigger all round (in the 3D and the cut list)");
+  check(holes && holes.n === 2 && Math.abs(holes.a - 11.6 * IN) < 1e-6 && /left/.test(holes.note) && port && /centre/.test(port.note), "blow-thru: the cab wall's holes (each sub, the port) with where to cut them");
+  check(Math.abs(L.net[0] - plain.net[0]) < 1e-9 && Math.abs(L.ports[0].fb - plain.ports[0].fb) < 1e-9, "blow-thru: the same box inside (volume and tuning unchanged)");
+  const seat = M.layout({ ...B, fit: "seat" });
+  check(!seat.cab.length && !seat.cut.some((c) => /flange|Cab wall/.test(c.name)), "under a seat: no flange or cab holes");
+}
 console.log(failed ? "FAIL" : "box: all ok");
 process.exit(failed ? 1 : 0);

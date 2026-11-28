@@ -120,6 +120,7 @@ export async function startLive() {
     let m; try { m = JSON.parse(e.data); } catch { return; }
     if (m.t === "v" && m.k) { if (hubVersion(m.k) !== m.v) dispatchEvent(new CustomEvent("hub:" + m.k, { detail: { v: m.v, to: m.to || null } })); }
     else if (m.t === "note") dispatchEvent(new CustomEvent("hub:note", { detail: m }));
+    else if (["streams", "st", "seg", "chat", "like", "viewers", "end", "unsay"].includes(m.t)) dispatchEvent(new CustomEvent("hub:stream", { detail: m }));
   };
   ws.onclose = () => {
     clearInterval(pinger);
@@ -150,4 +151,26 @@ export async function hubReport(r) {
   if (!res.ok) throw new Error("Couldn't send the report. Try again.");
 }
 /** "Unlock unlimited rebassing" tapped: the owner hears about it. */
-export async function hubPremiumAsk() { const r = await call("/v1/premium", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tk: await idToken() }) }); return r.ok; }
+export async function hubPremiumAsk(how = {}) { const r = await call("/v1/premium", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tk: await idToken(), method: how.method, pay: how.pay }) }); return r.ok; }
+
+// ---------------------------------------------------------------------------------------------------- live streams
+/** Going live: { id, key } (403: not allowed). */
+export async function hubStreamStart(title) {
+  const r = await call("/v1/stream/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tk: await idToken(), title }) });
+  if (r.status === 403) { const e = new Error("You can't go live yet: ask the FifTeam team."); e.status = 403; throw e; }
+  if (!r.ok) throw new Error("Couldn't start the stream. Try again.");
+  return r.json();
+}
+/** A piece of the video, sent (false: the stream isn't there any more). */
+export async function hubStreamSeg(s, key, n, blob, dur) {
+  const r = await call(`/v1/stream/seg?s=${encodeURIComponent(s)}&k=${encodeURIComponent(key)}&n=${n}&d=${Math.round(dur)}`, { method: "POST", headers: { "Content-Type": blob.type || "video/webm" }, body: blob });
+  if (r.status === 404) return false;
+  if (!r.ok) throw new Error("seg " + r.status);
+  return true;
+}
+/** A piece of someone's stream (a Blob), or null if it's gone already. */
+export async function hubStreamGet(s, n) { const r = await call(`/v1/stream/seg?s=${encodeURIComponent(s)}&n=${n}`); return r.ok ? r.blob() : null; }
+export async function hubStreamEnd(s, key) { await call("/v1/stream/end", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ s, k: key }) }).catch(() => {}); }
+export async function hubStreams() { const r = await call("/v1/streams"); return r.ok ? (await r.json()).list || [] : []; }
+/** Something said on the live connection (watching a stream, chat, a like); false if it isn't open. */
+export function liveSend(o) { if (!live.ws || !live.on) return false; try { live.ws.send(JSON.stringify(o)); return true; } catch { return false; } }

@@ -906,6 +906,15 @@ export function layout(B, quick = false, lite = false) {
     }
   };
   for (let i = 0; i < tf / t - 0.5; i++) front(i * t, (i + 1) * t);         // (the baffle's layers)
+  // a blow-thru box (a truck: in the bed against the cab, the subs firing through holes in the cab's back wall): the
+  // baffle's outer layer is bigger all round, a flange that bolts to the cab
+  const blow = !bp && B.fit === "blow", FL = 1.5 * IN;
+  if (blow) {
+    hex("wall", boxC(-FL, -FL, 0, W + FL, 0, t), { name: "front" });
+    hex("wall", boxC(-FL, H, 0, W + FL, H + FL, t), { name: "front" });
+    hex("wall", boxC(-FL, 0, 0, 0, H, t), { name: "front" });
+    hex("wall", boxC(W, 0, 0, W + FL, H, t), { name: "front" });
+  }
   // (a panel with a port's opening in it: in pieces round the opening; only on a rectangular box)
   const holed = (nm, lo, hi, axis) => {
     const hs = faceHoles.filter((o) => o.face === nm);
@@ -952,7 +961,9 @@ export function layout(B, quick = false, lite = false) {
   // them; the sides fit inside all four.
   const bev = (theta * 180) / Math.PI;
   const cut = [
-    bp ? { name: "Front", n: 1, a: W, b: H } : { name: "Front (baffle)", n: layers, a: W, b: H, note: layers > 1 ? `${layers} layers glued together: the baffle the sub${N > 1 ? "s" : ""} mount${N > 1 ? "" : "s"} on, ${fmtLenSI(tf)} thick` : "" },
+    bp ? { name: "Front", n: 1, a: W, b: H } : blow ? { name: "Front (baffle): the flange layer", n: 1, a: W + 2 * FL, b: H + 2 * FL, note: `the baffle's outer layer, ${fmtLenSI(FL)} bigger all round: the flange that bolts to the cab's back wall (foam gasket between, so it seals)${layers > 1 ? `; glued to the ${layers - 1} layer${layers > 2 ? "s" : ""} below` : ""}` }
+      : { name: "Front (baffle)", n: layers, a: W, b: H, note: layers > 1 ? `${layers} layers glued together: the baffle the sub${N > 1 ? "s" : ""} mount${N > 1 ? "" : "s"} on, ${fmtLenSI(tf)} thick` : "" },
+    ...(blow && layers > 1 ? [{ name: "Front (baffle): the layers inside the flange", n: layers - 1, a: W, b: H }] : []),
     { name: "Back", n: 1, a: W, b: Dt < D ? H / Math.cos(theta) : H, note: Dt < D ? `long side; bevel top and bottom edges ${bev.toFixed(1)}°` : "" },
     { name: "Top", n: 1, a: W, b: zi(y1) - tf, note: Dt < D ? `long side; bevel the back edge ${bev.toFixed(1)}°` : "" },
     { name: "Bottom", n: 1, a: W, b: zi(0) - tf, note: Dt < D ? `long side; bevel the back edge ${bev.toFixed(1)}°` : "" },
@@ -983,10 +994,22 @@ export function layout(B, quick = false, lite = false) {
   // wood area (to buy enough)
   const area = cut.reduce((s, c) => s + c.n * c.a * (c.b2 ? (c.b + c.b2) / 2 : c.b), 0);
   for (const [k, n] of [...dl].sort((a, b) => b[0] - a[0])) cut.push({ name: "Dowel brace (round)", n, a: 2 * brR, b: +k, note: "glued into shallow holes in both panels" });
+  // (blow-thru: what to cut in the cab's back wall, measured from the middle of the box's front, as it faces the cab)
+  const cab = [];
+  if (blow) {
+    const where = (x, y) => { const dx = x - W / 2, dy = y - H / 2, f = (v) => fmtLenSI(Math.abs(v)); return `${Math.abs(dx) < 0.003 ? "centred" : `${f(dx)} ${dx < 0 ? "left" : "right"}`}, ${Math.abs(dy) < 0.003 ? "level with the middle" : `${f(dy)} ${dy > 0 ? "up" : "down"}`}`; };
+    const hole = sub.cutout + 0.5 * IN;
+    for (const s of subs) cab.push({ kind: "sub", x: s.at[0], y: s.at[1], d: hole, sq: !!s.sq });
+    for (const o of openings) cab.push({ kind: "port", x: (o.x[0] + o.x[1]) / 2, y: (o.y[0] + o.y[1]) / 2, w: o.x[1] - o.x[0], h: o.y[1] - o.y[0] });
+    for (const p of ports) if (p.kind === "round") for (const tb of p.tubes) cab.push({ kind: "port", x: tb.at[0], y: tb.at[1], d: 2 * tb.r + 0.25 * IN });
+    const subsC = cab.filter((c) => c.kind === "sub"), portsC = cab.filter((c) => c.kind === "port");
+    if (subsC.length) cut.push({ name: "Cab wall: a hole for each sub (cut in the truck)", n: subsC.length, a: hole, b: hole, note: `${subsC[0].sq ? "square, " : ""}a little bigger than the cutout, so the cone has room; centres ${subsC.map((c) => where(c.x, c.y)).join("; ")} (from the middle of the box's front: left and right as you face the cab's back wall from inside)` });
+    for (const c of portsC) cut.push({ name: "Cab wall: the port's opening (cut in the truck)", n: 1, a: c.w || c.d, b: c.h || c.d, note: `${c.d ? "round; " : ""}centre ${where(c.x, c.y)}` });
+  }
 
   return {
     W, H, D, Dt, t, tf, td, layers, Wi, Hi, Davg, Dmin, theta, zb, zo, zi, rooms, chambers: rooms.map((r) => r.x), gross, lost, net: Vnet, ports, subs, parts, cut, area, warn,
-    outside: W * H * (D + Dt) / 2, hall, topRoom: typeof topRoom === "number" ? topRoom : Infinity,
+    outside: W * H * (D + Dt) / 2, hall, topRoom: typeof topRoom === "number" ? topRoom : Infinity, cab, flange: blow ? FL : 0,
     bracing: { mode: brMode, Lmax, span, count: lite ? braces.length : dowels.length, dropped, r: brR },
   };
 }

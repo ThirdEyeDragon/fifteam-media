@@ -1,12 +1,12 @@
 // FifTeam Media's service worker: the app works offline, and audio files shared to it from other apps (Android) land in
 // its inbox. Bump VERSION whenever the app's files change.
-const VERSION = "fifteam-v51";
+const VERSION = "fifteam-v52";
 const SHELL = [
   "./", "index.html", "manifest.webmanifest", "css/app.css",
   "js/app.js", "js/ui.js", "js/store.js", "js/tags.js", "js/tilt.js", "js/player.js", "js/library.js",
   "js/rebass.js", "js/rebass-worker.js", "js/tones.js", "js/export.js", "js/dsp.js", "js/mp3-worker.js",
   "js/knob.js", "js/eq.js", "js/image.js", "js/limiter-worklet.js", "js/settings.js", "js/demo.js", "js/bassline.js", "js/share.js",
-  "js/demucs.js", "js/social.js", "js/dms.js", "js/activity.js", "js/meta.js", "js/device.js", "js/ban.js", "js/profile.js", "js/categories.js", "js/limiter.js", "js/market.js", "js/filter.js", "js/account.js", "js/hub.js", "js/push.js", "js/premium.js", "js/report.js", "js/notes.js", "js/legal.js", "js/box.js", "js/boxmath.js", "js/box3d.js", "js/subs.js", "js/system.js", "js/gate.js", "js/flac.js", "js/myintro.js", "js/separator.js", "js/sep-worker.js", "js/stems.js", "vendor/ort/ort.webgpu.min.mjs", "vendor/ort/ort-wasm-simd-threaded.asyncify.mjs",
+  "js/demucs.js", "js/social.js", "js/dms.js", "js/activity.js", "js/meta.js", "js/device.js", "js/ban.js", "js/profile.js", "js/categories.js", "js/limiter.js", "js/market.js", "js/filter.js", "js/account.js", "js/hub.js", "js/push.js", "js/premium.js", "js/report.js", "js/notes.js", "js/legal.js", "js/box.js", "js/boxmath.js", "js/box3d.js", "js/subs.js", "js/system.js", "js/gate.js", "js/flac.js", "js/myintro.js", "js/live.js", "js/separator.js", "js/sep-worker.js", "js/stems.js", "vendor/ort/ort.webgpu.min.mjs", "vendor/ort/ort-wasm-simd-threaded.asyncify.mjs",
   "icons/icon-192.png", "icons/badge-96.png", "icons/icon-512.png", "icons/maskable-512.png", "icons/apple-touch-icon.png",
 ];
 
@@ -54,12 +54,12 @@ self.addEventListener("push", (e) => {
 self.addEventListener("notificationclick", (e) => {
   e.notification.close();
   const data = e.notification.data || {}, dm = data.dm, l = data.l || "", post = data.post || "", g = data.g || "";
-  const msg = g ? { type: "open-group", g } : dm ? { type: "open-dm", dm, l } : post ? { type: "open-post", post, c: !!data.c } : data.inbox ? { type: "open-inbox" } : { type: "open-activity" };
+  const msg = data.live ? { type: "open-live", live: data.live } : g ? { type: "open-group", g } : dm ? { type: "open-dm", dm, l } : post ? { type: "open-post", post, c: !!data.c } : data.inbox ? { type: "open-inbox" } : { type: "open-activity" };
   e.waitUntil((async () => {
     const wins = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
     const w = wins.find((c) => c.url.startsWith(self.registration.scope)) || wins[0];
     if (w) { try { await w.focus(); } catch {} w.postMessage(msg); return; }
-    const q = g ? "?g=" + encodeURIComponent(g) : dm ? "?dm=" + encodeURIComponent(dm) + (l ? "&l=" + encodeURIComponent(l) : "") : post ? "?post=" + encodeURIComponent(post) + (data.c ? "&c=1" : "") : data.inbox ? "?inbox=1" : "?act=1";
+    const q = data.live ? "?live=" + encodeURIComponent(data.live) : g ? "?g=" + encodeURIComponent(g) : dm ? "?dm=" + encodeURIComponent(dm) + (l ? "&l=" + encodeURIComponent(l) : "") : post ? "?post=" + encodeURIComponent(post) + (data.c ? "&c=1" : "") : data.inbox ? "?inbox=1" : "?act=1";
     await self.clients.openWindow(self.registration.scope + q + "#social");
   })());
 });

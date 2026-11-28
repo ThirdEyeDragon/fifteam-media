@@ -30,6 +30,10 @@ let premium = new Set();
 try { premium = new Set(JSON.parse(ls.get(LIST + "-premium") || "[]")); } catch {}
 /** Whether this phone has unlimited rebassing (paid for, and unlocked with /premium). */
 export const isPremium = (phone) => !!phone && premium.has(phone);
+let streamers = new Set();
+try { streamers = new Set(JSON.parse(ls.get(LIST + "-stream") || "[]")); } catch {}
+/** Whether this phone may go live in Social (the owner lets them, with /allow streaming). */
+export const isStreamer = (phone) => !!phone && streamers.has(phone);
 let badges = {};
 try { badges = JSON.parse(ls.get(LIST + "-badges") || "{}") || {}; } catch {}
 const BADGES = ["founder", "dev", "advertiser", "member"];
@@ -97,6 +101,11 @@ export async function checkBans() {
     const wasMine = premium.has(ls.get(ME) || "");
     premium = new Set(pm); ls.set(LIST + "-premium", JSON.stringify(pm));
     if (!wasMine && premium.has(ls.get(ME) || "")) window.dispatchEvent(new Event("fifteam-premium"));
+    // who may go live (/allow streaming)
+    const sm = d && d.stream && typeof d.stream === "object" ? Object.keys(d.stream).filter((k) => /^[a-z0-9]{6,16}$/.test(k)) : [];
+    const streamChanged = sm.join() !== [...streamers].join();
+    streamers = new Set(sm); ls.set(LIST + "-stream", JSON.stringify(sm));
+    if (streamChanged) window.dispatchEvent(new Event("fifteam-streamers"));
     const em = d && d.emails && typeof d.emails === "object" ? Object.keys(d.emails).filter((k) => /^[0-9a-f]{64}$/.test(k)) : [];
     emails = new Set(em); ls.set(LIST + "-emails", JSON.stringify(em));
     const me = ls.get(ME) || "", mail = myEmail();

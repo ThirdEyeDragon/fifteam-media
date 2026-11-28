@@ -126,7 +126,8 @@ const hubStore = async (k) => (await (await fetch(`${WK}/v1/stores?k=${k}`)).jso
 
 /** A phone, signed in as `ph` with username `name`, everything it asks the outside world for answered by the stand-ins. */
 async function phone(ph, name) {
-  const b = await browser({ profile: mkdtempSync(join(tmpdir(), "ft-lv-")) });
+  // (a pretend camera and microphone, for going live)
+  const b = await browser({ profile: mkdtempSync(join(tmpdir(), "ft-lv-")), flags: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"] });
   const CORS = [{ name: "Access-Control-Allow-Origin", value: "*" }, { name: "Access-Control-Allow-Headers", value: "Content-Type" }, { name: "Access-Control-Allow-Methods", value: "GET, POST, PATCH, DELETE, OPTIONS" }];
   b.on(async (m) => {
     if (m.method !== "Fetch.requestPaused") return;
@@ -239,10 +240,29 @@ try {
   const sj = JSON.parse(await A.ev(`(() => { const p = document.getElementById('sheet-panel'); const a = p.querySelector('.pm-pay'); return JSON.stringify({ text: p.textContent.replace(/ +/g, ' ').slice(0, 3000), href: a && a.href }); })()`));
   log("the unlock sheet:", JSON.stringify(sj));
   check(/\$10/.test(sj.text) && /Alice/.test(sj.text) && sj.href === "https://www.paypal.com/paypalme/lnewman21s/10USD", "the unlock sheet: $10 once, PayPal, and her username for the note");
+  // (Pay with no name: refused, nothing sent; with her PayPal name: the owner gets it, her username and her email)
   await A.ev(`(() => { const a = document.querySelector('#sheet-panel .pm-pay'); a.addEventListener('click', (e) => e.preventDefault()); a.click(); return 1; })()`);
-  for (let i = 0; i < 40 && !posted.some((p) => /wants Premium/.test(p.content || "")); i++) await sleep(150);
-  log("the owner was told:", (posted.find((p) => /unlimited/.test(p.content || "")) || {}).content);
-  check(posted.some((p) => /\*\*Alice\*\* wants Premium/.test(p.content || "")), "tapping Pay tells the owner who paid");
+  await sleep(1200);
+  const noName = { sent: posted.some((p) => /Premium request/.test(p.content || "")), toast: await A.ev(`document.getElementById('toast').textContent`) };
+  await A.ev(`(() => { const i = document.querySelector('#sheet-panel .pm-payname'); i.value = 'Alice Smith'; document.querySelector('#sheet-panel .pm-pay').click(); return 1; })()`);
+  for (let i = 0; i < 40 && !posted.some((p) => /Premium request/.test(p.content || "")); i++) await sleep(150);
+  const told = (posted.find((p) => /Premium request/.test(p.content || "")) || {}).content || "";
+  log("Pay with no name:", JSON.stringify(noName), "| the owner was told:", JSON.stringify(told));
+  check(!noName.sent && /name on PayPal/.test(noName.toast), "Pay needs the name they'll pay from first");
+  check(/Username:\*\* Alice/.test(told) && /alicephone\\?@example\.com/.test(told) && /PayPal as \*\*Alice Smith/.test(told), "the owner gets their PayPal name, username and email");
+  // (Cash App: the $cashtag)
+  await A.ev(`(() => { document.querySelector('#sheet-panel .pm-method button[data-k="cash"]').click(); const i = document.querySelector('#sheet-panel .pm-payname'); i.value = 'alicecash'; document.querySelector('#sheet-panel .pm-pay').click(); return 1; })()`);
+  for (let i = 0; i < 40 && !posted.some((p) => /Cash App as \*\*\\?\$alicecash/.test(p.content || "")); i++) await sleep(150);
+  const cashTold = (posted.filter((p) => /Premium request/.test(p.content || "")).pop() || {}).content || "";
+  const cashHref = await A.ev(`document.querySelector('#sheet-panel .pm-pay').href`);
+  log("Cash App:", JSON.stringify(cashTold), cashHref);
+  check(/Cash App as \*\*\\?\$alicecash/.test(cashTold) && cashHref === "https://cash.app/$ThirdEyeDragon999/10", "Cash App: her $cashtag to the owner, and the Cash App link");
+  replies.length = 0;
+  await signed(JSON.stringify({ type: 2, id: "9", token: "t9", application_id: "app1", data: { name: "premiums" }, member: { user: { id: "1", username: "owner" } } }));
+  for (let i = 0; i < 40 && !replies.length; i++) await sleep(150);
+  const pms = replies.map((r) => { try { return JSON.parse(r).content; } catch { return r; } }).join(" ");
+  log("/premiums:", JSON.stringify(pms));
+  check(/Cash App: \*\*\\?\$alicecash/.test(pms) && /alicephone/.test(pms), "/premiums shows how they're paying and their name there");
   await A.ev(`document.getElementById('sheet').classList.remove('open'), 1`);
   await signed(JSON.stringify({ type: 2, id: "2", token: "t2", application_id: "app1", data: { name: "premium", options: [{ name: "user", value: alice }] }, member: { user: { id: "1", username: "owner" } } }));
   t0 = Date.now();
@@ -359,6 +379,83 @@ try {
   const pageOpen = await A.ev(`!!document.querySelector('#sheet-panel.pf-panel') && document.querySelector('#sheet-panel .pf-name').textContent`);
   log("Alice taps Ben's name in the chat:", pageOpen);
   check(/Ben/.test(pageOpen || ""), "tapping their name in a chat opens their page");
+  await A.ev(`document.getElementById('sheet').classList.remove('open'), 1`); await B.ev(`document.getElementById('sheet').classList.remove('open'), 1`);
+
+  // ---------------------------------------------------------------- live streaming
+  // Alice can't go live until the owner lets her (/allow streaming); then a Go live button; Ben watches, chats, likes
+  const goBtn = `!!document.querySelector('#so-body .so-golive')`;
+  check(!(await A.ev(goBtn)), "nobody can go live until the owner lets them");
+  replies.length = 0;
+  await signed(JSON.stringify({ type: 2, id: "10", token: "t10", application_id: "app1", data: { name: "allow", options: [{ type: 1, name: "streaming", options: [{ name: "user", value: alice }] }] }, member: { user: { id: "1", username: "owner" } } }));
+  const canGo = await A.until(`(location.hash !== '#social' && (location.hash = '#social'), ${goBtn})`, 10000);
+  log(`/allow streaming Alice: her Go live button after ${canGo} ms | bot: ${replies.map((r) => { try { return JSON.parse(r).content; } catch { return r; } }).join(" ")}`);
+  check(canGo >= 0 && !(await B.ev(goBtn)), "/allow streaming: a Go live button for her (not for Ben)");
+  await A.ev(`(window.confirm = () => true, document.querySelector('#so-body .so-golive').click(), 1)`);
+  const cam = await A.until(`(() => { const v = document.querySelector('.lv .lv-v.on'); return !!v && v.videoWidth > 0 && !!document.querySelector('.lv-pre'); })()`, 10000);
+  check(cam >= 0, "Go live: the camera shows, with a title to type and Go live");
+  await A.ev(`(() => { document.querySelector('.lv-tin').value = 'Late night bass'; document.querySelector('.lv-pre').requestSubmit(); return 1; })()`);
+  const onAir = await A.until(`document.querySelector('.lv-badge').textContent === 'LIVE'`, 8000);
+  const inRow = await B.until(`[...document.querySelectorAll('#so-body .so-lv')].some(b => b.textContent.includes('Alice'))`, 10000);
+  log(`live: Alice on air after ${onAir} ms; in Ben's Live row after ${inRow} ms`);
+  check(onAir >= 0 && inRow >= 0, "she's live: a LIVE circle at the top of Ben's feed");
+  const t1 = Date.now();
+  await B.ev(`[...document.querySelectorAll('#so-body .so-lv')].find(b => b.textContent.includes('Alice')).click(), 1`);
+  const playing = await B.until(`(() => { const v = document.querySelector('.lv .lv-v.on'); return !!v && !v.paused && v.currentTime > 0.3 && v.videoWidth > 0; })()`, 15000);
+  log(`Ben taps it: playing after ${playing < 0 ? "never" : Date.now() - t1 + " ms"} | how: ${await B.ev(`(() => { const v = document.querySelector('.lv .lv-v.on'); return v ? (v.src.startsWith('blob:') ? 'blob ' : '') + v.videoWidth + 'x' + v.videoHeight : 'none'; })()`)}`);
+  check(playing >= 0, "Ben watches her stream: the video plays");
+  // (smooth: it keeps going, close to live)
+  const q0 = await B.ev(`document.querySelector(".lv .lv-v.on").currentTime`); await sleep(6000);
+  const q1 = await B.ev(`document.querySelector(".lv .lv-v.on").currentTime`);
+  const lag = await B.ev(`(() => { const v = document.querySelector('.lv .lv-v.on'); try { return v.buffered.end(v.buffered.length - 1) - v.currentTime; } catch { return -1; } })()`);
+  log(`six seconds on: played ${(q1 - q0).toFixed(2)} s more; ${lag.toFixed(2)} s buffered ahead`);
+  check(q1 - q0 > 4.8, "it keeps playing without stalling (one piece straight after another)");
+  const viewers = await A.until(`document.querySelector('.lv-eye').textContent === '1'`, 6000);
+  check(viewers >= 0, "Alice sees 1 watching");
+  // chat both ways
+  await B.ev(`(() => { document.querySelector('.lv-in').value = 'this hits hard'; document.querySelector('.lv-bar').requestSubmit(); return 1; })()`);
+  const said = await A.until(`[...document.querySelectorAll('.lv-msg')].some(m => m.textContent === 'Ben this hits hard')`, 6000);
+  await A.ev(`(() => { document.querySelector('.lv-bar .lv-in').value = 'thanks Ben!'; document.querySelector('.lv-bar').requestSubmit(); return 1; })()`);
+  const back2 = await B.until(`[...document.querySelectorAll('.lv-msg')].some(m => m.textContent === 'Alice thanks Ben!')`, 6000);
+  log(`chat: Ben's message on Alice's screen after ${said} ms; hers on his after ${back2} ms`);
+  check(said >= 0 && back2 >= 0, "chat: messages go both ways, at the bottom of the stream");
+  // likes: hearts and the count, on both
+  await B.ev(`(() => { const l = document.querySelector('.lv-like'); l.click(); return 1; })()`); await sleep(250);
+  await B.ev(`document.querySelector('.lv-like').click(), 1`);
+  const likes = await A.until(`document.querySelector('.lv-likes').textContent === '2' && document.querySelectorAll('.lv-fh').length > 0`, 6000);
+  log(`likes: on Alice's screen after ${likes} ms (${await A.ev(`document.querySelector('.lv-likes').textContent`)})`);
+  check(likes >= 0, "likes: hearts float up on her screen, the count goes up");
+  // she takes a message down
+  const mid = await A.ev(`[...document.querySelectorAll('.lv-msg')].find(m => m.textContent.includes('this hits hard')).dataset.id`);
+  const sid = await A.ev(`import('./js/live.js').then(m => m.streamsNow().find(s => s.by === ${JSON.stringify(alice)}).id)`);
+  await A.ev(`import('./js/hub.js').then(m => m.liveSend({ t: 'unsay', s: ${JSON.stringify(sid)}, id: ${JSON.stringify(mid)} }))`);
+  const gone = await B.until(`![...document.querySelectorAll('.lv-msg')].some(m => m.textContent.includes('this hits hard'))`, 5000);
+  check(gone >= 0, "the streamer can take a chat message down (gone for everyone)");
+  // the other way of playing (iPhone: two players taking turns)
+  await B.ev(`document.querySelector('.lv-x').click(), 1`); await sleep(500);
+  await B.ev(`(window.MediaSource = undefined, [...document.querySelectorAll('#so-body .so-lv')].find(b => b.textContent.includes('Alice')).click(), 1)`);
+  const turns = await B.until(`(() => { const v = document.querySelector('.lv .lv-v.on'); return !!v && !v.paused && v.currentTime > 0.3 && v.videoWidth > 0 && !v.src.includes('mediasource'); })()`, 15000);
+  let switched = 0, lastOn = null;
+  for (let i = 0; i < 40; i++) { const on = await B.ev(`document.querySelector('.lv .lv-v.on') === document.querySelectorAll('.lv .lv-v')[0] ? 'A' : 'B'`); if (lastOn && on !== lastOn) switched++; lastOn = on; await sleep(200); }
+  log(`without Media Source: playing after ${turns} ms; the players took turns ${switched} times in 8 s`);
+  check(turns >= 0 && switched >= 2, "without Media Source (iPhone): two players take turns, piece after piece");
+  // she ends it: Ben is told, the circle goes
+  await A.ev(`document.querySelector('.lv-x').click(), 1`);
+  const ended = await B.until(`/has ended/.test(document.querySelector('.lv-wait').textContent)`, 8000);
+  const rowGone = await B.until(`(document.querySelector('.lv') && document.querySelector('.lv-wait button') && document.querySelector('.lv-wait button').click(), ![...document.querySelectorAll('#so-body .so-lv')].some(b => b.textContent.includes('Alice') && !b.classList.contains('so-golive')))`, 8000);
+  log(`ended: Ben told after ${ended} ms; the circle gone after ${rowGone} ms`);
+  check(ended >= 0 && rowGone >= 0, "she ends it: Ben sees it's ended, and the LIVE circle goes");
+  // /streamers, then /allow streaming remove
+  replies.length = 0;
+  await signed(JSON.stringify({ type: 2, id: "11", token: "t11", application_id: "app1", data: { name: "streamers" }, member: { user: { id: "1", username: "owner" } } }));
+  for (let i = 0; i < 40 && !replies.length; i++) await sleep(150);
+  const sl = replies.map((r) => { try { return JSON.parse(r).content; } catch { return r; } }).join(" ");
+  await signed(JSON.stringify({ type: 2, id: "12", token: "t12", application_id: "app1", data: { name: "allow", options: [{ type: 1, name: "streaming", options: [{ name: "user", value: alice }, { name: "remove", value: true }] }] }, member: { user: { id: "1", username: "owner" } } }));
+  const noGo = await A.until(`!document.querySelector('#so-body .so-golive')`, 10000);
+  log("/streamers:", JSON.stringify(sl), "| removed: Go live gone after", noGo, "ms");
+  check(/alicephone/.test(sl) && /1 of 3 allowed/.test(sl) && noGo >= 0, "/streamers lists who may go live; /allow streaming remove takes it away");
+  // only allowed people: a phone that isn't can't start one on the server either
+  const forged = await fetch(`${WK}/v1/stream/start`, { method: "POST", body: JSON.stringify({ tk: idToken(ben), title: "x" }) });
+  check(forged.status === 403, "the server refuses a stream from anyone not allowed");
   log("errors:", [...A.errors, ...B.errors].filter((e) => !/favicon|ERR_|Failed to load resource/i.test(e)).join(" | ").slice(0, 600) || "none");
 } catch (e) { log("STOPPED:", e.stack); fails++; }
 finally {

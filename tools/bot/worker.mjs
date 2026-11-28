@@ -9,6 +9,7 @@
 //   /v1/push         a phone signing up for notifications (with proof of its account), /v1/push/off to stop
 //   /v1/premium      "Get Premium" tapped: the owner is told (in #payments)
 //   /v1/report       a report about a user (or a post or comment of theirs): to #reports
+//   /v1/stream/...   live streams: start, a piece of the video (sent, or fetched), end; /v1/streams who's live
 // And on a timer (the crons in wrangler.toml): every minute, anything older apps wrote merged in; every half hour, the
 // file links refreshed.
 //   Secrets (wrangler secret put, never in the project): BOT_TOKEN, BOT_KEY (the bot's private key, for the sealed
@@ -68,13 +69,15 @@ async function botFor(env) {
     },
     put: async (k, d) => { await hub.write(k, null, JSON.stringify(d), "bot"); },
     premiumAsks: () => hub.premiumAsks(), premiumDone: (phones) => hub.premiumDone(phones), tellPayments: (text) => hub.tellPayments(text),
+    endStreamsOf: (phones) => hub.endStreamsOf(phones), streams: () => hub.streamList(),
   };
   const bot = makeBot({ cfg, priv, notes, stores, token: env.BOT_TOKEN || "", log: (...a) => console.log(...a) });
   made = { at: Date.now(), bot };
   return bot;
 }
 /** Proof of the phone's account (a Firebase ID token): its phone id. */
-async function phoneOf(env, tk) { const c = await config(env); return (await checkIdToken(tk, c.firebase.projectId, env.FIREBASE_JWKS)).phone; }
+async function phoneOf(env, tk) { return (await accountOf(env, tk)).phone; }
+async function accountOf(env, tk) { const c = await config(env); return checkIdToken(tk, c.firebase.projectId, env.FIREBASE_JWKS); }
 
 async function app(req, env, url) {
   const hub = hubOf(env), path = url.pathname;
@@ -124,9 +127,32 @@ async function app(req, env, url) {
   }
   if (path === "/v1/premium" && req.method === "POST") {
     const b = await req.json().catch(() => ({}));
-    let phone; try { phone = await phoneOf(env, b.tk); } catch (e) { return json({ error: "account: " + e.message }, 401, true); }
-    await hub.premiumAsk(phone);
+    let acc; try { acc = await accountOf(env, b.tk); } catch (e) { return json({ error: "account: " + e.message }, 401, true); }
+    await hub.premiumAsk(acc.phone, { method: b.method, pay: b.pay, email: acc.email });
     return json({ ok: true }, 200, true);
+  }
+  // live streams
+  if (path === "/v1/streams" && req.method === "GET") return json({ list: await hub.streamList() }, 200, true);
+  if (path === "/v1/stream/start" && req.method === "POST") {
+    const b = await req.json().catch(() => ({}));
+    let phone; try { phone = await phoneOf(env, b.tk); } catch (e) { return json({ error: "account: " + e.message }, 401, true); }
+    const r = await hub.streamStart(phone, b.title);
+    return json(r.status === 200 ? r : { error: r.status }, r.status, true);
+  }
+  if (path === "/v1/stream/seg" && req.method === "POST") {
+    const q = url.searchParams, n = parseInt(q.get("n") || "", 10);
+    const r = await hub.streamSeg(String(q.get("s") || ""), String(q.get("k") || ""), n, String(req.headers.get("Content-Type") || ""), await req.arrayBuffer(), +q.get("d") || 0);
+    return json(r.status === 200 ? { ok: true } : { error: r.status }, r.status, true);
+  }
+  if (path === "/v1/stream/seg" && req.method === "GET") {
+    const r = await hub.streamGet(String(url.searchParams.get("s") || ""), parseInt(url.searchParams.get("n") || "", 10));
+    if (r.status !== 200) return json({ error: r.status }, r.status, true);
+    return new Response(r.body, { status: 200, headers: { ...CORS, "Content-Type": r.type, "Cache-Control": "no-store" } });
+  }
+  if (path === "/v1/stream/end" && req.method === "POST") {
+    const b = await req.json().catch(() => ({}));
+    const r = await hub.streamEnd(String(b.s || ""), String(b.k || ""));
+    return json({ ok: r.status === 200 }, 200, true);
   }
   return json({ error: "not here" }, 404, true);
 }

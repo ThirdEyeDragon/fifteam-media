@@ -69,6 +69,11 @@
     <symbol id="i-list" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 6h11M9 12h11M9 18h11"/><path d="M4.5 6h.01M4.5 12h.01M4.5 18h.01" stroke-width="3"/></g></symbol>
     <symbol id="i-bolt" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M13.5 2.5 4.5 14h7l-1 7.5 9-11.5h-7z"/></symbol>
     <symbol id="i-pin" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3.5h6l-1 6 3.5 3.5h-11L10 9.5z"/><path d="M12 13v7.5"/></g></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></g></symbol>
+    <symbol id="i-flip" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><path d="M9.5 12.5a3 3 0 0 1 5-1.6M14.5 14.5a3 3 0 0 1-5 1.6"/><path d="M14.6 9.6v1.6H13M9.4 17.4v-1.6H11"/></g></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></g></symbol>
+    <symbol id="i-live" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="2.6" fill="currentColor"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M4.9 4.9a10 10 0 0 0 0 14.2M19.1 4.9a10 10 0 0 1 0 14.2"/></g></symbol>
     <symbol id="i-logo" viewBox="0 0 24 24"><g fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"><path d="M6 19V5h7M6 12h5"/><path d="M15 19v-5M18.5 19v-9" /></g></symbol>
   </defs>
 </svg>
@@ -284,7 +289,7 @@
     <section class="view" id="view-social" aria-label="Social">
       <div class="ptr" id="so-ptr" aria-hidden="true"><span class="ptr-ring"></span></div>
       <div class="view-inner">
-        <div><h2>Social</h2></div>
+        <div class="row between so-headrow"><h2>Social</h2><button class="icon-btn glass so-find" id="so-find" type="button" aria-label="Search people"><svg><use href="#i-search"/></svg></button></div>
         <div class="seg so-tabs" id="so-tabs" role="tablist"><button class="on" data-k="feed">Feed</button><button data-k="rebass">Rebasses</button><button data-k="market">Audio Market</button></div>
         <div class="stack" id="so-body"></div>
         <div class="mk" id="mk-body" hidden></div>

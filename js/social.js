@@ -13,7 +13,8 @@ import { fitJpeg, squareJpeg } from "./image.js";
 import { makeFile, sizeText } from "./export.js";
 import { myPublicKey, initDms, sendTo } from "./dms.js";
 import { openProfile } from "./profile.js";
-import { loadMeta, votesOf, setVote, meta, canSee, blocked } from "./meta.js";
+import { loadMeta, votesOf, setVote, meta, canSee, blocked, followersOf, aboutOf, setupOf } from "./meta.js";
+import { initLive, streamsNow, canGoLive, goLive, watch } from "./live.js";
 import { bannedPhones, noPicPhones, checkBans, badgesOf, isPremium } from "./ban.js";
 import { activityChanged, initActivity, openActivity } from "./activity.js";
 import { hookFetch, holdFor } from "./limiter.js";
@@ -387,11 +388,99 @@ function newPostsPill(n) {
 function renderInto(body) {
   if (S.tab === "rebass") { renderRebasses(body); return; }
   // you: your picture (your profile) and "what's on your mind", or first of all a username
-  const youSig = [S.name, S.editingName ? 1 : 0, S.avatarUrl || ""].join("|");
+  const youSig = [S.name, S.editingName ? 1 : 0, S.avatarUrl || "", canGoLive() ? 1 : 0].join("|");
   const kept = OLD.get("you");
   if (kept && kept._sig === youSig) { OLD.delete("you"); body.append(kept); }
   else body.append(youCard(youSig));
+  // who's live now (and, for the people who may, Go live): a row of circles on top of the feed
+  const streams = streamsNow().filter((x) => !bannedPhones().has(x.by) && !blocked(S.me, x.by));
+  if (streams.length || canGoLive()) {
+    const sig = streams.map((x) => `${x.id}:${x.name}:${x.title}`).join("|") + "|" + (canGoLive() ? 1 : 0);
+    const o = OLD.get("live");
+    if (o && o._sig === sig) { OLD.delete("live"); body.append(o); } else { const n = liveRow(streams); n._key = "live"; n._sig = sig; body.append(n); }
+  }
   renderFeed(body);
+}
+/** Who's live: a circle each (their picture in a red ring, LIVE under it), tapped to watch; Go live first for those
+ * who may. */
+function liveRow(streams) {
+  const row = h("div", "so-liverow"); row.setAttribute("aria-label", "Live now");
+  if (canGoLive() && !streams.some((x) => x.by === S.me)) {
+    const b = h("button", "so-lv so-golive"); b.type = "button";
+    const c = h("span", "so-lvring go"); c.append(icon("i-live"));
+    b.append(c, h("small", "", "Go live")); b.onclick = () => goLive();
+    row.append(b);
+  }
+  for (const x of streams) {
+    const b = h("button", "so-lv"); b.type = "button"; b.setAttribute("aria-label", `${x.name} is live${x.title ? ": " + x.title : ""}`);
+    const ring = h("span", "so-lvring"), av = avatarEl(58, "", x.name);
+    showPicture(av, { by: x.by, user: x.name, id: "" });
+    ring.append(av, h("span", "so-lvtag", "LIVE"));
+    b.append(ring, h("small", "", x.name));
+    b.onclick = () => watch(x);
+    row.append(b);
+  }
+  return row;
+}
+// ---------------------------------------------------------------------------------------------------- finding people
+const fold = (t) => String(t || "").toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+/** Search for people by username (and what's in their about me and setup): tapped, their page. With nothing typed, the
+ * people who are live and the most followed. */
+async function openSearch() {
+  try { await ensureProfiles(); } catch {}
+  openSheet((panel) => {
+    panel.classList.add("so-findpanel");
+    panel.append(h("h3", "", "Find people"));
+    const box = h("div", "search so-findbox");
+    const inp = h("input", "input"); inp.type = "search"; inp.placeholder = "Search usernames"; inp.autocomplete = "off"; inp.setAttribute("aria-label", "Search usernames"); inp.enterKeyHint = "search";
+    box.append(icon("i-search"), inp);
+    const list = h("div", "so-flist");
+    panel.append(box, list);
+    // everyone with a username (from the profiles, and anyone who has posted or commented), not banned or blocked
+    const people = new Map();
+    for (const [ph, pr] of Object.entries(S.profiles || {})) if (pr && pr.name) people.set(ph, pr.name);
+    // (older posts and comments may only have a name: found by it, their page opened by it)
+    const names = new Set([...people.values()].map(fold));
+    const add = (by, user) => { if (!user) return; if (by) { if (!people.has(by)) people.set(by, user); } else if (!names.has(fold(user))) { names.add(fold(user)); people.set("u:" + user, user); } };
+    for (const p of S.feed) { if (!hidden(p)) add(p.by, p.user); for (const c of p.comments || []) if (!hidden(c)) add(c.by, c.user); }
+    const myName = fold(S.name);
+    const all = [...people].filter(([ph, name]) => ph !== S.me && !(ph.startsWith("u:") && fold(name) === myName) && !bannedPhones().has(ph) && !blocked(S.me, ph)).map(([key, name]) => {
+      const ph = key.startsWith("u:") ? "" : key;
+      const su = (ph && setupOf(ph)) || {};
+      return { key, ph, name, n: fold(name), extra: ph ? fold([aboutOf(ph), su.subs, su.amps, su.vehicle].filter(Boolean).join(" ")) : "", fans: ph ? followersOf(ph).length : 0, su };
+    });
+    const liveBy = new Set(streamsNow().map((x) => x.by));
+    const row = (x) => {
+      const r = h("button", "so-frow"); r.type = "button";
+      const av = avatarEl(44, "", x.name); showPicture(av, { by: x.ph, user: x.name, id: "" });
+      const t = h("div", "so-ftext"), top = h("div", "so-fname");
+      top.append(nameLine(x.name, x.ph));
+      if (liveBy.has(x.ph)) top.append(h("span", "so-flive", "LIVE"));
+      const line = [x.su.vehicle, x.su.subs, x.su.db ? `${x.su.db} dB` : ""].filter(Boolean).join(" · ") || (x.ph && aboutOf(x.ph)) || "";
+      t.append(top, h("small", "", `${x.fans} follower${x.fans === 1 ? "" : "s"}${line ? " · " + line : ""}`));
+      r.append(av, t);
+      r.onclick = () => { closeSheet(); setTimeout(() => openProfile({ by: x.ph, user: x.name }), 260); };
+      return r;
+    };
+    const paint = () => {
+      const q = fold(inp.value);
+      list.replaceChildren();
+      let shown;
+      if (!q) {
+        shown = [...all].sort((a, b) => (liveBy.has(b.ph) - liveBy.has(a.ph)) || b.fans - a.fans || a.n.localeCompare(b.n)).slice(0, 25);
+        if (shown.length) list.append(h("small", "label so-fhead", "Suggested"));
+      } else {
+        const score = (x) => (x.n === q ? 5 : x.n.startsWith(q) ? 4 : x.n.split(/[ _.\-]/).some((w) => w.startsWith(q)) ? 3 : x.n.includes(q) ? 2 : x.extra.includes(q) ? 1 : 0);
+        shown = all.map((x) => [x, score(x)]).filter(([, s]) => s > 0).sort((a, b) => b[1] - a[1] || b[0].fans - a[0].fans || a[0].n.localeCompare(b[0].n)).slice(0, 40).map(([x]) => x);
+      }
+      for (const x of shown) list.append(row(x));
+      if (!shown.length) list.append(h("p", "status so-fnone", q ? `Nobody called "${inp.value.trim()}".` : "Nobody here yet."));
+    };
+    let t = 0;
+    inp.oninput = () => { clearTimeout(t); t = setTimeout(paint, 80); };
+    paint();
+    setTimeout(() => inp.focus(), 60);
+  });
 }
 function youCard(sig) {
   const you = h("div", "card so-you"); you._key = "you"; you._sig = sig;
@@ -406,6 +495,7 @@ function youCard(sig) {
     q("i-image", "Photo", () => composer({ pick: "image" }));
     q("i-video", "Video", () => composer({ pick: "video" }));
     q("i-bass", "Rebass", () => pickRebass((song) => composer({ song })));
+    if (canGoLive()) { q("i-live", "Go live", () => goLive()); quick.classList.add("four"); }
     you.append(row, quick);
   } else {
     const pic = h("button", "so-avbtn so-avpick"); pic.setAttribute("aria-label", "Profile picture"); pic.append(avatarEl(48, S.avatarUrl, S.name || "?"));
@@ -1797,6 +1887,13 @@ export function initSocial() {
   addEventListener("fifteam-badges", () => { render(); });
   initDms();
   initActivity();
+  initLive({
+    me: () => S.me, name: () => S.name,
+    avatar: (phone, name, size) => { const a = avatarEl(size, "", name); showPicture(a, { by: phone, user: name, id: "" }); return a; },
+    changed: () => { if (location.hash === "#social") render(); },
+  });
+  addEventListener("fifteam-streamers", () => { if (location.hash === "#social") render(); });
+  { const f = $("so-find"); if (f) f.onclick = () => openSearch(); }
   // new posts and likes come in on their own while the feed is open: at once with the server's live connection (and
   // every 45 seconds without it, or every 5 minutes with it, in case one was missed)
   let lastLook = 0;

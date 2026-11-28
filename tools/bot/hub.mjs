@@ -31,6 +31,8 @@ export const REASONS = { spam: "Spam", harass: "Harassment or bullying", hate: "
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const obj = (x) => (x && typeof x === "object" && !Array.isArray(x) ? x : {});
 const arr = (x) => (Array.isArray(x) ? x : []);
+/** A random id: n letters and digits. */
+const rid = (n) => Array.from(crypto.getRandomValues(new Uint8Array(n)), (b) => "abcdefghijklmnopqrstuvwxyz0123456789"[b % 36]).join("");
 const parse = (raw) => { try { return JSON.parse(raw); } catch { return null; } };
 const expiry = (url) => { try { return parseInt(new URL(url).searchParams.get("ex") || "0", 16) * 1000; } catch { return 0; } };
 const b64u = (u8) => btoa(String.fromCharCode(...u8)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -428,14 +430,23 @@ export class Hub extends DurableObject {
     let m; try { m = JSON.parse(msg); } catch { return; }
     const at = ws.deserializeAttachment() || {};
     if (m.t === "hi" && m.tk) {
-      try { const c = await this.config(); const who = await checkIdToken(m.tk, c.firebase.projectId, this.env.FIREBASE_JWKS); at.me = who.phone; }
-      catch { at.me = ""; }
-      at.vis = m.vis !== false;
-      ws.serializeAttachment(at);
+      let me = "";
+      try { const c = await this.config(); const who = await checkIdToken(m.tk, c.firebase.projectId, this.env.FIREBASE_JWKS); me = who.phone; } catch {}
+      // (read again: something else (watching a stream) may have changed it while the account was checked)
+      const now = ws.deserializeAttachment() || {};
+      now.me = me; now.vis = m.vis !== false;
+      ws.serializeAttachment(now);
+      at.me = now.me;
       ws.send(JSON.stringify({ t: "ok", me: at.me ? "yes" : "no" }));
+      if (this.streams.size) this.tellStreams(ws);
     } else if (m.t === "vis") { at.vis = !!m.vis; ws.serializeAttachment(at); }
+    else if (["watch", "unwatch", "say", "like", "unsay"].includes(m.t)) await this.streamMessage(ws, at, m);
   }
-  webSocketClose(ws) { try { ws.close(); } catch {} }
+  webSocketClose(ws) {
+    let w = ""; try { w = (ws.deserializeAttachment() || {}).watch || ""; } catch {}
+    try { ws.close(); } catch {}
+    if (w && this._streams) this.countChanged(w);
+  }
   webSocketError() {}
   /** Every open app: store k is at version v now (for messages: whose they are, so only their apps read them). */
   tell(k, v, to) {
@@ -526,6 +537,10 @@ export class Hub extends DurableObject {
       added("follows", (who, owner) => { if (ok(who, owner)) notes.push({ to: owner, kind: "act", title: name(who), body: obj(obj(next.prefs)[owner]).priv ? "Asked to follow you" : "Started following you", tag: `f-${who}`, data: { act: 1 } }); });
       added("dmreq", (to, who) => { if (ok(who, to)) notes.push({ to, kind: "act", title: name(who), body: "Wants to message you", tag: `r-${who}`, data: { inbox: 1 } }); });
     }
+    await this.sendNotes(notes);
+  }
+  /** Notes for phones: shown by the app if it's on screen, otherwise sent as notifications (if they get that kind). */
+  async sendNotes(notes) {
     if (!notes.length) return;
     const vapid = await this.vapid();
     await Promise.all(notes.slice(0, 40).map(async (n) => {
@@ -545,14 +560,26 @@ export class Hub extends DurableObject {
 
   // ---------------------------------------------------------------- premium
   /** Someone tapped Pay for Premium: noted (for /premiums) and told to the owner in the server. */
-  async premiumAsk(phone) {
+  async premiumAsk(phone, how = {}) {
     const asks = obj(await this.ctx.storage.get("premium-asks"));
-    const first = !asks[phone];
-    asks[phone] = Date.now();
+    const was = asks[phone] && typeof asks[phone] === "object" ? asks[phone] : null;
+    const method = how.method === "cash" ? "cash" : "paypal", pay = String(how.pay || "").replace(/\s+/g, " ").trim().slice(0, 60), email = String(how.email || "").slice(0, 120);
+    const first = !asks[phone] || !was || was.pay !== pay || was.method !== method;
+    asks[phone] = { at: Date.now(), method, pay, email };
     await this.ctx.storage.put("premium-asks", asks);
     if (first) {
       const feed = this.data(await this.load("index")) || {}, nm = (obj(feed.profiles)[phone] || {}).name || phone;
-      const clean = String(nm).replace(/[\\*_~`|>#@<:\[\]()]/g, (c) => "\\" + c);
+      const esc = (x) => String(x).replace(/[\\*_~`|>#@<:\[\]()]/g, (c) => "\\" + c), clean = esc(nm);
+      if (pay) {
+        await this.tellPayments([
+          `💸 **Premium request** ($10)`,
+          `**Username:** ${clean}`,
+          `**Email:** ${email ? esc(email) : "(none on the account)"}`,
+          `**Paying with:** ${method === "cash" ? "Cash App" : "PayPal"} as **${esc(pay)}**`,
+          `-# Look for $10 from ${esc(pay)} in ${method === "cash" ? "Cash App ($ThirdEyeDragon999)" : "PayPal"}, then /premium ${clean} · phone \`${phone}\``,
+        ].join("\n"));
+        return first;
+      }
       await this.tellPayments(`💸 **${clean}** wants Premium ($10: unlimited rebassing and downloads, 4th and 6th-order boxes). Check PayPal and Cash App ($ThirdEyeDragon999) for a $10 payment with "${clean}" in the note, then use /premium ${clean}.`).catch(() => {});
     }
     return first;
@@ -616,5 +643,111 @@ export class Hub extends DurableObject {
     return { status: 200 };
   }
   async premiumAsks() { return obj(await this.ctx.storage.get("premium-asks")); }
+
+  // ---------------------------------------------------------------- live streams
+  // The people the owner lets (/allow streaming) can go live from Social. The phone records its camera in short pieces
+  // (about two seconds each, every one a whole video) and sends each here; everyone watching hears about it at once on
+  // the live connection and fetches it. Chat, likes and how many are watching go round on the live connection too. In
+  // memory only: a stream that stops sending for 20 seconds has ended.
+  get streams() { return (this._streams = this._streams || new Map()); }
+  streamList() { return [...this.streams.values()].map((s) => ({ id: s.id, by: s.by, name: s.name, at: s.at, title: s.title, viewers: this.viewers(s), likes: s.likes })); }
+  viewers(s) { let n = 0; for (const ws of this.ctx.getWebSockets()) { const a = ws.deserializeAttachment(); if (a && a.watch === s.id && a.me !== s.by) n++; } return n; }
+  toWatchers(id, o) { const text = JSON.stringify(o); for (const ws of this.ctx.getWebSockets()) { const a = ws.deserializeAttachment(); if (a && a.watch === id) { try { ws.send(text); } catch {} } } }
+  tellStreams(only) { const text = JSON.stringify({ t: "streams", list: this.streamList() }); for (const ws of only ? [only] : this.ctx.getWebSockets()) { try { ws.send(text); } catch {} } }
+  countChanged(id) { const s = this.streams.get(id); if (s) this.toWatchers(id, { t: "viewers", s: id, n: this.viewers(s) }); }
+  async streamNames() { const feed = this.data(await this.load("index")) || {}; return obj(feed.profiles); }
+  async streamMod() { return this.data(await this.load("mod")) || {}; }
+  /** Going live (or carrying on: a new key for the same stream). */
+  async streamStart(phone, title) {
+    const mod = await this.streamMod();
+    if (!obj(mod.stream)[phone] || obj(mod.bans)[phone]) return { status: 403 };
+    const name = String(((await this.streamNames())[phone] || {}).name || "FifTeam").slice(0, 24);
+    title = String(title || "").replace(/\s+/g, " ").trim().slice(0, 80);
+    const key = rid(24);
+    let s = [...this.streams.values()].find((x) => x.by === phone);
+    if (!s) {
+      s = { id: rid(10), by: phone, name, at: Date.now(), title, key, segs: [], chat: [], likes: 0, last: Date.now() };
+      this.streams.set(s.id, s);
+      this.tellStreams();
+      this.liveNotes(phone, name).catch((e) => console.log("live notes:", e.message));
+    } else { s.key = key; s.last = Date.now(); if (title) s.title = title; }
+    this.watchdog();
+    return { status: 200, id: s.id, key, at: s.at };
+  }
+  /** A piece of the video (n: its number, from 0; dur: how long, in ms). */
+  streamSeg(id, key, n, type, buf, dur) {
+    const s = this.streams.get(id);
+    if (!s || s.key !== key) return { status: 404 };
+    if (!/^video\/(webm|mp4)/.test(type) || !buf || buf.byteLength > 3e6 || !(n >= 0)) return { status: 400 };
+    s.segs.push({ n, type, buf, dur: Math.max(200, Math.min(10000, +dur || 2000)), at: Date.now() });
+    while (s.segs.length > 8) s.segs.shift();
+    s.last = Date.now();
+    this.toWatchers(id, { t: "seg", s: id, n, type: type.slice(0, 60), dur: s.segs[s.segs.length - 1].dur });
+    return { status: 200 };
+  }
+  streamGet(id, n) {
+    const s = this.streams.get(id), g = s && s.segs.find((x) => x.n === n);
+    return g ? { status: 200, type: g.type, body: g.buf } : { status: 404 };
+  }
+  streamEnd(id, key) { const s = this.streams.get(id); if (!s || s.key !== key) return { status: 404 }; this.endStream(id); return { status: 200 }; }
+  /** (the owner took someone's say away: their stream ends) */
+  endStreamsOf(phones) { for (const s of [...this.streams.values()]) if (phones.includes(s.by)) this.endStream(s.id); }
+  endStream(id) { if (!this.streams.has(id)) return; this.toWatchers(id, { t: "end", s: id }); this.streams.delete(id); this.tellStreams(); }
+  watchdog() {
+    if (this.wd) return;
+    this.wd = setInterval(() => {
+      for (const s of [...this.streams.values()]) if (Date.now() - s.last > 20000) this.endStream(s.id);
+      if (!this.streams.size) { clearInterval(this.wd); this.wd = 0; }
+    }, 5000);
+  }
+  /** Their followers hear they've gone live (on screen: a note; otherwise a notification, if they get activity ones). */
+  async liveNotes(phone, name) {
+    const meta = this.data(await this.load("meta")) || {}, mod = await this.streamMod(), banned = obj(mod.bans), blocks = obj(meta.blocks);
+    const notes = [];
+    for (const [who, list] of Object.entries(obj(meta.follows))) {
+      if (!PHONE.test(who) || who === phone || banned[who] || !arr(list).includes(phone)) continue;
+      if (arr(blocks[who]).includes(phone) || arr(blocks[phone]).includes(who)) continue;
+      notes.push({ to: who, kind: "act", title: name, body: "is live now: tap to watch", tag: `live-${phone}`, data: { live: phone } });
+    }
+    await this.sendNotes(notes);
+  }
+  /** What a watcher says or does in a stream: chat (sanitised, at most one a second), likes (taps; at most 8 a second),
+   * and (the streamer) taking a chat message down. */
+  async streamMessage(ws, at, m) {
+    const s = this.streams.get(String(m.s || ""));
+    if (m.t === "watch") {
+      const old = at.watch; at.watch = s ? s.id : ""; ws.serializeAttachment(at);
+      if (old && old !== at.watch) this.countChanged(old);
+      if (!s) { try { ws.send(JSON.stringify({ t: "end", s: String(m.s || "") })); } catch {} return; }
+      const segs = s.segs.slice(-2).map((g) => ({ n: g.n, type: g.type.slice(0, 60), dur: g.dur }));
+      try { ws.send(JSON.stringify({ t: "st", s: s.id, by: s.by, name: s.name, title: s.title, at: s.at, segs, chat: s.chat.slice(-40), likes: s.likes, viewers: this.viewers(s) })); } catch {}
+      this.countChanged(s.id);
+      return;
+    }
+    if (m.t === "unwatch") { const old = at.watch; at.watch = ""; ws.serializeAttachment(at); if (old) this.countChanged(old); return; }
+    if (!s || !at.me || at.watch !== s.id) return;
+    const mod = await this.streamMod();
+    if (obj(mod.bans)[at.me]) return;
+    const now = Date.now();
+    if (m.t === "say") {
+      const text = String(m.text || "").replace(/\s+/g, " ").trim().slice(0, 200);
+      if (!text || now - (at.said || 0) < 900) return;
+      { const a2 = ws.deserializeAttachment() || {}; a2.said = now; ws.serializeAttachment(a2); }
+      const name = String(((await this.streamNames())[at.me] || {}).name || "Someone").slice(0, 24);
+      const c = { id: rid(8), by: at.me, name, text, at: now };
+      s.chat.push(c); while (s.chat.length > 80) s.chat.shift();
+      this.toWatchers(s.id, { t: "chat", s: s.id, m: c });
+    } else if (m.t === "like") {
+      const w = Math.floor(now / 1000), a2 = ws.deserializeAttachment() || {};
+      if (a2.lw !== w) { a2.lw = w; a2.ln = 0; }
+      if (++a2.ln > 8) return;
+      ws.serializeAttachment(a2);
+      s.likes++;
+      this.toWatchers(s.id, { t: "like", s: s.id, n: s.likes, by: at.me });
+    } else if (m.t === "unsay" && at.me === s.by) {
+      const id = String(m.id || ""); s.chat = s.chat.filter((c) => c.id !== id);
+      this.toWatchers(s.id, { t: "unsay", s: s.id, id });
+    }
+  }
   async premiumDone(phones) { const asks = obj(await this.ctx.storage.get("premium-asks")); for (const p of phones) delete asks[p]; await this.ctx.storage.put("premium-asks", asks); }
 }

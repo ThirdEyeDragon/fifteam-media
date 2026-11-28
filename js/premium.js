@@ -96,22 +96,53 @@ export function openPremium(why = "") {
     card.append(h("b", "pm-price", `$${PRICE}`), h("span", "pm-once", "one time, for good"), h("span", "pm-what", "No subscription. Every feature above, on every phone you sign in to."));
     p.append(card);
     const name = myName() || "your username";
+    // how they'll pay, and their name there (so the team knows whose $10 it is); remembered
+    const PAYKEY = "fifteam-premium-pay";
+    let saved = {}; try { saved = JSON.parse(ls.get(PAYKEY) || "{}") || {}; } catch {}
+    let method = saved.method === "cash" ? "cash" : "paypal";
+    const form = h("div", "pm-form");
+    const seg = h("div", "seg pm-method");
+    for (const [k, t] of [["paypal", "PayPal"], ["cash", "Cash App"]]) { const b = h("button", "", t); b.type = "button"; b.dataset.k = k; seg.append(b); }
+    const lab = h("label", "pm-label");
+    const inp = h("input", "input pm-payname"); inp.maxLength = 60; inp.autocomplete = "off"; inp.value = saved.pay || "";
+    const hint = h("small", "status pm-hint");
+    lab.append(h("span", "", ""), inp);
+    form.append(seg, lab, hint);
+    const pay = h("a", "btn primary block pm-pay");
+    pay.target = "_blank"; pay.rel = "noopener";
+    const paint = () => {
+      seg.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.k === method));
+      lab.firstChild.textContent = method === "cash" ? "Your Cash App $cashtag" : "Your name on PayPal";
+      inp.placeholder = method === "cash" ? "$yourcashtag" : "First and last name, as on PayPal";
+      hint.textContent = method === "cash" ? `The $cashtag you'll pay from, so we know the $${PRICE} is yours.` : `The name your PayPal shows, so we know the $${PRICE} is yours.`;
+      pay.textContent = method === "cash" ? `Pay $${PRICE} with Cash App (${CASHTAG})` : `Pay $${PRICE} with PayPal`;
+      pay.href = method === "cash" ? CASH : PAY;
+      pay.classList.toggle("pm-cash", method === "cash");
+    };
+    seg.onclick = (e) => { const b = e.target.closest("button"); if (!b) return; method = b.dataset.k; paint(); inp.focus(); };
     const steps = h("ol", "pm-steps");
-    const s1 = h("li", "", `Pay $${PRICE} with PayPal or Cash App (${CASHTAG}).`);
-    const s2 = h("li", ""); s2.append("In the note (Cash App: \"For\"), put your username: ");
+    const s1 = h("li", "", "Pick how you'll pay, and put the name you'll pay from.");
+    const s2 = h("li", ""); s2.append(`Pay $${PRICE}. In the note (Cash App: "For"), put your username too: `);
     const nm = h("b", "pm-name", name); s2.append(nm);
     const cp = h("button", "btn small pm-copy", "Copy"); cp.onclick = () => { navigator.clipboard && navigator.clipboard.writeText(name).then(() => toast("Copied", 1200), () => {}); };
     s2.append(" ", cp);
     const s3 = h("li", "", "It unlocks by itself once the payment's confirmed (usually within a day). You'll see a note here when it does.");
     steps.append(s1, s2, s3);
-    const asked = () => { ls.set(ASKED, String(Date.now())); hubPremiumAsk().catch(() => {}); setTimeout(() => { const w = document.querySelector("#sheet-panel .pm-wait"); if (w) w.hidden = false; }, 800); };
-    const pay = h("a", "btn primary block pm-pay", `Get Premium: $${PRICE} with PayPal`);
-    pay.href = PAY; pay.target = "_blank"; pay.rel = "noopener"; pay.onclick = asked;
-    const cash = h("a", "btn block pm-pay pm-cash", `Or $${PRICE} with Cash App (${CASHTAG})`);
-    cash.href = CASH; cash.target = "_blank"; cash.rel = "noopener"; cash.onclick = asked;
+    pay.onclick = (e) => {
+      let v = inp.value.replace(/\s+/g, " ").trim();
+      if (method === "cash" && v && !v.startsWith("$")) v = "$" + v;
+      const ok = method === "cash" ? /^\$[A-Za-z0-9_-]{1,20}$/.test(v) : v.length >= 2;
+      if (!ok) { e.preventDefault(); toast(method === "cash" ? "Put the $cashtag you'll pay from first" : "Put your name on PayPal first", 2500); inp.focus(); inp.classList.add("bad"); return; }
+      inp.value = v; inp.classList.remove("bad");
+      ls.set(PAYKEY, JSON.stringify({ method, pay: v }));
+      ls.set(ASKED, String(Date.now()));
+      hubPremiumAsk({ method, pay: v }).catch(() => {});
+      setTimeout(() => { const w = document.querySelector("#sheet-panel .pm-wait"); if (w) w.hidden = false; }, 800);
+    };
     const wait = h("p", "status pm-wait", "Thanks! We'll unlock it as soon as the payment's in.");
     wait.hidden = !ls.get(ASKED);
-    p.append(pay, cash, steps, wait);
+    paint();
+    p.append(form, pay, steps, wait);
   });
 }
 function featureList(h, ico) {

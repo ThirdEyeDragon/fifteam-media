@@ -32,6 +32,7 @@ function defaults() {
     finish: "mdf", paint: "#7a4bff", view: "solid", chart: "spl", pin: true,
     style4: "std", style6: "std",                    // bandpass styles: standard (side by side), series (6th), hallway
     lim: { w: 0, h: 0, d: 0 },                       // the space you have (0: no limit)
+    fit: "any",                                      // where it goes: anywhere, under a seat, or blow-thru (a truck)
     gap: 1 * IN, braceMode: "std", round: true,      // space between the subs' frames; dowel bracing; rounded port bends
     sub: null, est: [], quick: null,                 // a sub from the list (its brand and model), and what its maker doesn't publish
     wire: { dual: true, ohms: 4, amp: 1 },
@@ -333,7 +334,7 @@ function spec() {
   const P1 = { ...st.port, fb: st.type === "ported" ? st.fbP : st.type === "bp4" ? st.fb4 : st.ff6 };
   const P2 = { ...st.port2, fb: st.fr6 };
   return {
-    type: st.type, series: isSeries(), style: styleOf(), shape: st.shape, gap: st.gap, braceMode: st.braceMode, round: st.round, power: st.power, w: st.w, h: st.h, d: st.d, dt: Math.min(st.dt, st.d), t: st.t, layers: st.layers, brace: st.brace, count: st.count,
+    type: st.type, series: isSeries(), style: styleOf(), shape: st.shape, fit: st.fit, gap: st.gap, braceMode: st.braceMode, round: st.round, power: st.power, w: st.w, h: st.h, d: st.d, dt: Math.min(st.dt, st.d), t: st.t, layers: st.layers, brace: st.brace, count: st.count,
     sub: { size: st.drv.size, cutout: st.drv.cutout, depth: st.drv.depth, disp: st.drv.disp, pe: st.drv.pe, xmax: st.drv.xmax, shape: st.drv.shape }, port: P1, port2: P2, split: st.split,
   };
 }
@@ -465,6 +466,8 @@ function paintResults() {
   for (const c of sanity()) W.unshift(c.msg);
   // the space you have
   const big = [["w", "wide", L.W], ["h", "tall", L.H], ["d", "deep", L.D]].filter(([k, , v]) => st.lim[k] > 0 && v > st.lim[k] + 1e-4);
+  if (st.fit === "seat" && st.drv.depth > 5.5 * IN) ok.push(`Under a seat, a shallow sub fits best: this one is ${cutLen(st.drv.depth)} deep. Look for a shallow-mount model if the box comes out too deep.`);
+  if (st.fit === "blow") ok.push(`Blow-thru: bolt the flange to the cab with a foam gasket between, so the sound only goes into the cab. The holes to cut in the cab wall are in the cut list.`);
   if (big.length) W.unshift(`It doesn't fit your space: ${big.map(([k, word, v]) => `${cutLen(v - st.lim[k])} too ${word}`).join(", ")}. A smaller box, fewer subs, or a sealed box would fit.`);
   if (drv.guessedQms) W.push("Qes has to be bigger than Qts: Qms was taken as 8 until the sub's real Qes is entered.");
   if (st.power / st.count > drv.pe * 1.25) W.push(`${Math.round(st.power / st.count)} W per sub is well over its ${drv.pe} W rating.`);
@@ -673,6 +676,30 @@ function paintPorts() {
     el.querySelector(".bx-pinfo").textContent = `${fmt("area", p.S)}${p.copies > 1 ? ` (${p.copies} ports)` : ""} · ${cutLen(p.len)} long (${cutLen(p.lin)} inside${p.bend ? ", bent" : ""}) · tuned to ${p.fb.toFixed(1)} Hz${P.kind === "slot" ? ` · ${cutLen(p.sw)} × ${cutLen(p.span)} slot${p.top ? " along the top" : ""}` : ""}`;
   }
 }
+const FIT_INFO = {
+  any: "A box for anywhere: the trunk, the hatch, behind the seat.",
+  seat: "Under a truck's rear seat (a crew cab): low and wide, its back sloped like the seat. Measure the space under your seat and put it in Measurements > The space you have (typical numbers are filled in). Shallow-mount subs fit best.",
+  blow: "Blow-thru, for a truck: the box sits in the bed against the cab, the subs (and the port) firing through holes cut in the cab's back wall. The front's outer layer is a flange that bolts to the cab, sealed with a foam gasket; the cut list has the holes to cut in the cab. Seal and weatherproof the box (bedliner or paint) since it lives outside.",
+};
+/** Where the box goes: its shape and the space to fit (only filled in where none was given), the port out the front for
+ * a blow-thru (it has to fire through the cab too). */
+function setFit(k) {
+  st.fit = k;
+  const none = !st.lim.w && !st.lim.h && !st.lim.d;
+  if (k === "seat") {
+    st.shape = "wedge";
+    if (none) st.lim = { w: 48 * IN, h: 11 * IN, d: 15 * IN };
+    if (st.port.at && st.port.at !== "front") st.port.at = "front";
+  } else if (k === "blow") {
+    st.shape = "rect";
+    if (none) st.lim = { w: 50 * IN, h: 19 * IN, d: 0 };
+    st.port.at = "front";
+  } else if (st.lim.w === 48 * IN && st.lim.h === 11 * IN && st.lim.d === 15 * IN || st.lim.w === 50 * IN && st.lim.h === 19 * IN && !st.lim.d) st.lim = { w: 0, h: 0, d: 0 };
+  if (st.shape === "wedge" && st.dt >= st.d) st.dt = st.d * 0.65;
+  if (!st.fixed) { compute(); sizePorts(true); reshape(); }
+  paintAll();
+  toast(k === "seat" ? "Shaped to go under a seat" : k === "blow" ? "Blow-thru: the cab wall's holes are in the cut list" : "A box for anywhere", 2500);
+}
 /** The baffle's layers: the chip (or the number typed), and which panel that is and how thick. */
 function paintLayers() {
   document.querySelectorAll("#bx-layers .chip").forEach((c) => c.classList.toggle("on", +c.dataset.k === st.layers));
@@ -693,6 +720,8 @@ function paintAll() {
   document.querySelectorAll("#bx-type button").forEach((b) => b.classList.toggle("on", b.dataset.k === st.type));
   document.querySelectorAll("#bx-units button").forEach((b) => b.classList.toggle("on", b.dataset.k === st.units));
   document.querySelectorAll("#bx-shape button").forEach((b) => b.classList.toggle("on", b.dataset.k === st.shape));
+  document.querySelectorAll("#bx-fit button").forEach((b) => b.classList.toggle("on", b.dataset.k === (st.fit || "any")));
+  if ($("bx-fit-info")) $("bx-fit-info").textContent = FIT_INFO[st.fit || "any"];
   document.querySelectorAll("#bx-solve button").forEach((b) => b.classList.toggle("on", b.dataset.k === st.solve));
   document.querySelectorAll("#bx-mode button").forEach((b) => b.classList.toggle("on", b.dataset.k === st.view));
   document.querySelectorAll("#bx-finish button").forEach((b) => b.classList.toggle("on", b.dataset.k === st.finish));
@@ -830,7 +859,12 @@ function buildScreen(root) {
   );
   const rec = h("button", "btn primary block", "Recommended for this sub"); rec.type = "button"; rec.prepend(icon("i-spark"));
   rec.onclick = () => { st.quick = null; design(); paintAll(); };
-  sG.append(h("span", "label", "Build it for me"), quick, h("span", "label", "Or set it yourself"), dz, rec);
+  // where it goes: anywhere; under a seat (low and wide, a sloped back); blow-thru, for a truck (in the bed against the
+  // cab, the subs firing through holes cut in the cab's back wall)
+  const fitSeg = seg("bx-fit", [["any", "Anywhere"], ["seat", "Under a seat"], ["blow", "Blow-thru (truck)"]], st.fit);
+  fitSeg.onclick = (e) => { const b = e.target.closest("button"); if (!b || b.dataset.k === st.fit) return; setFit(b.dataset.k); };
+  const fitInfo = h("small", "status bx-fitinfo"); fitInfo.id = "bx-fit-info";
+  sG.append(h("span", "label", "Where it goes"), fitSeg, fitInfo, h("span", "label", "Build it for me"), quick, h("span", "label", "Or set it yourself"), dz, rec);
   root.append(sG);
 
   // the measurements
@@ -916,6 +950,7 @@ function buildScreen(root) {
       at.onclick = (e) => {
         const b = e.target.closest("button"); if (!b || b.dataset.k === (st.port.at || "front")) return;
         if (b.dataset.k !== "front" && st.shape === "wedge") { toast("A wedge's port opens out of the front: pick Rectangle for a back, top or side port", 3500); return; }
+        if (b.dataset.k !== "front" && st.fit === "blow") { toast("A blow-thru's port fires through the cab with the subs: it opens out of the front", 3500); return; }
         st.port.at = b.dataset.k;
         if (b.dataset.k === "side" && st.port.pos === "middle") st.port.pos = "left";
         moved(`out of the ${b.dataset.k}`);
@@ -1038,7 +1073,7 @@ function openSubList() {
 }
 
 // ---------------------------------------------------------------------------------------------------- sharing
-const SHARE_KEYS = ["gap", "braceMode", "round", "units", "type", "style4", "style6", "count", "power", "qtc", "vbS", "vbP", "fbP", "s4", "g4", "c4", "vr4", "vf4", "fb4", "vr6", "fr6", "vf6", "ff6", "lo6", "hi6", "shape", "w", "h", "d", "dt", "t", "layers", "brace", "split", "solve", "finish", "paint", "preset", "sub", "est", "drv", "port", "port2", "wire", "fu"];
+const SHARE_KEYS = ["fit", "gap", "braceMode", "round", "units", "type", "style4", "style6", "count", "power", "qtc", "vbS", "vbP", "fbP", "s4", "g4", "c4", "vr4", "vf4", "fb4", "vr6", "fr6", "vf6", "ff6", "lo6", "hi6", "shape", "w", "h", "d", "dt", "t", "layers", "brace", "split", "solve", "finish", "paint", "preset", "sub", "est", "drv", "port", "port2", "wire", "fu"];
 /** The design as a short code (base64url JSON), for a post. */
 function encodeBox() {
   const o = { v: 1, fixed: true }; for (const k of SHARE_KEYS) o[k] = st[k];

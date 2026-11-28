@@ -205,6 +205,19 @@ try {
   console.log("username screen:", JSON.stringify(gn), "| post box:", await text("#so-body .so-pill"));
   check(gn.appShut === true && /2 to 24 letters/.test(gn.tooShort || "") && gn.kept === "Alice", "a new account picks its username before anything else (too short refused)");
   check((await text("#so-body .so-pill")) === "What's on your mind, Alice?", "username set (it greets you on the post box)");
+  // finding people: the search button, typing part of a name, tapping one opens their page
+  await until(`!!document.getElementById('so-find')`, 5000, "the search button");
+  await ev(`document.getElementById('so-find').click(), 1`);
+  await until(`!!document.querySelector('#sheet-panel .so-findbox input')`, 8000, "the search sheet");
+  const typeIn = async (q) => { await ev(`(() => { const i = document.querySelector('#sheet-panel .so-findbox input'); i.value = ${JSON.stringify(q)}; i.dispatchEvent(new Event('input')); return 1; })()`); await sleep(300); return ev(`[...document.querySelectorAll('#sheet-panel .so-frow .so-fname')].map(r => r.textContent).join(' | ') || document.querySelector('#sheet-panel .so-flist').textContent`); };
+  const suggested = await ev(`[...document.querySelectorAll('#sheet-panel .so-frow')].length`);
+  const ev1 = await typeIn("ev"), none = await typeIn("zzqq");
+  const eve1 = await typeIn("eve");
+  await ev(`(document.querySelector('#sheet-panel .so-frow') || { click() {} }).click(), 1`); await sleep(900);
+  const page = await ev(`(document.querySelector('#sheet-panel .pf-name') || {}).textContent || ''`);
+  console.log("search:", JSON.stringify({ suggested, ev1, eve1, none, page }));
+  check(suggested >= 1 && /Eve/.test(ev1) && !/Alice/.test(ev1) && /Nobody called/.test(none) && /Eve/.test(page), "search finds people by name (not yourself), and a tap opens their page");
+  await ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
 
   // a profile picture (goes with each post)
   await send("Page.setInterceptFileChooserDialog", { enabled: true });
@@ -698,7 +711,9 @@ try {
     await other.ev(`[...document.querySelectorAll('.dm-act .menu-item')].find(b => b.textContent.includes('Delete chat')).click(), 1`);
     const between = (x) => (x.f === alice && x.t === benId) || (x.f === benId && x.t === alice);
     for (let i = 0; i < 40 && dmNow().some((x) => between(x) && !x.l); i++) await sleep(250);
-    await sleep(800);
+    // (the song's file goes after, at low priority: within a few seconds)
+    for (let i = 0; i < 24 && msgs.has(songMsgId); i++) await sleep(250);
+    await sleep(300);
     console.log("chat deleted: left in the store:", dmNow().filter((x) => between(x) && !x.l).length, "| the song's file:", msgs.has(songMsgId) ? "still there" : "deleted", "| Ben's inbox:", await other.ev(`document.querySelector('#sheet-panel .dm-list').textContent`));
     check(!dmNow().some((x) => between(x) && !x.l) && !msgs.has(songMsgId), "a whole chat deleted for both, with its song file");
     await other.ev(`document.getElementById('sheet').classList.remove('open'), 1`); await sleep(300);
