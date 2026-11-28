@@ -395,6 +395,8 @@ try {
   const cs = await fetch(`${WK}/v1/push`, { method: "POST", body: JSON.stringify({ tk: idToken(carl), sub: carlSub, prefs: { msg: false, act: false } }) });
   check(cs.status === 200, "(a third phone signs up for notifications, every kind off)");
   pushes.length = 0;
+  // (LIVE_WEBM=1: a phone that can't record MP4, so it streams WebM)
+  if (process.env.LIVE_WEBM) await A.ev(`(() => { const f = MediaRecorder.isTypeSupported.bind(MediaRecorder); MediaRecorder.isTypeSupported = (t) => !/mp4/.test(t) && f(t); return 1; })()`);
   await A.ev(`(window.confirm = () => true, document.querySelector('#so-body .so-golive').click(), 1)`);
   const cam = await A.until(`(() => { const v = document.querySelector('.lv .lv-v.on'); return !!v && v.videoWidth > 0 && !!document.querySelector('.lv-pre'); })()`, 10000);
   check(cam >= 0, "Go live: the camera shows, with a title to type and Go live");
@@ -445,11 +447,18 @@ try {
   await A.ev(`document.querySelector('.lv-tools .lv-tool').click(), 1`);
   const flipped = await A.until(`(() => { const v = document.querySelector('.lv .lv-v.on'), t = v.srcObject.getVideoTracks()[0]; return t.readyState === 'live' && t.label !== ${JSON.stringify(cam0)} && !v.classList.contains('mirror') && v.videoWidth > 0; })()`, 8000);
   const cam1 = await A.ev(`document.querySelector('.lv .lv-v.on').srcObject.getVideoTracks()[0].label`);
-  const f0 = await B.ev(`document.querySelector(".lv .lv-v.on").currentTime`); await sleep(5000);
-  const f1 = await B.ev(`document.querySelector(".lv .lv-v.on").currentTime`);
-  log(`camera: ${camSet} | flipped from ${cam0} to ${cam1} after ${flipped} ms; Ben's video went on ${(f1 - f0).toFixed(2)} s in 5 s`);
+  // (the flip starts a new recording, its clock from 0: watched as moving or not, every 200 ms for 6 s)
+  let prevT = null, still = 0, longest = 0, movingAtEnd = 0;
+  for (let i = 0; i < 30; i++) {
+    const t = await B.ev(`document.querySelector(".lv .lv-v.on").currentTime`);
+    if (prevT != null && t === prevT) { still += 200; longest = Math.max(longest, still); } else still = 0;
+    if (i >= 22 && prevT != null && t !== prevT) movingAtEnd++;
+    prevT = t; await sleep(200);
+  }
+  const f0 = 0, f1 = movingAtEnd >= 6 && longest <= 2600 ? 5 : 0;
+  log(`camera: ${camSet} | flipped from ${cam0} to ${cam1} after ${flipped} ms; the picture paused at most ${(longest / 1000).toFixed(1)} s, then played on (${movingAtEnd}/7 at the end)`);
   check(JSON.parse(camSet).width >= 1280, "the camera gives a full 16:9 picture (not a cropped, zoomed one)");
-  check(flipped >= 0 && f1 - f0 > 3.5, "flipping cameras while live: the other camera opens, and the stream carries on for the viewer");
+  check(flipped >= 0 && f1 - f0 > 3.5, "flipping cameras while live: the other camera opens; the viewer's picture pauses only a moment, then carries on");
   if (!(f1 - f0 > 3.5)) log("DEBUG flip:", await B.ev(`(() => { const v = document.querySelector('.lv .lv-v.on'); let b = []; try { for (let i = 0; i < v.buffered.length; i++) b.push([v.buffered.start(i).toFixed(2), v.buffered.end(i).toFixed(2)]); } catch {} return JSON.stringify({ t: v.currentTime, paused: v.paused, rs: v.readyState, ns: v.networkState, err: v.error && (v.error.code + ' ' + v.error.message), b, w: v.videoWidth }); })()`), "| A:", A.errors.join(" | ").slice(0, 300), "| A toast:", await A.ev(`document.getElementById('toast').textContent`));
   // chat both ways
   await B.ev(`(() => { document.querySelector('.lv-in').value = 'this hits hard'; document.querySelector('.lv-bar').requestSubmit(); return 1; })()`);
@@ -480,14 +489,18 @@ try {
   await A.ev(`import('./js/hub.js').then(m => m.liveSend({ t: 'unsay', s: ${JSON.stringify(sid)}, id: ${JSON.stringify(mid)} }))`);
   const gone = await B.until(`![...document.querySelectorAll('.lv-msg')].some(m => m.textContent.includes('this hits hard'))`, 5000);
   check(gone >= 0, "the streamer can take a chat message down (gone for everyone)");
-  // the other way of playing (iPhone: two players taking turns)
+  // how close to live, and the pace (one recording, one timeline: nothing to stitch)
+  const st1 = JSON.parse(await B.ev(`import('./js/live.js').then((m) => JSON.stringify(m.liveStats()))`));
+  const recAt = await A.ev(`window.__liveRecAt`), bt = await B.ev(`document.querySelector(".lv .lv-v.on").currentTime`);
+  const behindLive = (Date.now() - recAt) / 1000 - bt;
+  log(`close to live: ${behindLive.toFixed(2)} s behind the camera (${st1.lag.toFixed(2)} s of video in hand, playing at ${st1.rate}x)`);
+  check(behindLive < 3, "it plays within about two seconds of the camera");
+  // a phone that can't play live video: said so (not a black screen)
   await B.ev(`document.querySelector('.lv-x').click(), 1`); await sleep(500);
-  await B.ev(`(window.MediaSource = undefined, [...document.querySelectorAll('#so-body .lv-prev')].find(b => b.textContent.includes('Alice')).click(), 1)`);
-  const turns = await B.until(`(() => { const v = document.querySelector('.lv .lv-v.on'); return !!v && !v.paused && v.currentTime > 0.3 && v.videoWidth > 0 && !v.src.includes('mediasource'); })()`, 15000);
-  let switched = 0, lastOn = null;
-  for (let i = 0; i < 40; i++) { const on = await B.ev(`document.querySelector('.lv .lv-v.on') === document.querySelectorAll('.lv .lv-v')[0] ? 'A' : 'B'`); if (lastOn && on !== lastOn) switched++; lastOn = on; await sleep(200); }
-  log(`without Media Source: playing after ${turns} ms; the players took turns ${switched} times in 8 s`);
-  check(turns >= 0 && switched >= 2, "without Media Source (iPhone): two players take turns, piece after piece");
+  await B.ev(`(window.MediaSource = undefined, window.ManagedMediaSource = undefined, [...document.querySelectorAll('#so-body .lv-prev')].find(b => b.textContent.includes('Alice')).click(), 1)`);
+  const noMse = await B.until(`/can't play live video/.test(document.querySelector('.lv .lv-wait').textContent)`, 8000);
+  log("without Media Source:", noMse >= 0 ? "told to update" : await B.ev(`document.querySelector('.lv .lv-wait').textContent`));
+  check(noMse >= 0, "a phone that can't play live video is told to update (not left on a black screen)");
   // she ends it: Ben is told, the circle goes
   await A.ev(`document.querySelector('.lv-x').click(), 1`);
   const ended = await B.until(`/has ended/.test(document.querySelector('.lv-wait').textContent)`, 8000);

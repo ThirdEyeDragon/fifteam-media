@@ -9,7 +9,7 @@
 //   /v1/push         a phone signing up for notifications (with proof of its account), /v1/push/off to stop
 //   /v1/premium      "Get Premium" tapped: the owner is told (in #payments)
 //   /v1/report       a report about a user (or a post or comment of theirs): to #reports
-//   /v1/stream/...   live streams: start, a piece of the video (sent, or fetched), end; /v1/streams who's live
+//   /v1/stream/...   live streams: start, end (the video itself goes on the live connection); /v1/streams who's live
 // And on a timer (the crons in wrangler.toml): every minute, anything older apps wrote merged in; every half hour, the
 // file links refreshed.
 //   Secrets (wrangler secret put, never in the project): BOT_TOKEN, BOT_KEY (the bot's private key, for the sealed
@@ -138,16 +138,6 @@ async function app(req, env, url) {
     let phone; try { phone = await phoneOf(env, b.tk); } catch (e) { return json({ error: "account: " + e.message }, 401, true); }
     const r = await hub.streamStart(phone, b.title);
     return json(r.status === 200 ? r : { error: r.status }, r.status, true);
-  }
-  if (path === "/v1/stream/seg" && req.method === "POST") {
-    const q = url.searchParams, n = parseInt(q.get("n") || "", 10);
-    const r = await hub.streamSeg(String(q.get("s") || ""), String(q.get("k") || ""), n, String(req.headers.get("Content-Type") || ""), await req.arrayBuffer(), +q.get("d") || 0);
-    return json(r.status === 200 ? { ok: true } : { error: r.status }, r.status, true);
-  }
-  if (path === "/v1/stream/seg" && req.method === "GET") {
-    const r = await hub.streamGet(String(url.searchParams.get("s") || ""), parseInt(url.searchParams.get("n") || "", 10));
-    if (r.status !== 200) return json({ error: r.status }, r.status, true);
-    return new Response(r.body, { status: 200, headers: { ...CORS, "Content-Type": r.type, "Cache-Control": "no-store" } });
   }
   if (path === "/v1/stream/end" && req.method === "POST") {
     const b = await req.json().catch(() => ({}));

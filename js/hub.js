@@ -117,11 +117,11 @@ export async function startLive() {
     clearInterval(pinger); pinger = setInterval(() => { try { ws.send("ping"); } catch {} }, 25000);
   };
   ws.onmessage = (e) => {
-    // (a piece of a live stream: a little header, its length first, then the video)
+    // (a slice of a live stream: a little header, its length first, then the video)
     if (e.data instanceof ArrayBuffer) {
       try {
         const n = new DataView(e.data).getUint32(0), head = JSON.parse(new TextDecoder().decode(new Uint8Array(e.data, 4, n)));
-        head.blob = new Blob([new Uint8Array(e.data, 4 + n)], { type: head.type || "video/webm" });
+        head.data = e.data.slice(4 + n);
         dispatchEvent(new CustomEvent("hub:stream", { detail: head }));
       } catch {}
       return;
@@ -130,7 +130,7 @@ export async function startLive() {
     let m; try { m = JSON.parse(e.data); } catch { return; }
     if (m.t === "v" && m.k) { if (hubVersion(m.k) !== m.v) dispatchEvent(new CustomEvent("hub:" + m.k, { detail: { v: m.v, to: m.to || null } })); }
     else if (m.t === "note") dispatchEvent(new CustomEvent("hub:note", { detail: m }));
-    else if (["streams", "st", "seg", "chat", "like", "viewers", "end", "unsay"].includes(m.t)) dispatchEvent(new CustomEvent("hub:stream", { detail: m }));
+    else if (["streams", "st", "chat", "like", "viewers", "end", "unsay", "upgone"].includes(m.t)) dispatchEvent(new CustomEvent("hub:stream", { detail: m }));
   };
   ws.onclose = () => {
     clearInterval(pinger);
@@ -171,16 +171,12 @@ export async function hubStreamStart(title) {
   if (!r.ok) throw new Error("Couldn't start the stream. Try again.");
   return r.json();
 }
-/** A piece of the video, sent (false: the stream isn't there any more). */
-export async function hubStreamSeg(s, key, n, blob, dur) {
-  const r = await call(`/v1/stream/seg?s=${encodeURIComponent(s)}&k=${encodeURIComponent(key)}&n=${n}&d=${Math.round(dur)}`, { method: "POST", headers: { "Content-Type": blob.type || "video/webm" }, body: blob });
-  if (r.status === 404) return false;
-  if (!r.ok) throw new Error("seg " + r.status);
-  return true;
-}
-/** A piece of someone's stream (a Blob), or null if it's gone already. */
-export async function hubStreamGet(s, n) { const r = await call(`/v1/stream/seg?s=${encodeURIComponent(s)}&n=${n}`); return r.ok ? r.blob() : null; }
 export async function hubStreamEnd(s, key) { await call("/v1/stream/end", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ s, k: key }) }).catch(() => {}); }
 export async function hubStreams() { const r = await call("/v1/streams"); return r.ok ? (await r.json()).list || [] : []; }
 /** Something said on the live connection (watching a stream, chat, a like); false if it isn't open. */
 export function liveSend(o) { if (!live.ws || !live.on) return false; try { live.ws.send(JSON.stringify(o)); return true; } catch { return false; } }
+/** Bytes on the live connection (a slice of a live stream); false if it isn't open, or too much is still waiting to go
+ * (a slow connection: the stream starts again once it has caught up, rather than falling further behind). */
+export function liveSendBin(buf) { if (!live.ws || !live.on || live.ws.bufferedAmount > 3e6) return false; try { live.ws.send(buf); return true; } catch { return false; } }
+/** How much is still waiting to go out on the live connection (bytes). */
+export const liveBacklog = () => (live.ws ? live.ws.bufferedAmount : 0);

@@ -1,24 +1,26 @@
-// Live streams in Social. The people the FifTeam team lets (/allow streaming) can go live with the phone's camera; anyone
-// can watch, chat and send likes (hearts), and sees how many are watching.
-//   Going live: the camera is recorded in pieces of about two seconds, each one a whole little video (a new recorder
-// starts just before the last one stops, so nothing is lost between them), and each is sent to the FifTeam server.
-//   Watching: the server says at once when a new piece is in (on the app's live connection); the piece is fetched and
-// played straight after the last one. Where the phone can (Android, computers), the pieces are joined into one video
-// as they come (Media Source), so it plays without a break; otherwise (iPhone) two players take turns, the next piece
-// ready in one while the other plays. It stays close to live: if it falls behind, it catches up.
+// Live streams in Social. The person the FifTeam team lets (/allow streaming) can go live with the phone's camera;
+// everyone can watch, chat and send likes (hearts), and sees how many are watching.
+//   Going live: the camera is recorded as one continuous video (MP4, H.264 and AAC, where the phone can: it plays on
+// every phone; otherwise WebM), handed over every quarter second and sent straight up the app's live connection, with
+// where in it a viewer can start (each fragment, from a whole frame; a new one every second).
+//   Watching: the server sends the recording's setup and the video from the latest place to start, then every slice as
+// it comes. They go into one video as they arrive (Media Source; on iPhone, Managed Media Source), on the recording's
+// own timeline, so sound and picture stay together and there's nothing to stitch. It stays about a second or two
+// behind live: falling behind, it plays a touch faster until it has caught up; running low, a touch slower.
 //   Chat and likes go round on the live connection; the streamer can take a chat message down (hold it).
 import { toast, pushLayer, dropLayer } from "./ui.js";
-import { hubStreamStart, hubStreamSeg, hubStreamGet, hubStreamEnd, hubStreams, liveSend, live, startLive } from "./hub.js";
+import { hubStreamStart, hubStreamEnd, hubStreams, liveSend, liveSendBin, liveBacklog, live, startLive } from "./hub.js";
 import { offensive, OFFENSIVE } from "./filter.js";
 import { isStreamer } from "./ban.js";
 
-const SEG_MS = 2000;
 const L = { list: [], h: null };
 const h = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 const ico = (id) => { const s = document.createElementNS("http://www.w3.org/2000/svg", "svg"); const u = document.createElementNS("http://www.w3.org/2000/svg", "use"); u.setAttribute("href", "#" + id); s.append(u); return s; };
 const fmtN = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M" : n >= 1e4 ? Math.round(n / 1e3) + "K" : n >= 1e3 ? (n / 1e3).toFixed(1).replace(/\.0$/, "") + "K" : String(n));
 const since = (t) => { const s = Math.max(0, Math.floor((Date.now() - t) / 1000)); const m = Math.floor(s / 60); return m >= 60 ? `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}` : `${m}:${String(s % 60).padStart(2, "0")}`; };
 
+/** (for checks) the stream being watched: how far behind its newest video it's playing (s), and how fast. */
+export const liveStats = () => { const v = L.view; return v && v.player ? { lag: v.player.lag(), rate: v.mine ? 1 : document.querySelector(".lv .lv-v.on").playbackRate } : null; };
 /** Who's live now: [{ id, by, name, at, title, viewers, likes }]. */
 export const streamsNow = () => L.list;
 /** Whether this phone may go live. */
@@ -32,8 +34,13 @@ export function initLive(hooks) {
     const m = e.detail || {};
     if (m.t === "streams") { setList(m.list); return; }
     const v = L.view;
+    if (m.t === "lv") {
+      if (v && !v.mine && m.s === v.id) v.player.feed(m);
+      if (L.peek && m.s === L.peek.id) L.peek.feed(m);
+      return;
+    }
+    if (m.t === "upgone") { if (v && v.mine && v.lost) v.lost(m.s); return; }
     if (v && m.s === v.id) v.on(m);
-    if (L.peek && m.s === L.peek.id && (m.t === "segb" || m.t === "seg")) L.peek.add(m);
   });
   // someone went live (the app open): a banner at the top, tapped to watch
   addEventListener("hub:note", (e) => { const n = e.detail || {}; if (n.kind === "live" && n.data && n.data.live) liveBanner(n); });
@@ -111,11 +118,11 @@ export function previewCard(s) {
   card.append(vA, vB, h("div", "lv-pshade"), wait, top, foot);
   card.onclick = () => { const now = L.list.find((x) => x.id === s.id) || s; watch(now); };
   const P = { id: s.id, on: false, pl: null, card, seen: false };
-  P.add = (m) => { if (P.pl) P.pl.add(m); };
+  P.feed = (m) => { if (P.pl) P.pl.feed(m); };
   P.start = () => {
     if (P.on) return;
     P.on = true;
-    P.pl = player({ vA, vB, root: card }, () => card.classList.add("playing"), () => {}, () => P.id, true);
+    P.pl = livePlayer(vA, { muted: true, onPlay: () => card.classList.add("playing"), rejoin: () => liveSend({ t: "peek", s: P.id }) });
     L.peek = P;
     liveSend({ t: "peek", s: P.id });
   };
@@ -251,23 +258,21 @@ function onStreamMessage(v, ui, m) {
     for (const c of m.chat || []) chatLine(ui, c, v.mine, v.remove);
     ui.like.querySelector(".lv-likes").textContent = fmtN(m.likes || 0); v.likes = m.likes || 0;
     ui.eye.lastChild.textContent = fmtN(m.viewers || 0);
-    if (!v.mine) { const segs = m.segs || []; setTimeout(() => { if (L.view === v && !v.player.fed()) v.player.start(segs); }, 2500); }
   } else if (m.t === "chat") chatLine(ui, m.m, v.mine, v.remove);
   else if (m.t === "unsay") ui.chat.querySelector(`.lv-msg[data-id="${CSS.escape(m.id)}"]`)?.remove();
   else if (m.t === "like") {
     v.likes = m.n; ui.like.querySelector(".lv-likes").textContent = fmtN(m.n);
     if (m.by !== L.h.me()) { const now = Date.now(); if (now - (v.heartAt || 0) > 140) { v.heartAt = now; heart(ui, false); } }
   } else if (m.t === "viewers") ui.eye.lastChild.textContent = fmtN(m.n);
-  else if ((m.t === "seg" || m.t === "segb") && !v.mine) v.player.add(m);
   else if (m.t === "end" && !v.mine) v.ended();
   else if (m.t === "end" && v.mine) { toast("Your stream has ended.", 3000); v.close(); }
 }
 /** Sound wasn't allowed to start by itself: playing muted, with a button to turn it on. */
-function soundHint(ui, P) {
-  if (ui.root.querySelector(".lv-sound")) return;
+function soundHint(root, video) {
+  if (!root || root.querySelector(".lv-sound")) return;
   const b = h("button", "lv-sound"); b.type = "button"; b.append(ico("i-mute"), h("span", "", "Tap for sound"));
-  b.onclick = () => { P.muted = false; for (const el of [ui.vA, ui.vB]) { el.muted = false; if (el.classList.contains("on") && el.paused && el.src) el.play().catch(() => {}); } b.remove(); };
-  ui.root.append(b);
+  b.onclick = (e) => { e.stopPropagation(); video.muted = false; if (video.paused) video.play().catch(() => {}); b.remove(); };
+  root.append(b);
 }
 let wake = null;
 const keepAwake = async (on) => { try { if (on && "wakeLock" in navigator && !wake) wake = await navigator.wakeLock.request("screen"); else if (!on && wake) { await wake.release(); wake = null; } } catch {} };
@@ -280,7 +285,15 @@ export function watch(s) {
   const ui = screen(s, false);
   const v = { id: s.id, by: s.by, mine: false, likes: s.likes };
   L.view = v;
-  v.player = player(ui, () => { ui.wait.hidden = true; }, () => { ui.wait.hidden = false; ui.wait.lastChild.textContent = "Catching up…"; });
+  v.player = livePlayer(ui.vA, {
+    root: ui.root,
+    onPlay: () => { ui.wait.hidden = true; },
+    onStall: (why) => {
+      if (why === "unsupported") { ui.wait.hidden = false; ui.wait.replaceChildren(h("b", "", "This phone can't play live video yet"), h("small", "", "Update it to watch (iPhone: iOS 17.1 or newer).")); return; }
+      ui.wait.hidden = false; ui.wait.lastChild.textContent = "Catching up…";
+    },
+    rejoin: () => liveSend({ t: "watch", s: v.id }),
+  });
   wireTalk(ui, v);
   v.on = (m) => onStreamMessage(v, ui, m);
   const join = () => { if (!liveSend({ t: "watch", s: v.id })) { startLive(); setTimeout(() => L.view === v && join(), 1200); } };
@@ -309,146 +322,177 @@ export function watch(s) {
   };
   ui.x.onclick = () => v.close();
   pushLayer("live", () => v.close(true));
-  // (a tap is the first gesture: both players unlocked for sound on iPhone)
-  const unlock = () => { for (const el of [ui.vA, ui.vB]) { if (el.paused && !el.src) { el.muted = true; el.play().catch(() => {}); el.pause(); el.muted = false; } } };
-  ui.root.addEventListener("pointerdown", unlock, { once: true });
 }
 
-/** The player: pieces in order, joined into one video where it can (Media Source), otherwise two players taking turns.
- * onPlay: playing; onStall: waiting for the next piece. */
-function player(ui, onPlay, onStall, idOf = () => (L.view ? L.view.id : ""), muted = false) {
-  const P = { next: -1, busy: false, queue: [], stopped: false, mode: null, muted, fed: false };
-  if (muted) for (const el of [ui.vA, ui.vB]) el.muted = true;
-  const want = (n) => n > P.next;
-  // fetch pieces in order (each one once), as they're announced
-  async function pump() {
-    if (P.busy || P.stopped) return;
-    P.busy = true;
-    try {
-      while (P.queue.length && !P.stopped) {
-        const g = P.queue.shift();
-        if (!want(g.n)) continue;
-        let blob = g.blob || null;
-        if (!blob) { try { blob = await hubStreamGet(idOf(), g.n); } catch {} }
-        if (P.stopped) return;
-        P.next = g.n;
-        if (blob && blob.size) { P.fed = true; await feed(blob, g.type || blob.type, g.dur); }
-      }
-    } finally { P.busy = false; }
-  }
-  // --- one video, the pieces joined (Media Source, "sequence": each piece straight after the last)
-  let ms = null, sb = null, appendQ = [], mime = "";
-  const MSE = window.MediaSource;
-  function useMse(type) { return !!(MSE && /webm/.test(type) && MSE.isTypeSupported(type)); }
-  function openMse(type) {
-    mime = type; ms = new MSE();
-    ui.vA.src = URL.createObjectURL(ms);
-    return new Promise((res) => ms.addEventListener("sourceopen", () => {
-      try { sb = ms.addSourceBuffer(type); sb.mode = "sequence"; sb.addEventListener("updateend", drain); sb.addEventListener("error", rebuild); } catch { sb = null; }
-      res();
-    }, { once: true }));
+/** The player: a stream's start (its setup and the video from a whole frame on), then the rest a slice at a time, into
+ * one video (Media Source; Managed Media Source on iPhone), on the recording's own timeline. Paced to stay close to
+ * live without jumping: behind, a touch faster; low, a touch slower; well behind, straight to near the end. A gap (a
+ * slice that didn't come), stepped over. Broken (a damaged slice): asks to start again (rejoin). */
+function livePlayer(video, { muted = false, root = null, onPlay = () => {}, onStall = () => {}, rejoin = () => {} } = {}) {
+  const MS = window.ManagedMediaSource || window.MediaSource;
+  const P = { ms: null, sb: null, q: [], g: null, url: "", started: false, stopped: false, broke: 0 };
+  if (muted) video.muted = true;
+  video.playsInline = true;
+  // ("video/mp4;codecs=avc1.42001f,mp4a.40.2" -> 'video/mp4; codecs="avc1.42001f,mp4a.40.2"')
+  const mimeOf = (t) => { const m = /^\s*([^;\s]+)\s*(?:;\s*codecs\s*=\s*"?([^"]+)"?)?/i.exec(String(t || "")); return m ? (m[2] ? `${m[1]}; codecs="${m[2].trim()}"` : m[1]) : ""; };
+  const teardown = () => {
+    P.sb = null;
+    if (P.ms) { try { if (P.ms.readyState === "open") P.ms.endOfStream(); } catch {} }
+    P.ms = null;
+    if (P.url) { try { URL.revokeObjectURL(P.url); } catch {} P.url = ""; }
+  };
+  async function open(type) {
+    teardown();
+    const mime = mimeOf(type);
+    if (!MS || !MS.isTypeSupported(mime)) { onStall("unsupported"); return false; }
+    const ms = new MS(); P.ms = ms;
+    if (window.ManagedMediaSource && ms instanceof window.ManagedMediaSource) video.disableRemotePlayback = true;
+    P.url = URL.createObjectURL(ms); video.src = P.url;
+    await new Promise((res) => ms.addEventListener("sourceopen", res, { once: true }));
+    if (P.ms !== ms || P.stopped) return false;
+    try { P.sb = ms.addSourceBuffer(mime); P.sb.mode = "segments"; P.sb.addEventListener("updateend", drain); }
+    catch { P.sb = null; onStall("unsupported"); return false; }
+    return true;
   }
   function drain() {
-    if (!sb || sb.updating || !appendQ.length) return;
-    // (keep the last half minute; and stay close to live: more than 6 s behind, jump ahead)
-    const v = ui.vA, b = sb.buffered;
-    try {
-      if (b.length && v.currentTime - b.start(0) > 30) { sb.remove(b.start(0), v.currentTime - 10); return; }
-    } catch {}
-    try { sb.appendBuffer(appendQ.shift()); } catch (e) { if (e.name === "QuotaExceededError") appendQ.length = 0; else rebuild(); }
+    const sb = P.sb;
+    if (!sb || sb.updating || !P.q.length || P.stopped) return;
+    // (what's long played: let go, so memory doesn't fill)
+    try { const b = sb.buffered; if (b.length && video.currentTime - b.start(0) > 20) { sb.remove(b.start(0), video.currentTime - 6); return; } } catch {}
+    try { sb.appendBuffer(P.q.shift()); }
+    catch (e) {
+      if (e.name === "QuotaExceededError") { try { sb.remove(0, Math.max(0.1, video.currentTime - 1)); } catch {} return; }
+      broken();
+    }
   }
-  /** The joined video broke (a damaged piece): made again, from the next piece on. */
-  function rebuild() {
-    if (P.stopped) return;
-    try { if (ui.vA.src) URL.revokeObjectURL(ui.vA.src); } catch {}
-    ms = null; sb = null; appendQ = [];
-    try { ui.vA.removeAttribute("src"); ui.vA.load(); } catch {}
-    onStall();
-  }
-  // (every moment: broken, made again; stuck with video ahead of it (a gap), moved past it)
-  let lastT = -1, stuckAt = 0;
-  const guard = setInterval(() => {
-    if (P.stopped) { clearInterval(guard); return; }
-    if (P.mode !== "mse" || !ms) return;
-    const v = ui.vA;
-    if (v.error) { rebuild(); return; }
-    if (!sb) return;
-    let end = 0; try { const b = sb.buffered; if (b.length) end = b.end(b.length - 1); } catch { rebuild(); return; }
-    if (!v.paused && v.currentTime === lastT && end - v.currentTime > 0.5) {
-      if (!stuckAt) stuckAt = Date.now();
-      else if (Date.now() - stuckAt > 1800) { stuckAt = 0; try { v.currentTime = Math.max(0, end - 0.8); v.play().catch(() => {}); } catch {} }
-    } else stuckAt = 0;
-    lastT = v.currentTime;
-  }, 600);
-  function chase() {
-    const v = ui.vA; if (!sb) return;
-    try {
-      const b = sb.buffered; if (!b.length) return;
-      const end = b.end(b.length - 1);
-      if (end - v.currentTime > 6) v.currentTime = end - 1.6;
-      if (v.paused && end - v.currentTime > 0.4) v.play().then(onPlay, () => { P.muted = true; v.muted = true; soundHint(ui, P); v.play().then(onPlay, () => {}); });
-    } catch {}
-  }
-  // --- two players taking turns (each piece its own little video)
-  const ready = [];        // blob URLs waiting
-  let cur = ui.vA, other = ui.vB, waiting = true;
-  function turnFeed(url) {
-    ready.push(url);
-    while (ready.length > 4) URL.revokeObjectURL(ready.shift());       // (too far behind: catch up)
-    if (waiting) playNext();
-    else if (!other.src || other.dataset.loaded !== "1") preload();
-  }
-  function preload() {
-    if (!ready.length) return;
-    const url = ready.shift();
-    other.dataset.loaded = "1"; other.src = url; other.load();
-  }
-  function playNext() {
-    if (other.dataset.loaded !== "1") { if (!ready.length) { waiting = true; onStall(); return; } preload(); }
-    const was = cur; cur = other; other = was;
-    cur.classList.add("on"); other.classList.remove("on");
-    cur.dataset.loaded = ""; waiting = false;
-    cur.muted = !!P.muted;
-    cur.play().then(onPlay, () => { P.muted = true; cur.muted = true; soundHint(ui, P); cur.play().then(onPlay, () => {}); });
-    try { other.pause(); if (other.src) URL.revokeObjectURL(other.src); } catch {}
-    other.removeAttribute("src"); other.dataset.loaded = "";
-    preload();
-  }
-  for (const el of [ui.vA, ui.vB]) {
-    el.addEventListener("ended", () => { if (P.mode === "turns" && el === cur) playNext(); });
-    // (a piece with a known length: the next one starts a hair before this one's last frame, so there's no gap)
-    el.addEventListener("timeupdate", () => { if (P.mode === "turns" && el === cur && isFinite(el.duration) && el.duration - el.currentTime < 0.06 && other.dataset.loaded === "1") playNext(); });
-  }
-  async function feed(blob, type, dur) {
-    if (!P.mode) P.mode = useMse(type) ? "mse" : "turns";
-    if (P.mode === "mse") {
-      if (!ms) await openMse(type);
-      if (!sb) { P.mode = "turns"; ui.vA.removeAttribute("src"); return feed(blob, type, dur); }
-      appendQ.push(await blob.arrayBuffer());
-      drain();
-      setTimeout(chase, 120);
-    } else turnFeed(URL.createObjectURL(blob));
-  }
-  ui.vA.addEventListener("waiting", () => { if (P.mode === "mse") onStall(); });
-  ui.vA.addEventListener("error", () => { if (P.mode === "mse" && ms) rebuild(); });
-  ui.vA.addEventListener("playing", () => onPlay());
+  function broken() { if (P.stopped) return; teardown(); P.g = null; P.q = []; if (++P.broke < 20) { onStall(); rejoin(); } }
+  const play = () => video.play().then(() => onPlay(), () => {
+    if (video.muted) return;
+    video.muted = true; soundHint(root, video);                // (sound has to wait for a tap)
+    video.play().then(() => onPlay(), () => {});
+  });
+  // the pace: about 1 to 1.8 s behind the newest video
+  const pace = setInterval(() => {
+    if (P.stopped || !P.sb) return;
+    let b; try { b = P.sb.buffered; } catch { return; }
+    if (!b.length) return;
+    const end = b.end(b.length - 1);
+    if (!P.started) { P.started = true; video.currentTime = Math.max(b.start(b.length - 1), end - 0.9); play(); return; }
+    const t = video.currentTime;
+    // (between two pieces of video, or before them: on to the next)
+    let inside = false, next = null;
+    for (let i = 0; i < b.length; i++) { if (t >= b.start(i) - 0.04 && t < b.end(i)) inside = true; else if (b.start(i) > t && next == null) next = b.start(i); }
+    if (!inside && next != null) { video.currentTime = next + 0.02; return; }
+    const lag = end - t;
+    if (lag > 4.5) { video.currentTime = end - 1.2; video.playbackRate = 1; P.lags = []; return; }
+    // (steered by the least video in hand over the last 2.5 s, just before each new second of it comes, not by the swing
+    // as each comes in: so the speed only changes when it's really drifting, and then only by a little)
+    const now = performance.now();
+    P.lags = (P.lags || []).filter((x) => now - x.at < 2500); P.lags.push({ at: now, lag });
+    if (P.lags.length >= 8) {
+      const low = Math.min(...P.lags.map((x) => x.lag));
+      const rate = low > 2 ? 1.1 : low > 1.1 ? 1.04 : low < 0.12 ? 0.95 : video.playbackRate > 1 && low < 0.5 ? 1 : video.playbackRate < 1 && low > 0.35 ? 1 : video.playbackRate;
+      if (video.playbackRate !== rate) video.playbackRate = rate;
+    }
+    if (video.paused && lag > 0.4) play();
+  }, 250);
+  video.addEventListener("waiting", () => { if (!P.stopped && P.started) onStall(); });
+  video.addEventListener("playing", () => onPlay());
+  video.addEventListener("error", () => { if (P.ms && !P.stopped) broken(); });
   return {
-    /** Joining: start from the second-latest piece (a piece in hand while the next comes). */
-    start(segs) { const list = segs.slice(-2); if (list.length) { P.next = Math.min(P.next, list[0].n - 1); for (const g of list) P.queue.push(g); pump(); } },
-    add(g) { if (want(g.n) && !P.queue.some((x) => x.n === g.n && x.blob)) { P.queue.push(g); P.queue.sort((a, b) => a.n - b.n || (b.blob ? 1 : 0) - (a.blob ? 1 : 0)); pump(); } },
-    fed: () => P.fed,
-    reset() { P.next = -1; P.queue = []; },
-    stop() {
-      P.stopped = true;
-      for (const el of [ui.vA, ui.vB]) { try { el.pause(); } catch {} }
-      try { if (ms && ms.readyState === "open") ms.endOfStream(); } catch {}
-      for (const u of ready) URL.revokeObjectURL(u);
+    /** A message from the server: the start of the stream (a new player), or the next slice. */
+    feed(m) {
+      if (P.stopped || !m.data) return;
+      if (m.k === "start") {
+        P.g = m.g; P.q = [m.data]; P.started = false;
+        open(m.type).then((ok) => { if (ok) drain(); });
+      } else if (m.k === "more" && m.g === P.g) { P.q.push(m.data); drain(); }
     },
+    reset() { teardown(); P.g = null; P.q = []; P.started = false; },
+    stop() {
+      P.stopped = true; clearInterval(pace);
+      try { video.pause(); } catch {}
+      teardown();
+      try { video.removeAttribute("src"); video.load(); } catch {}
+    },
+    /** (for checks) how far behind the newest video it's playing, in seconds */
+    lag() { try { const b = P.sb.buffered; return b.length ? b.end(b.length - 1) - video.currentTime : -1; } catch { return -1; } },
   };
 }
 
+/** Where a viewer can start in a recording as it comes, slice by slice: MP4, each fragment ("moof"); WebM, each cluster.
+ * push(bytes, at) gives those places (in bytes from the recording's start); .init is its setup (everything before the
+ * first), once it's in. Element and box headers split across slices are put back together. */
+function splitter(mp4) {
+  let pend = new Uint8Array(0), pendAt = 0, skip = 0, head = [], headLen = 0;
+  const S = { init: null, joins: 0 };
+  const box = (d, i) => {                                         // an MP4 box: its size and type
+    if (d.length - i < 8) return null;
+    let size = ((d[i] << 24) | (d[i + 1] << 16) | (d[i + 2] << 8) | d[i + 3]) >>> 0, hdr = 8;
+    const type = String.fromCharCode(d[i + 4], d[i + 5], d[i + 6], d[i + 7]);
+    if (size === 1) { if (d.length - i < 16) return null; size = (((d[i + 8] << 24) | (d[i + 9] << 16) | (d[i + 10] << 8) | d[i + 11]) >>> 0) * 4294967296 + (((d[i + 12] << 24) | (d[i + 13] << 16) | (d[i + 14] << 8) | d[i + 15]) >>> 0); hdr = 16; }
+    if (size === 0) size = Infinity;
+    if (size < hdr) size = d.length - i;
+    return { join: type === "moof", total: size };
+  };
+  const vint = (d, i, keep) => {                                  // an EBML number (ids keep their marker bit)
+    if (i >= d.length) return null;
+    const b = d[i]; let len = 1, m = 0x80;
+    while (len <= 8 && !(b & m)) { len++; m >>= 1; }
+    if (len > 8) return { len: 1, v: 0, unknown: false };
+    if (i + len > d.length) return null;
+    let v = keep ? b : b & (m - 1), all = (b & (m - 1)) === m - 1;
+    for (let k = 1; k < len; k++) { v = v * 256 + d[i + k]; if (d[i + k] !== 0xff) all = false; }
+    return { len, v, unknown: !keep && all };
+  };
+  const ebml = (d, i) => {                                        // a WebM element: go into the segment and clusters
+    const id = vint(d, i, true); if (!id) return null;
+    const sz = vint(d, i + id.len, false); if (!sz) return null;
+    const hdr = id.len + sz.len;
+    if (id.v === 0x18538067) return { enter: true, hdr };
+    if (id.v === 0x1f43b675) return { join: true, enter: true, hdr };
+    if (sz.unknown) return { enter: true, hdr };
+    return { total: hdr + sz.v };
+  };
+  S.push = (chunk, at) => {
+    const out = [];
+    if (!S.init) { head.push(chunk); headLen += chunk.length; }
+    let d = chunk, base = at;
+    if (pend.length) { d = new Uint8Array(pend.length + chunk.length); d.set(pend); d.set(chunk, pend.length); base = pendAt; }
+    let i = 0;
+    if (skip) { const k = Math.min(skip, d.length); i = k; skip -= k; }
+    while (i < d.length) {
+      const r = mp4 ? box(d, i) : ebml(d, i);
+      if (!r) break;                                              // (a header cut off: finished with the next slice)
+      if (r.join) out.push(base + i);
+      if (r.enter) { i += r.hdr; continue; }
+      if (i + r.total <= d.length) i += r.total; else { skip = i + r.total - d.length; i = d.length; }
+    }
+    pend = d.slice(i); pendAt = base + i;
+    if (!S.init && out.length) {
+      const all = new Uint8Array(headLen); let o = 0; for (const c of head) { all.set(c, o); o += c.length; }
+      S.init = all.slice(0, out[0]); head = null;
+    }
+    S.joins += out.length;
+    return out;
+  };
+  return S;
+}
+/** The recording's kind with its codecs, for the players (MP4: read from its setup; some phones don't say). */
+function kindOf(init, mime, mp4) {
+  if (!mp4) return /codecs=/.test(mime) ? mime : "video/webm;codecs=vp8,opus";
+  const find = (txt) => { const t = [...txt].map((c) => c.charCodeAt(0)); outer: for (let i = 0; i + 4 <= init.length; i++) { for (let k = 0; k < 4; k++) if (init[i + k] !== t[k]) continue outer; return i; } return -1; };
+  const hex = (n) => n.toString(16).padStart(2, "0");
+  let v = "", a = "";
+  const avc = find("avcC");
+  if (avc >= 0 && avc + 8 <= init.length) v = `avc1.${hex(init[avc + 5])}${hex(init[avc + 6])}${hex(init[avc + 7])}`;
+  if (find("mp4a") >= 0) a = "mp4a.40.2"; else if (find("Opus") >= 0) a = "opus";
+  if (!v) return /codecs=/.test(mime) ? mime : "video/mp4;codecs=avc1.42E01F,mp4a.40.2";
+  return `video/mp4;codecs=${[v, a].filter(Boolean).join(",")}`;
+}
+
 // ---------------------------------------------------------------------------------------------------- going live
-const TYPES = ["video/webm;codecs=vp8,opus", "video/webm;codecs=vp9,opus", "video/webm", "video/mp4;codecs=avc1,mp4a.40.2", "video/mp4"];
+const TYPES = ["video/mp4;codecs=avc1.42E01F,mp4a.40.2", "video/mp4;codecs=avc1.42E01E,mp4a.40.2", "video/mp4;codecs=avc1,mp4a.40.2", "video/mp4", "video/webm;codecs=vp8,opus", "video/webm;codecs=vp9,opus", "video/webm"];
 /** Go live: the camera first (with a title to type), then live, until End. */
 export async function goLive() {
   if (!canGoLive()) { toast("Going live is for people the FifTeam team has let. Ask in the FifTeam server.", 3500); return; }
@@ -510,9 +554,8 @@ export async function goLive() {
     if (flipping) return;
     flipping = true; flip.disabled = true;
     const want = facing === "user" ? "environment" : "user", wasLive = !!(v.id && alive && rec);
-    // (the piece being recorded: finished and sent as it is; the next starts with the other camera)
-    clearTimeout(tick);
-    const was = rec; rec = null;
+    // (the recording: finished; a new one starts with the other camera, and everyone watching starts it with it)
+    const was = rec; rec = null; gen++;
     if (was && was.state !== "inactive") await new Promise((r) => { was.addEventListener("stop", r, { once: true }); try { was.stop(); } catch { r(); } setTimeout(r, 1500); });
     for (const t of media.getVideoTracks()) t.stop();
     try { const n = await camFacing(want); facing = want; useTrack(n.getVideoTracks()[0]); }
@@ -521,13 +564,13 @@ export async function goLive() {
       try { const n = await camFacing(facing).catch(() => navigator.mediaDevices.getUserMedia({ video: { ...VIDEO, facingMode: facing } })); useTrack(n.getVideoTracks()[0]); } catch {}
       toast(want === "environment" ? "Couldn't open the back camera." : "Couldn't open the front camera.", 2500);
     }
-    if (wasLive && alive) piece();
+    if (wasLive && alive) record();
     flipping = false; flip.disabled = false;
   };
   mute.onclick = () => { mic = !mic; for (const t of media.getAudioTracks()) t.enabled = mic; mute.classList.toggle("off", !mic); mute.setAttribute("aria-label", mic ? "Microphone off" : "Microphone on"); toast(mic ? "Microphone on" : "Microphone off", 1200); };
-  let rec = null, key = "", n = 0, sending = Promise.resolve(), backlog = 0, alive = true, tick = 0, clockT = 0;
+  let rec = null, key = "", gen = 0, alive = true, clockT = 0, watchT = 0, behind = false;
   const closeAll = async (end) => {
-    alive = false; clearTimeout(tick); clearInterval(clockT);
+    alive = false; gen++; clearInterval(clockT); clearInterval(watchT);
     try { if (rec && rec.state !== "inactive") rec.stop(); } catch {}
     for (const t of media.getTracks()) t.stop();
     if (end && v.id) await hubStreamEnd(v.id, key);
@@ -543,35 +586,51 @@ export async function goLive() {
   v.remove = (id) => liveSend({ t: "unsay", s: v.id, id });
   wireTalk(ui, v);
 
-  // one piece: a recorder for about two seconds; the next one starts a moment before this one stops
-  const piece = () => {
-    if (!alive) return;
-    const r = new MediaRecorder(media, { mimeType: type, videoBitsPerSecond: 1_100_000, audioBitsPerSecond: 96_000 });
-    const chunks = [], t0 = performance.now();
-    r.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
-    r.onstop = () => { const blob = new Blob(chunks, { type: r.mimeType || type }); upload(blob, performance.now() - t0); };
-    try { r.start(); } catch { toast("The camera stopped. Try going live again.", 3000); return; }
-    const was = rec; rec = r;
-    if (was && was.state !== "inactive") { try { was.stop(); } catch {} }
-    tick = setTimeout(piece, SEG_MS);
+  // the recording: one, continuous; every quarter second its newest slice goes up the live connection
+  const mp4 = /mp4/.test(type);
+  const record = () => {
+    if (!alive || !v.id) return;
+    const g = ++gen, split = splitter(mp4);
+    let at = 0, chain = Promise.resolve(), told = false;
+    let r;
+    try { r = new MediaRecorder(media, { mimeType: type, videoBitsPerSecond: 1_500_000, audioBitsPerSecond: 128_000, videoKeyFrameIntervalDuration: 1000 }); }
+    catch { r = new MediaRecorder(media, { mimeType: type, videoBitsPerSecond: 1_500_000, audioBitsPerSecond: 128_000 }); }
+    r.ondataavailable = (e) => {
+      if (!e.data || !e.data.size) return;
+      chain = chain.then(async () => {
+        if (g !== gen || !alive) return;
+        const bytes = new Uint8Array(await e.data.arrayBuffer());
+        const joins = split.push(bytes, at);
+        const head = { t: "up", s: v.id, k: key, g, a: at };
+        if (joins.length) head.j = joins;
+        if (!told && split.init) { head.type = kindOf(split.init, r.mimeType || type, mp4); told = true; }
+        at += bytes.length;
+        const hb = new TextEncoder().encode(JSON.stringify(head)), f = new Uint8Array(4 + hb.length + bytes.length);
+        new DataView(f.buffer).setUint32(0, hb.length); f.set(hb, 4); f.set(bytes, 4 + hb.length);
+        // (not sent: the connection's down, or can't keep up. The recording starts again once it's back, so viewers get
+        // a clean start rather than a broken stream)
+        if (!liveSendBin(f.buffer)) { behind = true; ui.badge.classList.add("weak"); }
+      });
+    };
+    r.onerror = () => { if (g === gen && alive) { toast("The camera stopped. Starting again…", 2500); setTimeout(restart, 500); } };
+    r.start(250); rec = r; window.__liveRecAt = Date.now();
+    // (a phone whose recording has nowhere to start watching from can't stream: said, once)
+    setTimeout(() => { if (g === gen && alive && !split.joins) toast("This phone's browser can't stream live. Try Chrome.", 5000); }, 7000);
   };
-  const upload = (blob, dur) => {
-    if (!blob.size || !alive) return;
-    const my = n++;
-    if (backlog > 3) return;                                 // (the connection can't keep up: skip a piece to stay live)
-    backlog++;
-    sending = sending.then(async () => {
-      try {
-        let ok = await hubStreamSeg(v.id, key, my, blob, dur);
-        if (!ok && alive) {
-          // (the server lost the stream, say after an update: carry on as the same person, a fresh stream)
-          const r = await hubStreamStart(s.title); v.id = r.id; key = r.key; n = 1; liveSend({ t: "watch", s: v.id });
-          ok = await hubStreamSeg(v.id, key, 0, blob, dur);
-        }
-        ui.badge.classList.toggle("weak", !ok);
-      } catch { ui.badge.classList.add("weak"); }
-      finally { backlog--; }
-    });
+  const restart = () => {
+    if (!alive || !v.id) return;
+    const was = rec; rec = null; gen++;
+    try { if (was && was.state !== "inactive") was.stop(); } catch {}
+    behind = false; ui.badge.classList.remove("weak");
+    record();
+  };
+  // the connection: back (or caught up) after slices were lost: a fresh start
+  watchT = setInterval(() => { if (alive && v.id && behind && live.on && liveBacklog() < 200e3) restart(); }, 700);
+  addEventListener("hub:open", () => { if (alive && v.id && L.view === v) { liveSend({ t: "watch", s: v.id }); restart(); } });
+  // the server lost the stream (an update, say): the same person, a new stream
+  v.lost = async (sid) => {
+    if (!alive || sid !== v.id) return;
+    try { const r2 = await hubStreamStart(s.title); v.id = r2.id; key = r2.key; liveSend({ t: "watch", s: v.id }); restart(); } catch {}
   };
   pre.onsubmit = async (e) => {
     e.preventDefault();
@@ -592,6 +651,6 @@ export async function goLive() {
     addEventListener("hub:open", join);
     join();
     clockT = setInterval(() => { ui.clock.textContent = since(s.at); }, 1000);
-    piece();
+    record();
   };
 }

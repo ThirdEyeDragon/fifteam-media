@@ -431,6 +431,14 @@ export class Hub extends DurableObject {
     return new Response("not here", { status: 404 });
   }
   async webSocketMessage(ws, msg) {
+    if (typeof msg !== "string") {
+      // (a slice of a live recording: a little header, its length first, then the bytes)
+      try {
+        const n = new DataView(msg).getUint32(0), head = JSON.parse(new TextDecoder().decode(new Uint8Array(msg, 4, n)));
+        if (head.t === "up") this.streamUp(ws, head, msg.slice(4 + n));
+      } catch (e) { console.log("stream slice:", e.message); }
+      return;
+    }
     let m; try { m = JSON.parse(msg); } catch { return; }
     const at = ws.deserializeAttachment() || {};
     if (m.t === "hi" && m.tk) {
@@ -649,10 +657,14 @@ export class Hub extends DurableObject {
   async premiumAsks() { return obj(await this.ctx.storage.get("premium-asks")); }
 
   // ---------------------------------------------------------------- live streams
-  // The people the owner lets (/allow streaming) can go live from Social. The phone records its camera in short pieces
-  // (about two seconds each, every one a whole video) and sends each here; everyone watching hears about it at once on
-  // the live connection and fetches it. Chat, likes and how many are watching go round on the live connection too. In
-  // memory only: a stream that stops sending for 20 seconds has ended.
+  // The person the owner lets (/allow streaming) can go live from Social. The phone records its camera as one continuous
+  // video (MP4 where it can, else WebM) and sends it here a slice at a time (every quarter second) on its live
+  // connection, saying where in it a viewer can start (each fragment or cluster, from a whole frame). The start of the
+  // recording (its setup) is kept, and the last dozen seconds. Someone who starts watching gets the setup and the video
+  // from the latest place to start; then every slice as it comes, passed straight on. One recording, one timeline:
+  // sound and picture stay together. A new recording (the camera flipped, the connection back) starts everyone again.
+  // Chat, likes and how many are watching go round on the live connection too. In memory only: a stream that stops
+  // sending for 20 seconds has ended.
   get streams() { return (this._streams = this._streams || new Map()); }
   streamList() { return [...this.streams.values()].map((s) => ({ id: s.id, by: s.by, name: s.name, at: s.at, title: s.title, viewers: this.viewers(s), likes: s.likes })); }
   viewers(s) { let n = 0; for (const ws of this.ctx.getWebSockets()) { const a = ws.deserializeAttachment(); if (a && a.watch === s.id && a.me !== s.by) n++; } return n; }
@@ -670,7 +682,7 @@ export class Hub extends DurableObject {
     const key = rid(24);
     let s = [...this.streams.values()].find((x) => x.by === phone);
     if (!s) {
-      s = { id: rid(10), by: phone, name, at: Date.now(), title, key, segs: [], chat: [], likes: 0, last: Date.now() };
+      s = { id: rid(10), by: phone, name, at: Date.now(), title, key, g: null, type: "", init: null, parts: [], joins: [], chat: [], likes: 0, last: Date.now() };
       this.streams.set(s.id, s);
       this.tellStreams();
       this.liveNotes(phone, name).catch((e) => console.log("live notes:", e.message));
@@ -678,43 +690,60 @@ export class Hub extends DurableObject {
     this.watchdog();
     return { status: 200, id: s.id, key, at: s.at };
   }
-  /** A piece of the video (n: its number, from 0; dur: how long, in ms). */
-  streamSeg(id, key, n, type, buf, dur) {
-    const s = this.streams.get(id);
-    if (!s || s.key !== key) return { status: 404 };
-    if (!/^video\/(webm|mp4)/.test(type) || !buf || buf.byteLength > 3e6 || !(n >= 0)) return { status: 400 };
-    s.segs.push({ n, type, buf, dur: Math.max(200, Math.min(10000, +dur || 2000)), at: Date.now() });
-    while (s.segs.length > 8) s.segs.shift();
-    s.last = Date.now();
-    this.sendSeg(s, s.segs[s.segs.length - 1]);
-    return { status: 200 };
-  }
-  /** A piece of the video for everyone watching it (and every app showing its preview at the top), sent down the live
-   * connection itself: the bytes after a little header ({ t: "segb", s, n, type, dur }, its length first). Bigger than a
-   * message can be: just the news, and they fetch it. */
-  segFrame(s, g) {
-    if (g.frame === undefined) {
-      if (g.buf.byteLength > 900e3) g.frame = null;
-      else {
-        const head = new TextEncoder().encode(JSON.stringify({ t: "segb", s: s.id, n: g.n, type: g.type.slice(0, 60), dur: g.dur }));
-        const f = new Uint8Array(4 + head.length + g.buf.byteLength);
-        new DataView(f.buffer).setUint32(0, head.length); f.set(head, 4); f.set(new Uint8Array(g.buf), 4 + head.length);
-        g.frame = f.buffer;
-      }
-    }
-    return g.frame;
-  }
-  sendSeg(s, g, only) {
-    const frame = this.segFrame(s, g), note = JSON.stringify({ t: "seg", s: s.id, n: g.n, type: g.type.slice(0, 60), dur: g.dur });
-    for (const ws of only ? [only] : this.ctx.getWebSockets()) {
-      const a = ws.deserializeAttachment();
-      if (!a || (a.watch !== s.id && a.peek !== s.id)) continue;
-      try { ws.send(frame || note); } catch {}
+  /** A slice of the recording, from the streamer's phone (head: { s, k (the stream's key), g (which recording), a (where
+   * the slice starts in it, in bytes), j (where in it a viewer can start), type (once: its kind, with its codecs) }). */
+  streamUp(ws, head, data) {
+    const s = this.streams.get(String(head.s || ""));
+    if (!s || s.key !== head.k) { try { ws.send(JSON.stringify({ t: "upgone", s: String(head.s || "") })); } catch {} return; }
+    const now = Date.now();
+    s.last = now;
+    if (head.g !== s.g) { s.g = head.g; s.type = ""; s.init = null; s.parts = []; s.joins = []; }
+    if (head.type) s.type = String(head.type).slice(0, 120);
+    s.parts.push({ a: +head.a || 0, buf: data, at: now });
+    for (const j of arr(head.j)) if (+j >= 0) s.joins.push({ a: +j, at: now });
+    // (its setup: everything before the first place to start)
+    if (!s.init && s.joins.length && s.parts[0].a === 0) s.init = this.range(s, 0, s.joins[0].a);
+    // (the last dozen seconds kept)
+    while (s.parts.length > 2 && now - s.parts[0].at > 12000) s.parts.shift();
+    s.joins = s.joins.filter((x) => x.a >= s.parts[0].a);
+    if (!s.init || !s.type) return;
+    let more = null;
+    for (const w of this.ctx.getWebSockets()) {
+      const a = w.deserializeAttachment();
+      if (!a || (a.watch !== s.id && a.peek !== s.id) || a.me === s.by) continue;
+      if (a.lg === s.g) { more = more || this.frame({ t: "lv", k: "more", s: s.id, g: s.g }, new Uint8Array(data)); try { w.send(more); } catch {} }
+      else this.startFor(w, a, s);
     }
   }
-  streamGet(id, n) {
-    const s = this.streams.get(id), g = s && s.segs.find((x) => x.n === n);
-    return g ? { status: 200, type: g.type, body: g.buf } : { status: 404 };
+  /** The recording's bytes from..to (what's kept). */
+  range(s, from, to) {
+    const out = new Uint8Array(Math.max(0, to - from));
+    for (const p of s.parts) {
+      const b = new Uint8Array(p.buf), a0 = p.a, a1 = p.a + b.length;
+      if (a1 <= from || a0 >= to) continue;
+      const x0 = Math.max(from, a0), x1 = Math.min(to, a1);
+      out.set(b.subarray(x0 - a0, x1 - a0), x0 - from);
+    }
+    return out;
+  }
+  /** A message with a little header (its length first) and bytes after it. */
+  frame(head, bytes) {
+    const h = new TextEncoder().encode(JSON.stringify(head)), f = new Uint8Array(4 + h.length + bytes.length);
+    new DataView(f.buffer).setUint32(0, h.length); f.set(h, 4); f.set(bytes, 4 + h.length);
+    return f.buffer;
+  }
+  /** Someone starting to watch (or to show the preview): the setup and the video from the latest place to start (one
+   * just come in is too fresh to have anything after it: the one before), then every slice as it comes. */
+  startFor(w, a, s) {
+    if (!s.init || !s.type || !s.joins.length) return;
+    const last = s.parts[s.parts.length - 1], endA = last.a + last.buf.byteLength;
+    let k = s.joins.length - 1;
+    if (k > 0 && endA - s.joins[k].a < 20000) k--;
+    while (k < s.joins.length - 1 && endA - s.joins[k].a > 900e3) k++;
+    const body = this.range(s, s.joins[k].a, endA), all = new Uint8Array(s.init.length + body.length);
+    all.set(s.init); all.set(body, s.init.length);
+    try { w.send(this.frame({ t: "lv", k: "start", s: s.id, g: s.g, type: s.type }, all)); } catch { return; }
+    const a2 = w.deserializeAttachment() || a; a2.lg = s.g; w.serializeAttachment(a2);
   }
   streamEnd(id, key) { const s = this.streams.get(id); if (!s || s.key !== key) return { status: 404 }; this.endStream(id); return { status: 200 }; }
   /** (the owner took someone's say away: their stream ends) */
@@ -769,16 +798,16 @@ export class Hub extends DurableObject {
       const old = at.watch; at.watch = s ? s.id : ""; ws.serializeAttachment(at);
       if (old && old !== at.watch) this.countChanged(old);
       if (!s) { try { ws.send(JSON.stringify({ t: "end", s: String(m.s || "") })); } catch {} return; }
-      const segs = s.segs.slice(-2).map((g) => ({ n: g.n, type: g.type.slice(0, 60), dur: g.dur }));
-      try { ws.send(JSON.stringify({ t: "st", s: s.id, by: s.by, name: s.name, title: s.title, at: s.at, segs, chat: s.chat.slice(-40), likes: s.likes, viewers: this.viewers(s) })); } catch {}
-      for (const g of s.segs.slice(-2)) this.sendSeg(s, g, ws);       // (something to play at once)
+      at.lg = -1; ws.serializeAttachment(at);
+      try { ws.send(JSON.stringify({ t: "st", s: s.id, by: s.by, name: s.name, title: s.title, at: s.at, chat: s.chat.slice(-40), likes: s.likes, viewers: this.viewers(s) })); } catch {}
+      if (at.me !== s.by) this.startFor(ws, at, s);
       this.countChanged(s.id);
       return;
     }
     // the preview at the top of the app: the pieces, without counting as watching
     if (m.t === "peek") {
-      const a2 = ws.deserializeAttachment() || {}; a2.peek = s ? s.id : ""; ws.serializeAttachment(a2);
-      if (s && s.segs.length) this.sendSeg(s, s.segs[s.segs.length - 1], ws);
+      const a2 = ws.deserializeAttachment() || {}; a2.peek = s ? s.id : ""; if (s && a2.watch !== s.id) a2.lg = -1; ws.serializeAttachment(a2);
+      if (s && a2.watch !== s.id) this.startFor(ws, a2, s);
       return;
     }
     if (m.t === "unwatch") { const old = at.watch; at.watch = ""; ws.serializeAttachment(at); if (old) this.countChanged(old); return; }
